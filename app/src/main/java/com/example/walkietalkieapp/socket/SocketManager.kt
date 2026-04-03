@@ -12,15 +12,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 private const val TAG = "SocketManager"
-// Ensure this URL is correct and active in your ngrok terminal
+// IMPORTANT: Update this URL if your ngrok restarted!
 private const val SERVER_URL = "https://unforgetting-melodie-overfiercely.ngrok-free.dev" 
 private const val MAX_LOG_ENTRIES = 20
 
 data class SocketUiState(
     val isConnected: Boolean = false,
     val status: String = "Disconnected",
-    val detail: String = "Waiting to connect to server.",
-    val eventLog: List<String> = listOf("Ready.")
+    val detail: String = "Ready to connect.",
+    val eventLog: List<String> = listOf("App Started")
 )
 
 object SocketManager {
@@ -45,7 +45,7 @@ object SocketManager {
                 forceNew = true
                 reconnection = true
                 reconnectionDelay = 1000
-                timeout = 10000
+                timeout = 20000
             }
 
             runCatching { IO.socket(SERVER_URL, opts) }
@@ -54,35 +54,32 @@ object SocketManager {
                     
                     createdSocket.on(Socket.EVENT_CONNECT) {
                         Log.d(TAG, "Socket connected")
-                        updateState(true, "Connected", "Server connected via Internet. App is ready.", "Connected to server")
+                        updateState(true, "ONLINE", "Ready for Walkie-Talkie", "Connected to Server")
                     }
 
                     createdSocket.on(Socket.EVENT_CONNECT_ERROR) { args ->
                         val err = args.joinToString { it.toString() }
-                        Log.e(TAG, "Socket connect error: $err")
-                        updateState(false, "Connection Error", "Cannot reach server. Check your internet/ngrok.", "Connect error: $err")
+                        updateState(false, "OFFLINE", "Check ngrok URL", "Connect Error")
                     }
 
-                    createdSocket.on(Socket.EVENT_DISCONNECT) { args ->
-                        val reason = args.firstOrNull()?.toString() ?: "unknown"
-                        Log.d(TAG, "Socket disconnected: $reason")
-                        updateState(false, "Disconnected", "Disconnected from server.", "Disconnected: $reason")
+                    createdSocket.on(Socket.EVENT_DISCONNECT) {
+                        updateState(false, "OFFLINE", "Disconnected", "Disconnected")
                     }
 
-                    // RESTORED: Listen for test messages to update the log
                     createdSocket.on("message") { args ->
                         val msg = args.firstOrNull()?.toString().orEmpty()
-                        Log.d(TAG, "Message received: $msg")
-                        updateState(true, "Connected", "Message received", "Msg: $msg")
+                        updateState(true, "ONLINE", "Message Received", "Msg: $msg")
                     }
 
                     createdSocket.on("offer") { args ->
                         val sdp = args.firstOrNull()?.toString().orEmpty()
+                        updateState(true, "ONLINE", "Voice Incoming...", "Call Started")
                         signalingListener?.onOfferReceived(sdp)
                     }
 
                     createdSocket.on("answer") { args ->
                         val sdp = args.firstOrNull()?.toString().orEmpty()
+                        updateState(true, "ONLINE", "Voice Connected", "Handshake Done")
                         signalingListener?.onAnswerReceived(sdp)
                     }
 
@@ -91,33 +88,22 @@ object SocketManager {
                         signalingListener?.onIceCandidateReceived(candidate)
                     }
                 }
-                .onFailure { e ->
-                    Log.e(TAG, "Failed to initialize socket: ${e.message}")
-                }
         }
     }
 
     fun connect() {
         initialize()
-        socket?.let {
-            if (!it.connected()) {
-                Log.d(TAG, "Manually connecting socket...")
-                it.connect()
-            }
-        }
+        socket?.connect()
     }
 
     fun disconnect() {
-        Log.d(TAG, "Manually disconnecting socket...")
         socket?.disconnect()
     }
 
     fun sendMessage(msg: String) {
         if (socket?.connected() == true) {
             socket?.emit("message", msg)
-            updateState(true, "Connected", "Message sent", "Sent: $msg")
-        } else {
-            updateState(false, "Disconnected", "Connect first", "Failed to send message")
+            updateState(true, "ONLINE", "Test Sent", "Sent: $msg")
         }
     }
 
