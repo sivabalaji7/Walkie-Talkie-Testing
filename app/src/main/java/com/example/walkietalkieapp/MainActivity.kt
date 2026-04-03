@@ -45,7 +45,7 @@ import androidx.core.content.ContextCompat
 import com.example.walkietalkieapp.socket.SignalingListener
 import com.example.walkietalkieapp.socket.SocketUiState
 import com.example.walkietalkieapp.socket.SocketManager
-import com.example.walkietalkieapp.gitwebrtc.WebRTCManager
+import com.example.walkietalkieapp.webrtc.WebRTCManager
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
 
 private const val TAG = "WalkieTalkieApp"
