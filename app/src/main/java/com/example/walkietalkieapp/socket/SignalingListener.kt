@@ -4,4 +4,6 @@ interface SignalingListener {
     fun onOfferReceived(sdp: String)
     fun onAnswerReceived(sdp: String)
     fun onIceCandidateReceived(candidate: String)
+    fun onCallStarted()
+    fun onCallEnded()
 }

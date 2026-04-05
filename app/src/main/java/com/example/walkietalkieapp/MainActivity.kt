@@ -1,15 +1,22 @@
 package com.example.walkietalkieapp
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,13 +26,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,12 +48,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.walkietalkieapp.socket.SignalingListener
-import com.example.walkietalkieapp.socket.SocketUiState
 import com.example.walkietalkieapp.socket.SocketManager
 import com.example.walkietalkieapp.webrtc.WebRTCManager
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
@@ -56,6 +68,7 @@ class MainActivity : ComponentActivity(), SignalingListener {
     private var shouldShowAudioPermissionRationale by mutableStateOf(false)
     
     private var webRTCManager: WebRTCManager? = null
+    private var isOthersSpeaking by mutableStateOf(false)
 
     private val audioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -73,6 +86,17 @@ class MainActivity : ComponentActivity(), SignalingListener {
         super.onCreate(savedInstanceState)
         refreshAudioPermissionState()
         
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.let {
+                it.mode = AudioManager.MODE_IN_COMMUNICATION
+                it.isSpeakerphoneOn = true
+                Log.d(TAG, "AudioManager configured")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to configure AudioManager: ${e.message}")
+        }
+
         if (hasAudioPermission) {
             initializeWebRTC()
         }
@@ -91,20 +115,34 @@ class MainActivity : ComponentActivity(), SignalingListener {
                 ) {
                     WalkieTalkieScreen(
                         hasAudioPermission = hasAudioPermission,
-                        hasRequestedAudioPermission = hasRequestedAudioPermission,
-                        shouldShowAudioPermissionRationale = shouldShowAudioPermissionRationale,
                         socketUiState = socketUiState,
+                        isOthersSpeaking = isOthersSpeaking,
                         onRequestAudioPermission = ::requestAudioPermission,
                         onConnectSocket = { SocketManager.connect() },
                         onDisconnectSocket = { SocketManager.disconnect() },
-                        onSendTestMessage = {
-                            SocketManager.sendMessage("hello")
-                        },
                         onStartPushToTalk = ::startPushToTalk,
-                        onStopPushToTalk = ::stopPushToTalk
+                        onStopPushToTalk = ::stopPushToTalk,
+                        vibrate = ::vibrate
                     )
                 }
             }
+        }
+    }
+
+    private fun vibrate() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                val vibrator = vibratorManager?.defaultVibrator
+                vibrator?.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(50)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Vibration failed: ${e.message}")
         }
     }
 
@@ -154,6 +192,8 @@ class MainActivity : ComponentActivity(), SignalingListener {
     override fun onOfferReceived(sdp: String) {
         runOnUiThread {
             Log.d(TAG, "Offer received, handling on UI thread")
+            isOthersSpeaking = true
+            SocketManager.addLog("Voice incoming...")
             webRTCManager?.handleOffer(sdp)
         }
     }
@@ -161,18 +201,36 @@ class MainActivity : ComponentActivity(), SignalingListener {
     override fun onAnswerReceived(sdp: String) {
         runOnUiThread {
             Log.d(TAG, "Answer received, handling on UI thread")
+            isOthersSpeaking = true
+            SocketManager.addLog("Voice connected")
             webRTCManager?.handleAnswer(sdp)
         }
     }
 
     override fun onIceCandidateReceived(candidate: String) {
         runOnUiThread {
-            Log.d(TAG, "ICE Candidate received, handling on UI thread")
+            Log.d(TAG, "ICE Candidate received")
             webRTCManager?.handleIceCandidate(candidate)
+        }
+    }
+
+    override fun onCallStarted() {
+        runOnUiThread {
+            isOthersSpeaking = true
+        }
+    }
+
+    override fun onCallEnded() {
+        runOnUiThread {
+            Log.d(TAG, "Remote call ended, resetting speaking indicator")
+            isOthersSpeaking = false
+            SocketManager.addLog("Remote user stopped talking")
         }
     }
     
     private fun startPushToTalk() {
+        Log.d(TAG, "PTT Pressed")
+        SocketManager.addLog("PTT Pressed")
         if (!hasAudioPermission) {
             requestAudioPermission()
             return
@@ -182,68 +240,105 @@ class MainActivity : ComponentActivity(), SignalingListener {
             initializeWebRTC()
         }
         
-        Log.d(TAG, "Push-to-talk started")
-        webRTCManager?.startAudioCapture()
-        webRTCManager?.createOffer()
+        webRTCManager?.startTalking()
+        
+        if (webRTCManager?.isConnected() != true) {
+            webRTCManager?.createOffer()
+        }
     }
     
     private fun stopPushToTalk() {
-        Log.d(TAG, "Push-to-talk stopped")
-        webRTCManager?.stopAudio()
+        Log.d(TAG, "PTT Released")
+        SocketManager.addLog("PTT Released")
+        webRTCManager?.stopTalking()
+        SocketManager.sendStopVoice()
     }
 }
 
 @Composable
 fun WalkieTalkieScreen(
     hasAudioPermission: Boolean,
-    hasRequestedAudioPermission: Boolean,
-    shouldShowAudioPermissionRationale: Boolean,
-    socketUiState: SocketUiState,
+    socketUiState: com.example.walkietalkieapp.socket.SocketUiState,
+    isOthersSpeaking: Boolean,
     onRequestAudioPermission: () -> Unit,
     onConnectSocket: () -> Unit,
     onDisconnectSocket: () -> Unit,
-    onSendTestMessage: () -> Unit,
     onStartPushToTalk: () -> Unit,
-    onStopPushToTalk: () -> Unit
+    onStopPushToTalk: () -> Unit,
+    vibrate: () -> Unit
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    var wasPressed by remember { mutableStateOf(false) }
-    val screenScrollState = rememberScrollState()
+    var isUserSpeaking by remember { mutableStateOf(false) }
+    val lazyListState = rememberLazyListState()
 
-    LaunchedEffect(isPressed) {
-        if (isPressed) {
-            wasPressed = true
-            onStartPushToTalk()
-        } else if (wasPressed) {
-            wasPressed = false
-            onStopPushToTalk()
+    LaunchedEffect(socketUiState.eventLog.size) {
+        if (socketUiState.eventLog.isNotEmpty()) {
+            lazyListState.animateScrollToItem(0)
         }
     }
 
-    val buttonContainerColor = when {
-        isPressed -> MaterialTheme.colorScheme.primaryContainer
+    val buttonColor = when {
+        isUserSpeaking -> Color.Red
         hasAudioPermission -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.secondaryContainer
-    }
-    val buttonContentColor = when {
-        isPressed -> MaterialTheme.colorScheme.onPrimaryContainer
-        hasAudioPermission -> MaterialTheme.colorScheme.onPrimary
-        else -> MaterialTheme.colorScheme.onSecondaryContainer
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(screenScrollState)
             .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "Walkie Talkie App",
-            style = MaterialTheme.typography.headlineMedium
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Walkie Talkie",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val (statusColor, statusText) = when {
+                    socketUiState.isConnected -> Color.Green to "Connected"
+                    socketUiState.status == "OFFLINE" && socketUiState.detail.contains("Retry", true) -> Color.Yellow to "Connecting..."
+                    else -> Color.Red to "Disconnected"
+                }
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(statusColor, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(text = statusText, fontSize = 14.sp)
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isUserSpeaking) {
+                    Text("🟢 You are speaking", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+                } else if (isOthersSpeaking) {
+                    Text("🔴 Other user speaking", color = Color.Red, fontWeight = FontWeight.Bold)
+                } else {
+                    Text("Idle", color = Color.Gray)
+                }
+            }
+        }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -256,140 +351,113 @@ fun WalkieTalkieScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "Server: ${socketUiState.status}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (socketUiState.isConnected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+                    text = "Server Status: ${socketUiState.status}",
+                    style = MaterialTheme.typography.titleSmall
                 )
-                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = socketUiState.detail,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (socketUiState.isConnected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = if (socketUiState.isConnected) {
-                        "App is ready. Hold the button to talk."
-                    } else {
-                        "Waiting for connection..."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (socketUiState.isConnected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+                    style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Box(
+            modifier = Modifier
+                .size(210.dp)
+                .background(buttonColor.copy(alpha = 0.1f), CircleShape)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            if (hasAudioPermission && socketUiState.isConnected) {
+                                vibrate()
+                                isUserSpeaking = true
+                                onStartPushToTalk()
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    isUserSpeaking = false
+                                    onStopPushToTalk()
+                                }
+                            } else if (!hasAudioPermission) {
+                                onRequestAudioPermission()
+                            }
+                        }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier.size(180.dp),
+                shape = CircleShape,
+                color = buttonColor,
+                shadowElevation = 8.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = if (isUserSpeaking) "TALK" else "HOLD TO\nTALK",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Button(
                 onClick = onConnectSocket,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.medium
             ) {
-                Text(text = if (socketUiState.isConnected) "Reconnect" else "Connect")
+                Text(text = "Connect")
             }
             Button(
                 onClick = onDisconnectSocket,
                 modifier = Modifier.weight(1f),
-                enabled = socketUiState.isConnected
+                enabled = socketUiState.isConnected,
+                shape = MaterialTheme.shapes.medium,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
             ) {
                 Text(text = "Disconnect")
             }
         }
-        Button(
-            onClick = {
-                if (!hasAudioPermission) {
-                    onRequestAudioPermission()
-                }
-            },
-            modifier = Modifier.size(220.dp),
-            shape = CircleShape,
-            interactionSource = interactionSource,
-            contentPadding = PaddingValues(24.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = buttonContainerColor,
-                contentColor = buttonContentColor
-            ),
-            elevation = ButtonDefaults.buttonElevation(
-                defaultElevation = 8.dp,
-                pressedElevation = 2.dp
-            )
-        ) {
-            Text(
-                text = "Hold to Talk",
-                style = MaterialTheme.typography.titleLarge,
-                textAlign = TextAlign.Center
-            )
-        }
+
         Text(
-            text = permissionStatusText(
-                hasAudioPermission = hasAudioPermission,
-                hasRequestedAudioPermission = hasRequestedAudioPermission,
-                shouldShowAudioPermissionRationale = shouldShowAudioPermissionRationale
-            ),
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (hasAudioPermission) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.error
-            },
-            textAlign = TextAlign.Center
+            text = "Activity Log",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Start
         )
-        Button(
-            onClick = onSendTestMessage,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = socketUiState.isConnected
-        ) {
-            Text(text = "Send Test Message")
-        }
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4F8)),
+            border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.3f))
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            LazyColumn(
+                state = lazyListState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp)
             ) {
-                Text(
-                    text = "Test Log",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                socketUiState.eventLog.forEach { logLine ->
+                items(socketUiState.eventLog) { logLine ->
                     Text(
                         text = logLine,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontSize = 11.sp,
+                        color = Color.Black,
+                        modifier = Modifier.padding(vertical = 2.dp)
                     )
+                    HorizontalDivider(thickness = 0.5.dp, color = Color.Gray.copy(alpha = 0.1f))
                 }
             }
         }
-    }
-}
-
-private fun permissionStatusText(
-    hasAudioPermission: Boolean,
-    hasRequestedAudioPermission: Boolean,
-    shouldShowAudioPermissionRationale: Boolean
-): String {
-    return when {
-        hasAudioPermission -> "Microphone ready."
-        shouldShowAudioPermissionRationale -> "Microphone access is needed."
-        hasRequestedAudioPermission -> "Microphone permission denied."
-        else -> "Microphone access required."
     }
 }

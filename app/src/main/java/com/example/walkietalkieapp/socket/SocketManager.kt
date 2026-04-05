@@ -12,8 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 private const val TAG = "SocketManager"
-// IMPORTANT: Update this URL if your ngrok restarted!
-private const val SERVER_URL = "https://unforgetting-melodie-overfiercely.ngrok-free.dev" 
+// Permanent Railway Server URL
+private const val SERVER_URL = "https://walkie-talkie-app-server-production.up.railway.app"
 private const val MAX_LOG_ENTRIES = 20
 
 data class SocketUiState(
@@ -46,6 +46,8 @@ object SocketManager {
                 reconnection = true
                 reconnectionDelay = 1000
                 timeout = 20000
+                // Using websocket only for better stability on Railway
+                transports = arrayOf("websocket")
             }
 
             runCatching { IO.socket(SERVER_URL, opts) }
@@ -59,27 +61,31 @@ object SocketManager {
 
                     createdSocket.on(Socket.EVENT_CONNECT_ERROR) { args ->
                         val err = args.joinToString { it.toString() }
-                        updateState(false, "OFFLINE", "Check ngrok URL", "Connect Error")
+                        Log.e(TAG, "Socket Connect Error: $err")
+                        updateState(false, "OFFLINE", "Retry: $err", "Connect Error")
                     }
 
                     createdSocket.on(Socket.EVENT_DISCONNECT) {
+                        Log.d(TAG, "Socket disconnected")
                         updateState(false, "OFFLINE", "Disconnected", "Disconnected")
                     }
 
                     createdSocket.on("message") { args ->
                         val msg = args.firstOrNull()?.toString().orEmpty()
-                        updateState(true, "ONLINE", "Message Received", "Msg: $msg")
+                        addLog("Msg: $msg")
                     }
 
                     createdSocket.on("offer") { args ->
                         val sdp = args.firstOrNull()?.toString().orEmpty()
-                        updateState(true, "ONLINE", "Voice Incoming...", "Call Started")
+                        Log.d(TAG, "Offer received")
+                        updateState(true, "ONLINE", "Voice Incoming...", "Offer Received")
                         signalingListener?.onOfferReceived(sdp)
                     }
 
                     createdSocket.on("answer") { args ->
                         val sdp = args.firstOrNull()?.toString().orEmpty()
-                        updateState(true, "ONLINE", "Voice Connected", "Handshake Done")
+                        Log.d(TAG, "Answer received")
+                        updateState(true, "ONLINE", "Voice Connected", "Answer Received")
                         signalingListener?.onAnswerReceived(sdp)
                     }
 
@@ -87,36 +93,76 @@ object SocketManager {
                         val candidate = args.firstOrNull()?.toString().orEmpty()
                         signalingListener?.onIceCandidateReceived(candidate)
                     }
+
+                    createdSocket.on("stop-voice") {
+                        Log.d(TAG, "Stop voice signal received")
+                        addLog("Remote user stopped talking")
+                        signalingListener?.onCallEnded()
+                    }
+                }
+                .onFailure { e ->
+                    Log.e(TAG, "Socket Creation Failed", e)
+                    addLog("Init Error: ${e.message}")
                 }
         }
     }
 
     fun connect() {
         initialize()
+        Log.d(TAG, "Attempting to connect to: $SERVER_URL")
+        addLog("Connecting to server...")
         socket?.connect()
     }
 
     fun disconnect() {
+        Log.d(TAG, "Disconnecting socket")
         socket?.disconnect()
     }
 
     fun sendMessage(msg: String) {
         if (socket?.connected() == true) {
             socket?.emit("message", msg)
-            updateState(true, "ONLINE", "Test Sent", "Sent: $msg")
+            addLog("Sent: $msg")
         }
     }
 
     fun sendOffer(sdp: String) {
-        socket?.emit("offer", sdp)
+        if (socket?.connected() == true) {
+            socket?.emit("offer", sdp)
+            addLog("Offer Sent")
+        } else {
+            addLog("Err: Not connected (Offer)")
+        }
     }
 
     fun sendAnswer(sdp: String) {
-        socket?.emit("answer", sdp)
+        if (socket?.connected() == true) {
+            socket?.emit("answer", sdp)
+            addLog("Answer Sent")
+        } else {
+            addLog("Err: Not connected (Answer)")
+        }
     }
 
     fun sendIceCandidate(candidate: String) {
-        socket?.emit("ice-candidate", candidate)
+        if (socket?.connected() == true) {
+            socket?.emit("ice-candidate", candidate)
+        }
+    }
+
+    fun sendStopVoice() {
+        if (socket?.connected() == true) {
+            socket?.emit("stop-voice")
+            addLog("Stop Voice Sent")
+        }
+    }
+
+    fun addLog(logEntry: String) {
+        _socketUiState.update { currentState ->
+            currentState.copy(
+                eventLog = (listOf(withTimestamp(logEntry)) + currentState.eventLog).take(MAX_LOG_ENTRIES)
+            )
+        }
     }
 
     private fun updateState(isConnected: Boolean, status: String, detail: String, logEntry: String) {
