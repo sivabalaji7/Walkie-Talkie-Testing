@@ -3,181 +3,215 @@ package com.example.walkietalkieapp.socket
 import android.util.Log
 import io.socket.client.IO
 import io.socket.client.Socket
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import org.json.JSONObject
+import java.net.URISyntaxException
 
-private const val TAG = "SocketManager"
-// Permanent Railway Server URL
-private const val SERVER_URL = "https://walkie-talkie-app-server-production.up.railway.app"
-private const val MAX_LOG_ENTRIES = 20
+data class RoomMember(
+    val id: String,
+    val username: String,
+    val isSpeaking: Boolean
+)
 
 data class SocketUiState(
     val isConnected: Boolean = false,
     val status: String = "Disconnected",
     val detail: String = "Ready to connect.",
-    val eventLog: List<String> = listOf("App Started")
+    val eventLog: List<String> = listOf("App Started"),
+    val roomId: String = "",
+    val username: String = "",
+    val roomMembers: List<RoomMember> = emptyList(),
+    val voiceLinkState: String = "IDLE",
+    val lastActivityTimestamp: Long = System.currentTimeMillis(),
+    val lastSpeakerName: String? = null,
+    val lastSpeakerTimestamp: Long = 0
 )
 
 object SocketManager {
-    @Volatile
+    private const val TAG = "SocketManager"
+    private const val SERVER_URL = "https://walkie-talkie-app-server-production.up.railway.app"
+
     private var socket: Socket? = null
     private var signalingListener: SignalingListener? = null
 
     private val _socketUiState = MutableStateFlow(SocketUiState())
     val socketUiState: StateFlow<SocketUiState> = _socketUiState.asStateFlow()
 
+    private val _events = MutableSharedFlow<String>(extraBufferCapacity = 10)
+    val events = _events.asSharedFlow()
+
     fun setSignalingListener(listener: SignalingListener?) {
-        signalingListener = listener
+        this.signalingListener = listener
     }
 
     fun initialize() {
         if (socket != null) return
-
-        synchronized(this) {
-            if (socket != null) return@synchronized
-
+        try {
             val opts = IO.Options().apply {
+                // Allow both for better compatibility
+                transports = arrayOf("polling", "websocket") 
                 forceNew = true
                 reconnection = true
                 reconnectionDelay = 1000
-                timeout = 20000
-                // Using websocket only for better stability on Railway
-                transports = arrayOf("websocket")
+                timeout = 10000
             }
 
-            runCatching { IO.socket(SERVER_URL, opts) }
-                .onSuccess { createdSocket ->
-                    socket = createdSocket
+            socket = IO.socket(SERVER_URL, opts).apply {
+                on(Socket.EVENT_CONNECT) {
+                    _socketUiState.update { it.copy(isConnected = true, status = "ONLINE", detail = "Connected") }
+                    addLog("Connected to Server")
                     
-                    createdSocket.on(Socket.EVENT_CONNECT) {
-                        Log.d(TAG, "Socket connected")
-                        updateState(true, "ONLINE", "Ready for Walkie-Talkie", "Connected to Server")
-                    }
-
-                    createdSocket.on(Socket.EVENT_CONNECT_ERROR) { args ->
-                        val err = args.joinToString { it.toString() }
-                        Log.e(TAG, "Socket Connect Error: $err")
-                        updateState(false, "OFFLINE", "Retry: $err", "Connect Error")
-                    }
-
-                    createdSocket.on(Socket.EVENT_DISCONNECT) {
-                        Log.d(TAG, "Socket disconnected")
-                        updateState(false, "OFFLINE", "Disconnected", "Disconnected")
-                    }
-
-                    createdSocket.on("message") { args ->
-                        val msg = args.firstOrNull()?.toString().orEmpty()
-                        addLog("Msg: $msg")
-                    }
-
-                    createdSocket.on("offer") { args ->
-                        val sdp = args.firstOrNull()?.toString().orEmpty()
-                        Log.d(TAG, "Offer received")
-                        updateState(true, "ONLINE", "Voice Incoming...", "Offer Received")
-                        signalingListener?.onOfferReceived(sdp)
-                    }
-
-                    createdSocket.on("answer") { args ->
-                        val sdp = args.firstOrNull()?.toString().orEmpty()
-                        Log.d(TAG, "Answer received")
-                        updateState(true, "ONLINE", "Voice Connected", "Answer Received")
-                        signalingListener?.onAnswerReceived(sdp)
-                    }
-
-                    createdSocket.on("ice-candidate") { args ->
-                        val candidate = args.firstOrNull()?.toString().orEmpty()
-                        signalingListener?.onIceCandidateReceived(candidate)
-                    }
-
-                    createdSocket.on("stop-voice") {
-                        Log.d(TAG, "Stop voice signal received")
-                        addLog("Remote user stopped talking")
-                        signalingListener?.onCallEnded()
+                    val state = _socketUiState.value
+                    if (state.roomId.isNotEmpty()) {
+                        emitJoin(state.roomId, state.username)
                     }
                 }
-                .onFailure { e ->
-                    Log.e(TAG, "Socket Creation Failed", e)
-                    addLog("Init Error: ${e.message}")
+
+                on(Socket.EVENT_DISCONNECT) {
+                    _socketUiState.update { it.copy(isConnected = false, status = "OFFLINE", detail = "Disconnected") }
+                    addLog("Connection Lost")
                 }
-        }
+
+                on(Socket.EVENT_CONNECT_ERROR) { args ->
+                    val err = args.firstOrNull()?.toString() ?: "Connection Error"
+                    Log.e(TAG, "Connect Error: $err")
+                    // Adding "Retry" to trigger the Yellow UI state in MainActivity
+                    _socketUiState.update { it.copy(status = "OFFLINE", detail = "Retrying: $err") }
+                }
+
+                on("room-update") { args ->
+                    val data = args.firstOrNull() as? org.json.JSONArray ?: return@on
+                    val members = mutableListOf<RoomMember>()
+                    for (i in 0 until data.length()) {
+                        val obj = data.getJSONObject(i)
+                        members.add(RoomMember(obj.getString("id"), obj.getString("username"), obj.getBoolean("isSpeaking")))
+                    }
+                    
+                    val currentlySpeaking = members.find { it.isSpeaking }
+                    _socketUiState.update { state ->
+                        var newState = state.copy(roomMembers = members)
+                        if (currentlySpeaking != null) {
+                            newState = newState.copy(
+                                lastSpeakerName = currentlySpeaking.username,
+                                lastSpeakerTimestamp = System.currentTimeMillis()
+                            )
+                        }
+                        newState
+                    }
+                }
+
+                on("user-joined") { args ->
+                    val data = args.firstOrNull()
+                    val username = when (data) {
+                        is JSONObject -> data.optString("username", "Someone")
+                        is String -> data
+                        else -> "Someone"
+                    }
+                    val msg = "$username joined the squad"
+                    addLog(msg)
+                    _events.tryEmit(msg)
+                    updateActivity()
+                }
+
+                on("user-left") { args ->
+                    val data = args.firstOrNull()
+                    val username = when (data) {
+                        is JSONObject -> data.optString("username", "Someone")
+                        is String -> data
+                        else -> "Someone"
+                    }
+                    val msg = "$username left the squad"
+                    addLog(msg)
+                    _events.tryEmit(msg)
+                    updateActivity()
+                }
+
+                on("offer") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@on
+                    signalingListener?.onOfferReceived(data.optString("sdp"))
+                    signalingListener?.onCallStarted()
+                }
+
+                on("answer") { args ->
+                    val data = args.firstOrNull() as? JSONObject ?: return@on
+                    signalingListener?.onAnswerReceived(data.optString("sdp"))
+                    signalingListener?.onCallStarted()
+                }
+
+                on("ice-candidate") { args ->
+                    signalingListener?.onIceCandidateReceived(args.firstOrNull()?.toString() ?: "")
+                }
+
+                on("stop-voice") { signalingListener?.onCallEnded() }
+            }
+        } catch (e: URISyntaxException) { Log.e(TAG, "Socket init failed", e) }
     }
 
     fun connect() {
-        initialize()
-        Log.d(TAG, "Attempting to connect to: $SERVER_URL")
-        addLog("Connecting to server...")
-        socket?.connect()
-    }
-
-    fun disconnect() {
-        Log.d(TAG, "Disconnecting socket")
-        socket?.disconnect()
-    }
-
-    fun sendMessage(msg: String) {
-        if (socket?.connected() == true) {
-            socket?.emit("message", msg)
-            addLog("Sent: $msg")
+        if (socket?.connected() == false) {
+            addLog("Attempting connection...")
+            socket?.connect()
         }
     }
 
-    fun sendOffer(sdp: String) {
+    fun disconnect() { socket?.disconnect() }
+
+    fun createRoom(username: String) {
+        val code = (1..6).map { (('A'..'Z') + ('0'..'9')).random() }.joinToString("")
+        joinRoom(code, username)
+    }
+
+    fun joinRoom(roomId: String, username: String) {
+        if (roomId.isEmpty()) {
+            val oldRoomId = _socketUiState.value.roomId
+            if (oldRoomId.isNotEmpty()) {
+                socket?.emit("leave-room", JSONObject().apply { put("roomId", oldRoomId) })
+            }
+            _socketUiState.update { it.copy(roomId = "", roomMembers = emptyList()) }
+            return
+        }
+        
+        val cleanId = roomId.trim().uppercase()
+        _socketUiState.update { it.copy(roomId = cleanId, username = username) }
+        
         if (socket?.connected() == true) {
-            socket?.emit("offer", sdp)
-            addLog("Offer Sent")
+            emitJoin(cleanId, username)
         } else {
-            addLog("Err: Not connected (Offer)")
+            addLog("Queued Join: $cleanId")
+            connect()
         }
     }
 
-    fun sendAnswer(sdp: String) {
-        if (socket?.connected() == true) {
-            socket?.emit("answer", sdp)
-            addLog("Answer Sent")
-        } else {
-            addLog("Err: Not connected (Answer)")
+    private fun emitJoin(roomId: String, username: String) {
+        val data = JSONObject().apply {
+            put("roomId", roomId)
+            put("username", username)
         }
+        socket?.emit("join-room", data)
+        addLog("Joining Squad: $roomId")
     }
 
-    fun sendIceCandidate(candidate: String) {
-        if (socket?.connected() == true) {
-            socket?.emit("ice-candidate", candidate)
-        }
+    fun sendOffer(sdp: String) { socket?.emit("offer", JSONObject().apply { put("sdp", sdp) }) }
+    fun sendAnswer(sdp: String) { socket?.emit("answer", JSONObject().apply { put("sdp", sdp) }) }
+    fun sendIceCandidate(c: String) { try { socket?.emit("ice-candidate", JSONObject(c)) } catch(e:Exception) { socket?.emit("ice-candidate", c) } }
+    fun sendStopVoice() { socket?.emit("stop-voice") }
+
+    fun updateVoiceLinkState(state: String) {
+        _socketUiState.update { it.copy(voiceLinkState = state) }
     }
 
-    fun sendStopVoice() {
-        if (socket?.connected() == true) {
-            socket?.emit("stop-voice")
-            addLog("Stop Voice Sent")
-        }
+    fun updateActivity() {
+        _socketUiState.update { it.copy(lastActivityTimestamp = System.currentTimeMillis()) }
     }
 
-    fun addLog(logEntry: String) {
-        _socketUiState.update { currentState ->
-            currentState.copy(
-                eventLog = (listOf(withTimestamp(logEntry)) + currentState.eventLog).take(MAX_LOG_ENTRIES)
-            )
-        }
-    }
-
-    private fun updateState(isConnected: Boolean, status: String, detail: String, logEntry: String) {
-        _socketUiState.update { currentState ->
-            currentState.copy(
-                isConnected = isConnected,
-                status = status,
-                detail = detail,
-                eventLog = (listOf(withTimestamp(logEntry)) + currentState.eventLog).take(MAX_LOG_ENTRIES)
-            )
-        }
-    }
-
-    private fun withTimestamp(message: String): String {
-        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-        return "[$timestamp] $message"
+    fun addLog(msg: String) {
+        val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        val newLogs = listOf("[$time] $msg") + _socketUiState.value.eventLog
+        _socketUiState.update { it.copy(eventLog = newLogs.take(20)) }
     }
 }

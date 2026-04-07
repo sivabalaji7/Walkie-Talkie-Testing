@@ -9,6 +9,7 @@ import com.example.walkietalkieapp.socket.SocketManager
 import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
+import java.nio.ByteBuffer
 
 private const val TAG = "WebRTCManager"
 
@@ -22,11 +23,16 @@ class WebRTCManager(private val context: Context) {
     private var localAudioTrack: AudioTrack? = null
     private var audioDeviceModule: JavaAudioDeviceModule? = null
     
+    // Voice Buffer for Replay
+    private val voiceBuffer = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+    private val MAX_BUFFER_FRAMES = 500 // ~10 seconds at 20ms frames
+    
     private var isInitialized = false
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
     
     // Connection state tracking
     private var iceConnectionState = PeerConnection.IceConnectionState.NEW
+    var onStateChange: ((PeerConnection.IceConnectionState) -> Unit)? = null
 
     companion object {
         private const val TURN_SERVER = "turn:openrelay.metered.ca:80"
@@ -54,11 +60,22 @@ class WebRTCManager(private val context: Context) {
         try {
             initializeLibrary(context)
             
-            // Forcing software noise suppression and echo cancellation for better quality
+            // Optimized audio device module for VoIP
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
-                .setUseHardwareAcousticEchoCanceler(false)
-                .setUseHardwareNoiseSuppressor(false)
+                .setUseHardwareAcousticEchoCanceler(true)
+                .setUseHardwareNoiseSuppressor(true)
+                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setUseStereoInput(false)
+                .setUseStereoOutput(false)
                 .createAudioDeviceModule()
+
+            // Ensure speaker is the default output for Walkie Talkie
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager?.isSpeakerphoneOn = true
+
+            // Ensure not muted
+            audioDeviceModule?.setMicrophoneMute(false)
+            audioDeviceModule?.setSpeakerMute(false)
 
             peerConnectionFactory = PeerConnectionFactory.builder()
                 .setAudioDeviceModule(audioDeviceModule)
@@ -79,20 +96,22 @@ class WebRTCManager(private val context: Context) {
         if (!isInitialized) init()
         try {
             if (localAudioTrack == null) {
-                // Task 1: Comprehensive audio constraints for quality
+                // High-quality audio constraints for Walkie Talkie
                 val audioConstraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseReduction", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
                 }
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
-                Log.d(TAG, "Audio constraints applied")
-                localAudioTrack = peerConnectionFactory?.createAudioTrack("101", audioSource)
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
             }
-            localAudioTrack?.setEnabled(false)
-            Log.d(TAG, "Audio tracks initialized")
+            // Keep enabled to show microphone icon when session is active
+            localAudioTrack?.setEnabled(true)
+            Log.d(TAG, "Local audio track initialized with pro-audio processing")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
         }
@@ -106,17 +125,26 @@ class WebRTCManager(private val context: Context) {
     fun createPeerConnection() {
         if (peerConnectionFactory == null) return
         
-        if (peerConnection != null) {
-            if (isConnected()) return
-            peerConnection?.dispose()
+        // If already connected or connecting, don't recreate unless necessary
+        if (peerConnection != null && (isConnected() || iceConnectionState == PeerConnection.IceConnectionState.CHECKING)) {
+            Log.d(TAG, "PeerConnection already active, skipping creation")
+            return
         }
         
+        peerConnection?.dispose()
+        peerConnection = null
         pendingIceCandidates.clear()
         
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder(TURN_SERVER)
+                .setUsername(TURN_USERNAME)
+                .setPassword(TURN_PASSWORD)
+                .createIceServer(),
+            // Adding an extra fallback TURN server
+            PeerConnection.IceServer.builder("turn:turn.metered.ca:80")
                 .setUsername(TURN_USERNAME)
                 .setPassword(TURN_PASSWORD)
                 .createIceServer()
@@ -125,7 +153,9 @@ class WebRTCManager(private val context: Context) {
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 2
+        rtcConfig.iceCandidatePoolSize = 10 // Increased for faster connection
+        rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+        rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         
         peerConnection = peerConnectionFactory?.createPeerConnection(
             rtcConfig,
@@ -145,13 +175,28 @@ class WebRTCManager(private val context: Context) {
                 }
                 
                 override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
-                override fun onSignalingChange(newState: PeerConnection.SignalingState) {}
+                override fun onSignalingChange(newState: PeerConnection.SignalingState) {
+                    Log.d(TAG, "Signaling State: $newState")
+                    SocketManager.addLog("Signaling: $newState")
+                }
                 override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
                     Log.d(TAG, "ICE Connection: $newState")
+                    SocketManager.addLog("ICE: $newState")
                     iceConnectionState = newState
+                    mainHandler.post { onStateChange?.invoke(newState) }
+                    
+                    if (newState == PeerConnection.IceConnectionState.CONNECTED) {
+                        SocketManager.addLog("VOICE LINK READY")
+                    } else if (newState == PeerConnection.IceConnectionState.FAILED) {
+                        SocketManager.addLog("Network handover...")
+                        mainHandler.post { restartIce() }
+                    }
                 }
                 override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-                override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {}
+                override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {
+                    Log.d(TAG, "ICE Gathering: $newState")
+                    SocketManager.addLog("Gathering: $newState")
+                }
                 override fun onAddStream(stream: MediaStream) {}
                 override fun onRemoveStream(stream: MediaStream) {}
                 override fun onDataChannel(dc: DataChannel) {}
@@ -160,8 +205,20 @@ class WebRTCManager(private val context: Context) {
                     mainHandler.post {
                         val track = receiver.track()
                         if (track is AudioTrack) {
-                            Log.d(TAG, "Remote audio track received")
+                            Log.d(TAG, "Remote audio track received and enabled")
                             track.setEnabled(true)
+                            track.setVolume(1.0)
+                            track.addSink { buffer, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames, timestamp ->
+                                val data = ByteArray(buffer.remaining())
+                                buffer.get(data)
+                                synchronized(voiceBuffer) {
+                                    voiceBuffer.add(data)
+                                    if (voiceBuffer.size > MAX_BUFFER_FRAMES) {
+                                        voiceBuffer.removeAt(0)
+                                    }
+                                }
+                            }
+                            SocketManager.addLog("Voice Stream Active")
                         }
                     }
                 }
@@ -177,10 +234,16 @@ class WebRTCManager(private val context: Context) {
     // Task 4: Safe audio control methods
     fun startTalking() {
         try {
+            // Re-initialize audio module if needed
+            if (audioDeviceModule == null) initialize()
+            
             localAudioTrack?.setEnabled(true)
-            Log.d(TAG, "Audio enabled")
+            // Explicitly start audio recording
+            audioDeviceModule?.setMicrophoneMute(false)
+            
+            Log.d(TAG, "Audio track enabled and microphone unmuted")
         } catch (e: Exception) {
-            Log.e(TAG, "Error enabling audio: ${e.message}")
+            Log.e(TAG, "Error starting audio: ${e.message}")
         }
     }
 
@@ -205,43 +268,68 @@ class WebRTCManager(private val context: Context) {
     }
     
     fun createOffer() {
-        val pc = peerConnection ?: run {
+        Log.d(TAG, "Creating offer")
+        
+        if (peerConnection == null) {
             createPeerConnection()
-            peerConnection ?: return
         }
+        
+        startTalking() // Force microphone active
+        
+        val pc = peerConnection ?: return
+        
+        // If we already have a remote description, we might just need to renegotiate or we are already linked
+        if (pc.signalingState() == PeerConnection.SignalingState.STABLE && isConnected()) {
+            Log.d(TAG, "Already connected, skipping offer creation")
+            return
+        }
+
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         }
+        
         pc.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                val optimizedSdp = preferLowLatencyOpus(sdp.description)
+                // Optimize for low latency and high quality walkie talkie audio
+                val optimizedSdp = sdp.description
+                    .replace("useinbandfec=1", "useinbandfec=1;minptime=10;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0")
                 val newSdp = SessionDescription(sdp.type, optimizedSdp)
+                
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
+                        Log.d(TAG, "Local offer set, sending to socket")
                         SocketManager.sendOffer(newSdp.description)
                     }
                 }, newSdp)
             }
         }, constraints)
     }
-    
-    private fun preferLowLatencyOpus(sdp: String): String {
-        return sdp.replace("useinbandfec=1", "useinbandfec=1;minptime=10;cbr=1;maxaveragebitrate=16000")
-    }
-    
+
     fun handleOffer(sdp: String) {
-        if (peerConnection == null) createPeerConnection()
-        val pc = peerConnection ?: return
+        Log.d(TAG, "Handling remote offer")
         
+        if (peerConnection == null) {
+            createPeerConnection()
+        }
+        
+        startTalking() // Enable mic to respond
+        
+        val pc = peerConnection ?: return
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
+        
         pc.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
+                Log.d(TAG, "Remote offer set, creating answer")
                 createAnswer()
-                drainPendingCandidates()
+                // VERY IMPORTANT: Drain candidates ONLY after remote description is set
+                mainHandler.post { drainPendingCandidates() }
+            }
+            override fun onSetFailure(error: String?) {
+                Log.e(TAG, "Failed to set remote offer: $error")
             }
         }, sessionDescription)
     }
-    
+
     private fun createAnswer() {
         val pc = peerConnection ?: return
         val constraints = MediaConstraints().apply {
@@ -249,23 +337,26 @@ class WebRTCManager(private val context: Context) {
         }
         pc.createAnswer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                val optimizedSdp = preferLowLatencyOpus(sdp.description)
-                val newSdp = SessionDescription(sdp.type, optimizedSdp)
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        SocketManager.sendAnswer(newSdp.description)
+                        SocketManager.sendAnswer(sdp.description)
                     }
-                }, newSdp)
+                }, sdp)
             }
         }, constraints)
     }
-    
+
     fun handleAnswer(sdp: String) {
         val pc = peerConnection ?: return
+        Log.d(TAG, "Handling remote answer")
         val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, sdp)
         pc.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
-                drainPendingCandidates()
+                Log.d(TAG, "Remote answer set successfully")
+                mainHandler.post { drainPendingCandidates() }
+            }
+            override fun onSetFailure(error: String?) {
+                Log.e(TAG, "Failed to set remote answer: $error")
             }
         }, sessionDescription)
     }
@@ -300,16 +391,97 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
+    fun softReset() {
+        Log.d(TAG, "Soft reset: Muting but keeping peer connection if stable")
+        stopTalking()
+        // Instead of disposing immediately, we can keep the connection for a few seconds 
+        // to avoid renegotiation overhead for rapid-fire PTT.
+        // For now, we keep it as is but avoid full disposal if we want "Persistent" link.
+        // peerConnection?.dispose() 
+        // peerConnection = null
+    }
+
+    fun prepareConnection() {
+        Log.d(TAG, "Pre-warming WebRTC connection")
+        if (!isInitialized) initialize()
+        createPeerConnection()
+    }
+
+    fun replayLastTransmissions() {
+        if (voiceBuffer.isEmpty()) {
+            SocketManager.addLog("No voice data to replay")
+            return
+        }
+        
+        val bufferCopy = synchronized(voiceBuffer) { voiceBuffer.toList() }
+        SocketManager.addLog("Replaying last 10s...")
+        
+        Thread {
+            try {
+                val sampleRate = 48000 // standard for WebRTC audio
+                val minBufferSize = android.media.AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    android.media.AudioFormat.CHANNEL_OUT_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT
+                )
+                
+                val audioTrack = android.media.AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    android.media.AudioFormat.CHANNEL_OUT_MONO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT,
+                    minBufferSize.coerceAtLeast(bufferCopy.sumOf { it.size }),
+                    android.media.AudioTrack.MODE_STREAM
+                )
+                
+                audioTrack.play()
+                for (data in bufferCopy) {
+                    audioTrack.write(data, 0, data.size)
+                }
+                audioTrack.stop()
+                audioTrack.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Replay failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    fun restartIce() {
+        Log.d(TAG, "Initiating ICE Restart")
+        val pc = peerConnection ?: return
+        
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        }
+        
+        pc.createOffer(object : SimpleSdpObserver() {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                // Keep optimizations during restart
+                val optimizedSdp = sdp.description
+                    .replace("useinbandfec=1", "useinbandfec=1;minptime=10;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0")
+                val newSdp = SessionDescription(sdp.type, optimizedSdp)
+                
+                pc.setLocalDescription(object : SimpleSdpObserver() {
+                    override fun onSetSuccess() {
+                        Log.d(TAG, "ICE Restart offer sent")
+                        SocketManager.sendOffer(newSdp.description)
+                    }
+                }, newSdp)
+            }
+        }, constraints)
+    }
+
     fun cleanup() {
-        stopAudio()
-        peerConnection?.dispose()
-        peerConnection = null
+        softReset()
         localAudioTrack?.dispose()
         localAudioTrack = null
         audioSource?.dispose()
         audioSource = null
         peerConnectionFactory?.dispose()
         peerConnectionFactory = null
+        audioDeviceModule?.release()
+        audioDeviceModule = null
         isInitialized = false
     }
 
