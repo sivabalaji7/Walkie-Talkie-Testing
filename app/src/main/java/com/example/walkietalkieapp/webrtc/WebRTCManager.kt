@@ -81,7 +81,7 @@ class WebRTCManager(private val context: Context) {
                 .setAudioDeviceModule(audioDeviceModule)
                 .setOptions(PeerConnectionFactory.Options().apply {
                     disableEncryption = false
-                    disableNetworkMonitor = true
+                    disableNetworkMonitor = false
                 })
                 .createPeerConnectionFactory()
 
@@ -139,23 +139,33 @@ class WebRTCManager(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder(TURN_SERVER)
-                .setUsername(TURN_USERNAME)
-                .setPassword(TURN_PASSWORD)
+            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
+            
+            // TURN Servers (Relay for when direct connection fails)
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
                 .createIceServer(),
-            // Adding an extra fallback TURN server
-            PeerConnection.IceServer.builder("turn:turn.metered.ca:80")
-                .setUsername(TURN_USERNAME)
-                .setPassword(TURN_PASSWORD)
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
+                .createIceServer(),
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
                 .createIceServer()
         )
         
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 10 // Increased for faster connection
+        rtcConfig.iceCandidatePoolSize = 10 
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+        rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+        rtcConfig.iceTransportsType = PeerConnection.IceTransportsType.ALL
         
         peerConnection = peerConnectionFactory?.createPeerConnection(
             rtcConfig,
@@ -290,9 +300,9 @@ class WebRTCManager(private val context: Context) {
         
         pc.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                // Optimize for low latency and high quality walkie talkie audio
+                // Optimize for stability over high-latency links
                 val optimizedSdp = sdp.description
-                    .replace("useinbandfec=1", "useinbandfec=1;minptime=10;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0")
+                    .replace("useinbandfec=1", "useinbandfec=1;minptime=20;cbr=1;maxaveragebitrate=32000;stereo=0;sprop-stereo=0")
                 val newSdp = SessionDescription(sdp.type, optimizedSdp)
                 
                 pc.setLocalDescription(object : SimpleSdpObserver() {
