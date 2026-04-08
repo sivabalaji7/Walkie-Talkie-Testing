@@ -196,10 +196,34 @@ object SocketManager {
         addLog("Joining Squad: $roomId")
     }
 
-    fun sendOffer(sdp: String) { socket?.emit("offer", JSONObject().apply { put("sdp", sdp) }) }
-    fun sendAnswer(sdp: String) { socket?.emit("answer", JSONObject().apply { put("sdp", sdp) }) }
-    fun sendIceCandidate(c: String) { try { socket?.emit("ice-candidate", JSONObject(c)) } catch(e:Exception) { socket?.emit("ice-candidate", c) } }
-    fun sendStopVoice() { socket?.emit("stop-voice") }
+    fun sendOffer(sdp: String) { 
+        val roomId = _socketUiState.value.roomId
+        socket?.emit("offer", JSONObject().apply { 
+            put("sdp", sdp) 
+            put("roomId", roomId)
+        }) 
+    }
+    fun sendAnswer(sdp: String) { 
+        val roomId = _socketUiState.value.roomId
+        socket?.emit("answer", JSONObject().apply { 
+            put("sdp", sdp) 
+            put("roomId", roomId)
+        }) 
+    }
+    fun sendIceCandidate(c: String) { 
+        val roomId = _socketUiState.value.roomId
+        try { 
+            val json = JSONObject(c)
+            json.put("roomId", roomId)
+            socket?.emit("ice-candidate", json) 
+        } catch(e:Exception) { 
+            socket?.emit("ice-candidate", c) 
+        } 
+    }
+    fun sendStopVoice() { 
+        val roomId = _socketUiState.value.roomId
+        socket?.emit("stop-voice", JSONObject().apply { put("roomId", roomId) }) 
+    }
 
     fun updateVoiceLinkState(state: String) {
         _socketUiState.update { it.copy(voiceLinkState = state) }

@@ -34,6 +34,12 @@ class WebRTCManager(private val context: Context) {
     private var iceConnectionState = PeerConnection.IceConnectionState.NEW
     var onStateChange: ((PeerConnection.IceConnectionState) -> Unit)? = null
 
+    fun isFailed(): Boolean {
+        return iceConnectionState == PeerConnection.IceConnectionState.FAILED || 
+               iceConnectionState == PeerConnection.IceConnectionState.CLOSED ||
+               iceConnectionState == PeerConnection.IceConnectionState.DISCONNECTED
+    }
+
     companion object {
         private const val TURN_SERVER = "turn:openrelay.metered.ca:80"
         private const val TURN_USERNAME = "openrelayproject"
@@ -244,6 +250,10 @@ class WebRTCManager(private val context: Context) {
     // Task 4: Safe audio control methods
     fun startTalking() {
         try {
+            // Ensure audio focus and mode for communication
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager?.isSpeakerphoneOn = true
+            
             // Re-initialize audio module if needed
             if (audioDeviceModule == null) initialize()
             
@@ -277,25 +287,27 @@ class WebRTCManager(private val context: Context) {
         Log.d(TAG, "Push-to-Talk inactive")
     }
     
-    fun createOffer() {
-        Log.d(TAG, "Creating offer")
+    fun createOffer(isRestart: Boolean = false) {
+        Log.d(TAG, "Creating offer (restart=$isRestart)")
         
         if (peerConnection == null) {
             createPeerConnection()
         }
         
-        startTalking() // Force microphone active
+        startTalking() 
         
         val pc = peerConnection ?: return
         
-        // If we already have a remote description, we might just need to renegotiate or we are already linked
-        if (pc.signalingState() == PeerConnection.SignalingState.STABLE && isConnected()) {
+        if (!isRestart && pc.signalingState() == PeerConnection.SignalingState.STABLE && isConnected()) {
             Log.d(TAG, "Already connected, skipping offer creation")
             return
         }
 
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            if (isRestart) {
+                mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+            }
         }
         
         pc.createOffer(object : SimpleSdpObserver() {
@@ -375,10 +387,12 @@ class WebRTCManager(private val context: Context) {
         try {
             val json = JSONObject(candidateJson)
             val candidate = IceCandidate(
-                json.getString("sdpMid"),
-                json.getInt("sdpMLineIndex"),
-                json.getString("candidate")
+                json.optString("sdpMid", "0"),
+                json.optInt("sdpMLineIndex", 0),
+                json.optString("candidate", "")
             )
+            
+            if (candidate.sdp.isEmpty()) return
             
             val pc = peerConnection
             if (pc != null && pc.remoteDescription != null) {
