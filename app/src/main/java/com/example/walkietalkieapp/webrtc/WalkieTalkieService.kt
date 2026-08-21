@@ -11,12 +11,18 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.walkietalkieapp.MainActivity
 import com.example.walkietalkieapp.R
+import com.example.walkietalkieapp.socket.SignalingListener
+import com.example.walkietalkieapp.socket.SocketManager
 
-class WalkieTalkieService : Service() {
+private const val TAG = "WalkieTalkieService"
+
+class WalkieTalkieService : Service(), SignalingListener {
 
     private val binder = LocalBinder()
     var webRTCManager: WebRTCManager? = null
         private set
+
+    var onOthersSpeakingStateChange: ((Boolean) -> Unit)? = null
 
     companion object {
         private const val CHANNEL_ID = "WalkieTalkieServiceChannel"
@@ -30,10 +36,73 @@ class WalkieTalkieService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        SocketManager.setSignalingListener(this)
         webRTCManager = WebRTCManager(this).apply {
             init()
             initialize()
+            // Fire speaking indicators only when ICE is truly connected (audio is flowing)
+            onCallConnected = {
+                val speaker = SocketManager.socketUiState.value.lastSpeakerName
+                val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
+                    "$speaker is speaking..."
+                } else {
+                    "Squad member speaking..."
+                }
+                updateNotification(text)
+                onOthersSpeakingStateChange?.invoke(true)
+            }
+            onCallDisconnected = {
+                val roomId = SocketManager.socketUiState.value.roomId
+                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
+                updateNotification(text)
+                onOthersSpeakingStateChange?.invoke(false)
+            }
         }
+    }
+
+    override fun onOfferReceived(sdp: String) {
+        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        Log.d(TAG, "onOfferReceived in background service")
+        webRTCManager?.handleOffer(sdp)
+        val speaker = SocketManager.socketUiState.value.lastSpeakerName
+        val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
+            "$speaker is transmitting..."
+        } else {
+            "Incoming transmission..."
+        }
+        updateNotification(text)
+        // Don't call onOthersSpeakingStateChange here — wait for ICE CONNECTED via onCallConnected
+    }
+
+    override fun onAnswerReceived(sdp: String) {
+        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        Log.d(TAG, "onAnswerReceived in background service")
+        webRTCManager?.handleAnswer(sdp)
+        // Don't call onOthersSpeakingStateChange here — wait for ICE CONNECTED
+    }
+
+    override fun onIceCandidateReceived(candidate: String) {
+        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        webRTCManager?.handleIceCandidate(candidate)
+    }
+
+    override fun onCallStarted() {
+        // Now triggered only from start-voice socket event (local speaker indicator)
+        val speaker = SocketManager.socketUiState.value.lastSpeakerName
+        val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
+            "$speaker is speaking..."
+        } else {
+            "Squad member speaking..."
+        }
+        updateNotification(text)
+        onOthersSpeakingStateChange?.invoke(true)
+    }
+
+    override fun onCallEnded() {
+        val roomId = SocketManager.socketUiState.value.roomId
+        val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
+        updateNotification(text)
+        onOthersSpeakingStateChange?.invoke(false)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -55,10 +124,51 @@ class WalkieTalkieService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.d("WalkieTalkieService", "onTaskRemoved: App closed, stopping audio session and leaving squad")
+        SocketManager.leaveRoom()
+        SocketManager.disconnect()
+        webRTCManager?.cleanup()
+        webRTCManager = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    fun startVoiceSession(roomId: String = "") {
+        if (webRTCManager == null) {
+            webRTCManager = WebRTCManager(this).apply {
+                init()
+                initialize()
+            }
+        }
+        webRTCManager?.prepareConnection()
+        val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
+        updateNotification(text)
+    }
+
+    fun stopVoiceSession() {
+        Log.d("WalkieTalkieService", "stopVoiceSession called")
+        webRTCManager?.cleanup()
+        webRTCManager = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
+    }
 
     private fun createNotification(contentText: String): Notification {
         val notificationIntent = Intent(this, MainActivity::class.java)
@@ -103,7 +213,10 @@ class WalkieTalkieService : Service() {
     }
 
     override fun onDestroy() {
+        Log.d("WalkieTalkieService", "onDestroy: Cleaning up WebRTC manager")
+        SocketManager.setSignalingListener(null)
         webRTCManager?.cleanup()
+        webRTCManager = null
         super.onDestroy()
     }
 }

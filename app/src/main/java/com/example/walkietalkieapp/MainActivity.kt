@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.BatterySaver
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -128,22 +130,31 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         stopService(intent)
     }
 
+    private lateinit var sessionManager: com.example.walkietalkieapp.auth.SessionManager
+    private var isLoggedIn by mutableStateOf(false)
+    private var currentUsername by mutableStateOf("")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
         refreshAudioPermissionState()
         toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
         
-        // Ensure service is started to handle audio in background
-        if (hasAudioPermission) {
-            startService()
-        } else {
+        sessionManager = com.example.walkietalkieapp.auth.SessionManager.getInstance(this)
+        isLoggedIn = sessionManager.isLoggedIn()
+        currentUsername = sessionManager.getUsername()
+
+        if (!hasAudioPermission) {
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
         
         SocketManager.setSignalingListener(this)
         SocketManager.initialize()
         SocketManager.connect()
+
+        if (SocketManager.socketUiState.value.roomId.isNotEmpty()) {
+            startService()
+        }
 
         // Gyro Setup
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -152,7 +163,6 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         setContent {
             WalkieTalkieAppTheme(darkTheme = true) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0B)) {
-                    // Background for both screens
                     val socketUiState by SocketManager.socketUiState.collectAsState()
                     var isUserSpeakingLocal by remember { mutableStateOf(false) }
                     
@@ -161,18 +171,31 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
 
                     BackgroundComposable(activeSpeaking, gyroOffset)
 
-                    if (socketUiState.roomId.isEmpty()) {
-                        JoinCreateScreen(
-                            socketUiState = socketUiState,
-                            initialRoomId = deepLinkRoomId,
-                            onJoin = { r, u -> 
-                                deepLinkRoomId = "" // Clear after use
-                                SocketManager.joinRoom(r, u) 
+                    if (!isLoggedIn) {
+                        com.example.walkietalkieapp.ui.AuthScreen(
+                            onAuthSuccess = { userId, username ->
+                                sessionManager.saveSession(userId, username)
+                                currentUsername = username
+                                isLoggedIn = true
+                            }
+                        )
+                    } else if (socketUiState.roomId.isEmpty()) {
+                        RoomsDashboardScreen(
+                            currentUserId = sessionManager.getUserId(),
+                            currentUsername = currentUsername,
+                            onLogout = {
+                                sessionManager.clearSession()
+                                currentUsername = ""
+                                isLoggedIn = false
                             },
-                            onCreate = { u -> SocketManager.createRoom(u) }
+                            onJoinRoom = { roomCode, roomName ->
+                                deepLinkRoomId = "" // Clear after use
+                                enterSquad(roomCode, currentUsername, roomName)
+                            }
                         )
                     } else {
                         SquadScreen(
+                            currentUserId = sessionManager.getUserId(),
                             socketUiState = socketUiState,
                             isOthersSpeaking = isOthersSpeaking,
                             hasAudioPermission = hasAudioPermission,
@@ -207,7 +230,7 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
                     }
 
                     // Notification Queue Handler
-                    LaunchedEffect(notificationQueue.size) {
+                    LaunchedEffect(notificationQueue.size, notificationMessage) {
                         if (notificationQueue.isNotEmpty() && notificationMessage == null) {
                             notificationMessage = notificationQueue.removeAt(0)
                             delay(3000)
@@ -240,16 +263,6 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
                             }
                         }
                         lastMemberList = currentMembers
-                    }
-
-                    // Auto Idle Disconnect Logic
-                    LaunchedEffect(socketUiState.lastActivityTimestamp, isBatterySaverEnabled) {
-                        if (socketUiState.roomId.isNotEmpty() && isBatterySaverEnabled) {
-                            delay(5 * 60 * 1000) // 5 minutes inactivity
-                            SocketManager.addLog("Auto-disconnecting due to inactivity")
-                            SocketManager.joinRoom("", "")
-                            notificationQueue.add("Idle timeout: Left Squad")
-                        }
                     }
 
                     LaunchedEffect(isOthersSpeaking) {
@@ -405,6 +418,7 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SquadScreen(
+    currentUserId: String,
     socketUiState: SocketUiState,
     isOthersSpeaking: Boolean,
     hasAudioPermission: Boolean,
@@ -423,6 +437,20 @@ fun SquadScreen(
 ) {
     var isUserSpeaking by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    
+    var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        while(true) {
+            val pendingResult = com.example.walkietalkieapp.auth.SupabaseRoomManager.getPendingRequests(currentUserId)
+            if (pendingResult is com.example.walkietalkieapp.auth.RoomResult.Success) {
+                // Filter only requests for the CURRENT room!
+                pendingRequests = pendingResult.data.filter { it.roomId == socketUiState.roomId || it.roomCode == socketUiState.roomId }
+            }
+            kotlinx.coroutines.delay(5000)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -444,7 +472,7 @@ fun SquadScreen(
                 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "SQUAD: ${socketUiState.roomId}",
+                        text = if (socketUiState.roomName.isNotEmpty()) socketUiState.roomName.uppercase() else "SQUAD: ${socketUiState.roomId}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Black,
                         color = Color.White,
@@ -471,6 +499,34 @@ fun SquadScreen(
                     modifier = Modifier.background(Color.White.copy(alpha = 0.05f), CircleShape)
                 ) {
                     Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                }
+            }
+
+            if (pendingRequests.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFA000).copy(alpha = 0.2f)).border(1.dp, Color(0xFFFFA000), RoundedCornerShape(12.dp)).padding(12.dp)) {
+                    Text("${pendingRequests.size} Pending Request(s)", color = Color(0xFFFFA000), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    pendingRequests.forEach { req ->
+                        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(req.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                IconButton(onClick = { 
+                                    coroutineScope.launch { 
+                                        com.example.walkietalkieapp.auth.SupabaseRoomManager.approveRequest(req.roomId, req.userId)
+                                    }
+                                }, modifier = Modifier.size(28.dp).background(Color(0xFF4CAF50), CircleShape)) {
+                                    Icon(Icons.Default.Check, contentDescription = "Accept", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(onClick = { 
+                                    coroutineScope.launch { 
+                                        com.example.walkietalkieapp.auth.SupabaseRoomManager.declineRequest(req.roomId, req.userId)
+                                    }
+                                }, modifier = Modifier.size(28.dp).background(Color(0xFFF44336), CircleShape)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Decline", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -640,7 +696,7 @@ fun SquadScreen(
             visible = notificationMessage != null,
             enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 90.dp)
         ) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2124)),

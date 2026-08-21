@@ -24,6 +24,7 @@ data class SocketUiState(
     val detail: String = "Ready to connect.",
     val eventLog: List<String> = listOf("App Started"),
     val roomId: String = "",
+    val roomName: String = "",
     val username: String = "",
     val roomMembers: List<RoomMember> = emptyList(),
     val voiceLinkState: String = "IDLE",
@@ -34,7 +35,7 @@ data class SocketUiState(
 
 object SocketManager {
     private const val TAG = "SocketManager"
-    private const val SERVER_URL = "https://walkie-talkie-app-server-production.up.railway.app"
+    private const val SERVER_URL = "https://walkie-talkie-app-server.onrender.com"
 
     private var socket: Socket? = null
     private var signalingListener: SignalingListener? = null
@@ -85,6 +86,7 @@ object SocketManager {
                 }
 
                 on("room-update") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? org.json.JSONArray ?: return@on
                     val members = mutableListOf<RoomMember>()
                     for (i in 0 until data.length()) {
@@ -106,6 +108,7 @@ object SocketManager {
                 }
 
                 on("user-joined") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val username = when (data) {
                         is JSONObject -> data.optString("username", "Someone")
@@ -119,6 +122,7 @@ object SocketManager {
                 }
 
                 on("user-left") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val username = when (data) {
                         is JSONObject -> data.optString("username", "Someone")
@@ -128,26 +132,76 @@ object SocketManager {
                     val msg = "$username left the squad"
                     addLog(msg)
                     _events.tryEmit(msg)
+                    _socketUiState.update { state ->
+                        state.copy(
+                            roomMembers = state.roomMembers.filter { it.username != username }
+                        )
+                    }
                     updateActivity()
                 }
 
                 on("offer") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? JSONObject ?: return@on
+                    val sender = data.optString("username", "")
+                    if (sender.isNotEmpty()) {
+                        _socketUiState.update { state ->
+                            state.copy(
+                                lastSpeakerName = sender,
+                                lastSpeakerTimestamp = System.currentTimeMillis(),
+                                roomMembers = state.roomMembers.map { m ->
+                                    if (m.username == sender) m.copy(isSpeaking = true) else m
+                                }
+                            )
+                        }
+                    }
                     signalingListener?.onOfferReceived(data.optString("sdp"))
-                    signalingListener?.onCallStarted()
+                    // onCallStarted fires from ICE CONNECTED — not here
                 }
 
                 on("answer") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? JSONObject ?: return@on
                     signalingListener?.onAnswerReceived(data.optString("sdp"))
-                    signalingListener?.onCallStarted()
+                    // onCallStarted fires from ICE CONNECTED — not here
                 }
 
                 on("ice-candidate") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
                     signalingListener?.onIceCandidateReceived(args.firstOrNull()?.toString() ?: "")
                 }
 
-                on("stop-voice") { signalingListener?.onCallEnded() }
+                on("start-voice") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
+                    val data = args.firstOrNull()
+                    val sender = when (data) {
+                        is JSONObject -> data.optString("username", "")
+                        is String -> data
+                        else -> ""
+                    }
+                    if (sender.isNotEmpty()) {
+                        _socketUiState.update { state ->
+                            state.copy(
+                                lastSpeakerName = sender,
+                                lastSpeakerTimestamp = System.currentTimeMillis(),
+                                roomMembers = state.roomMembers.map { m ->
+                                    if (m.username == sender) m.copy(isSpeaking = true) else m
+                                }
+                            )
+                        }
+                    }
+                    signalingListener?.onCallStarted()
+                }
+
+                on("stop-voice") { 
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
+                    _socketUiState.update { state ->
+                        state.copy(
+                            roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }
+                        )
+                    }
+                    signalingListener?.onCallEnded() 
+                }
             }
         } catch (e: URISyntaxException) { Log.e(TAG, "Socket init failed", e) }
     }
@@ -159,25 +213,59 @@ object SocketManager {
         }
     }
 
-    fun disconnect() { socket?.disconnect() }
+    fun leaveRoom() {
+        val oldRoomId = _socketUiState.value.roomId
+        if (oldRoomId.isNotEmpty()) {
+            try {
+                socket?.emit("leave-room", JSONObject().apply { put("roomId", oldRoomId) })
+            } catch (e: Exception) {
+                Log.e(TAG, "Error emitting leave-room: ${e.message}")
+            }
+        }
+        _socketUiState.update { 
+            it.copy(
+                roomId = "", 
+                roomMembers = emptyList(), 
+                voiceLinkState = "IDLE", 
+                lastSpeakerName = null
+            ) 
+        }
+        addLog("Left Squad")
+    }
+
+    fun disconnect() {
+        leaveRoom()
+        try {
+            socket?.disconnect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting socket: ${e.message}")
+        }
+        _socketUiState.update { 
+            it.copy(
+                isConnected = false, 
+                status = "OFFLINE", 
+                detail = "Disconnected", 
+                roomId = "", 
+                roomMembers = emptyList(),
+                voiceLinkState = "IDLE",
+                lastSpeakerName = null
+            ) 
+        }
+    }
 
     fun createRoom(username: String) {
         val code = (1..6).map { (('A'..'Z') + ('0'..'9')).random() }.joinToString("")
         joinRoom(code, username)
     }
 
-    fun joinRoom(roomId: String, username: String) {
+    fun joinRoom(roomId: String, username: String, roomName: String = "") {
         if (roomId.isEmpty()) {
-            val oldRoomId = _socketUiState.value.roomId
-            if (oldRoomId.isNotEmpty()) {
-                socket?.emit("leave-room", JSONObject().apply { put("roomId", oldRoomId) })
-            }
-            _socketUiState.update { it.copy(roomId = "", roomMembers = emptyList()) }
+            leaveRoom()
             return
         }
         
         val cleanId = roomId.trim().uppercase()
-        _socketUiState.update { it.copy(roomId = cleanId, username = username) }
+        _socketUiState.update { it.copy(roomId = cleanId, roomName = if(roomName.isNotEmpty()) roomName else cleanId, username = username) }
         
         if (socket?.connected() == true) {
             emitJoin(cleanId, username)
@@ -198,9 +286,11 @@ object SocketManager {
 
     fun sendOffer(sdp: String) { 
         val roomId = _socketUiState.value.roomId
+        val username = _socketUiState.value.username
         socket?.emit("offer", JSONObject().apply { 
             put("sdp", sdp) 
             put("roomId", roomId)
+            put("username", username)
         }) 
     }
     fun sendAnswer(sdp: String) { 
@@ -220,9 +310,39 @@ object SocketManager {
             socket?.emit("ice-candidate", c) 
         } 
     }
+    fun sendStartVoice() { 
+        val roomId = _socketUiState.value.roomId
+        val username = _socketUiState.value.username
+        if (roomId.isNotEmpty()) {
+            socket?.emit("start-voice", JSONObject().apply { 
+                put("roomId", roomId) 
+                put("username", username)
+            }) 
+            _socketUiState.update { state ->
+                state.copy(
+                    roomMembers = state.roomMembers.map { m ->
+                        if (m.username == username) m.copy(isSpeaking = true) else m
+                    }
+                )
+            }
+        }
+    }
     fun sendStopVoice() { 
         val roomId = _socketUiState.value.roomId
-        socket?.emit("stop-voice", JSONObject().apply { put("roomId", roomId) }) 
+        val username = _socketUiState.value.username
+        if (roomId.isNotEmpty()) {
+            socket?.emit("stop-voice", JSONObject().apply { 
+                put("roomId", roomId) 
+                put("username", username)
+            }) 
+            _socketUiState.update { state ->
+                state.copy(
+                    roomMembers = state.roomMembers.map { m ->
+                        if (m.username == username) m.copy(isSpeaking = false) else m
+                    }
+                )
+            }
+        }
     }
 
     fun updateVoiceLinkState(state: String) {
