@@ -64,10 +64,7 @@ fun RoomsDashboardScreen(
     }
 
     LaunchedEffect(Unit) {
-        while (true) {
-            refreshData()
-            kotlinx.coroutines.delay(5000)
-        }
+        refreshData()
     }
 
     Scaffold(
@@ -94,11 +91,19 @@ fun RoomsDashboardScreen(
                     Text(text = currentUsername, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
 
-                IconButton(
-                    onClick = onLogout,
-                    modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF1E2126)).border(1.dp, Color(0xFF2E333D), CircleShape)
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Log Out", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(
+                        onClick = { refreshData() },
+                        modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF1E2126)).border(1.dp, Color(0xFF2E333D), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(
+                        onClick = onLogout,
+                        modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF1E2126)).border(1.dp, Color(0xFF2E333D), CircleShape)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Log Out", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         },

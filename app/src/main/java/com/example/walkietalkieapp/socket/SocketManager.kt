@@ -143,18 +143,6 @@ object SocketManager {
                 on("offer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? JSONObject ?: return@on
-                    val sender = data.optString("username", "")
-                    if (sender.isNotEmpty()) {
-                        _socketUiState.update { state ->
-                            state.copy(
-                                lastSpeakerName = sender,
-                                lastSpeakerTimestamp = System.currentTimeMillis(),
-                                roomMembers = state.roomMembers.map { m ->
-                                    if (m.username == sender) m.copy(isSpeaking = true) else m
-                                }
-                            )
-                        }
-                    }
                     signalingListener?.onOfferReceived(data.optString("sdp"))
                     // onCallStarted fires from ICE CONNECTED — not here
                 }
