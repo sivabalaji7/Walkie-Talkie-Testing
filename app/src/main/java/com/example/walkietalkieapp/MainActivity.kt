@@ -216,7 +216,7 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
                             socketUiState = socketUiState,
                             isOthersSpeaking = isOthersSpeaking,
                             hasAudioPermission = hasAudioPermission,
-                            onRequestPermission = { audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                            onRequestPermission = { permissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) },
                             onStartTalk = {
                                 isUserSpeakingLocal = true
                                 startPushToTalk()

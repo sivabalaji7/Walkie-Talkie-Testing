@@ -1,4 +1,4 @@
-﻿package com.example.walkietalkieapp.auth
+package com.example.walkietalkieapp.auth
 
 import android.os.Handler
 import android.os.Looper
@@ -15,7 +15,7 @@ object SupabaseRealtimeManager {
     private const val SUPABASE_URL = "https://crlfqcrhsjybrebbbaww.supabase.co"
     private const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY"
 
-    private val wsUrl = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=&vsn=1.0.0"
+    private val wsUrl = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=" + SUPABASE_ANON_KEY + "&vsn=1.0.0"
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -58,44 +58,44 @@ object SupabaseRealtimeManager {
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Supabase Realtime connected!")
                 isConnected = true
                 mainHandler.post(heartbeatRunnable)
-                joinRealtimeChannels(ws)
+                joinRealtimeChannels(webSocket)
             }
 
-            override fun onMessage(ws: WebSocket, text: String) {
+            override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
                     val json = JSONObject(text)
                     val event = json.optString("event")
                     if (event == "postgres_changes") {
-                        Log.d(TAG, "Postgres change received: ")
+                        Log.d(TAG, "Postgres change received: $text")
                         notifyListeners()
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error parsing realtime message: ")
+                    Log.e(TAG, "Error parsing realtime message: ${e.message}")
                 }
             }
 
-            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "Supabase Realtime closing:  / ")
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "Supabase Realtime closing: $code / $reason")
             }
 
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "Supabase Realtime closed:  / ")
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "Supabase Realtime closed: $code / $reason")
                 isConnected = false
-                webSocket = null
+                SupabaseRealtimeManager.webSocket = null
                 mainHandler.removeCallbacks(heartbeatRunnable)
                 if (shouldReconnect && listeners.isNotEmpty()) {
                     scheduleReconnect()
                 }
             }
 
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "Supabase Realtime error: ")
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e(TAG, "Supabase Realtime error: ${t.message}")
                 isConnected = false
-                webSocket = null
+                SupabaseRealtimeManager.webSocket = null
                 mainHandler.removeCallbacks(heartbeatRunnable)
                 if (shouldReconnect && listeners.isNotEmpty()) {
                     scheduleReconnect()
@@ -130,7 +130,7 @@ object SupabaseRealtimeManager {
             ws.send(joinPayload.toString())
             Log.d(TAG, "Subscribed to postgres_changes for rooms and room_members")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send join payload: ")
+            Log.e(TAG, "Failed to send join payload: ${e.message}")
         }
     }
 
@@ -140,11 +140,11 @@ object SupabaseRealtimeManager {
                 put("topic", "phoenix")
                 put("event", "heartbeat")
                 put("payload", JSONObject())
-                put("ref", "hb_")
+                put("ref", "hb_${System.currentTimeMillis()}")
             }
             webSocket?.send(heartbeat.toString())
         } catch (e: Exception) {
-            Log.e(TAG, "Heartbeat failed: ")
+            Log.e(TAG, "Heartbeat failed: ${e.message}")
         }
     }
 
@@ -162,7 +162,7 @@ object SupabaseRealtimeManager {
                 try {
                     listener.invoke()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error invoking listener: ")
+                    Log.e(TAG, "Error invoking listener: ${e.message}")
                 }
             }
         }
