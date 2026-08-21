@@ -34,6 +34,7 @@ class WebRTCManager(private val context: Context) {
     
     private var isInitialized = false
     private var isSessionActive = false
+    private var isTalking = false
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
     
     // Connection state tracking
@@ -271,6 +272,7 @@ class WebRTCManager(private val context: Context) {
     fun startTalking() {
         audioExecutor.execute {
             try {
+                isTalking = true
                 if (!isSessionActive) {
                     isSessionActive = true
                     if (!isInitialized) initialize()
@@ -292,6 +294,7 @@ class WebRTCManager(private val context: Context) {
     fun stopTalking() {
         audioExecutor.execute {
             try {
+                isTalking = false
                 localAudioTrack?.setEnabled(false)
                 audioDeviceModule?.setMicrophoneMute(true)
                 Log.d(TAG, "PTT released — mic disabled")
@@ -322,6 +325,10 @@ class WebRTCManager(private val context: Context) {
             if (peerConnection == null) {
                 createPeerConnection()
             }
+            
+            // Ensure WebRTC respects the exact PTT state right before generating SDP
+            localAudioTrack?.setEnabled(isTalking)
+            audioDeviceModule?.setMicrophoneMute(!isTalking)
             
             val pc = peerConnection ?: return@execute
             
