@@ -130,6 +130,15 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         stopService(intent)
     }
 
+    private fun enterSquad(roomId: String, username: String, roomName: String = "") {
+        if (hasAudioPermission) {
+            startService()
+        }
+        // Always join the room code provided by Supabase
+        SocketManager.joinRoom(roomId, username, roomName)
+        walkieTalkieService?.startVoiceSession(roomId)
+    }
+
     private lateinit var sessionManager: com.example.walkietalkieapp.auth.SessionManager
     private var isLoggedIn by mutableStateOf(false)
     private var currentUsername by mutableStateOf("")
