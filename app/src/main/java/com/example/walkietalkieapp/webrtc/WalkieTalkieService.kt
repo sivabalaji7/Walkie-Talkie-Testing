@@ -40,16 +40,10 @@ class WalkieTalkieService : Service(), SignalingListener {
         webRTCManager = WebRTCManager(this).apply {
             init()
             initialize()
-            // Fire speaking indicators only when ICE is truly connected (audio is flowing)
             onCallConnected = {
-                val speaker = SocketManager.socketUiState.value.lastSpeakerName
-                val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
-                    "$speaker is speaking..."
-                } else {
-                    "Squad member speaking..."
-                }
+                val roomId = SocketManager.socketUiState.value.roomId
+                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Voice Link Ready"
                 updateNotification(text)
-                onOthersSpeakingStateChange?.invoke(true)
             }
             onCallDisconnected = {
                 val roomId = SocketManager.socketUiState.value.roomId

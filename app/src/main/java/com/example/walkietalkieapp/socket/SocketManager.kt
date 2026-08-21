@@ -88,15 +88,23 @@ object SocketManager {
                 on("room-update") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? org.json.JSONArray ?: return@on
+                    val currentSpeakingUser = _socketUiState.value.roomMembers.find { it.isSpeaking }?.username
                     val members = mutableListOf<RoomMember>()
                     for (i in 0 until data.length()) {
                         val obj = data.getJSONObject(i)
-                        members.add(RoomMember(obj.getString("id"), obj.getString("username"), obj.getBoolean("isSpeaking")))
+                        val uname = obj.optString("username", "")
+                        if (uname.isNotBlank()) {
+                            val isSpk = if (currentSpeakingUser != null) uname.equals(currentSpeakingUser, ignoreCase = true) else obj.optBoolean("isSpeaking", false)
+                            members.add(RoomMember(obj.optString("id", uname), uname, isSpk))
+                        }
                     }
                     
-                    val currentlySpeaking = members.find { it.isSpeaking }
+                    // Deduplicate members strictly by username to avoid duplicate avatar glitches
+                    val deduped = members.distinctBy { it.username.trim().lowercase() }
+                    
+                    val currentlySpeaking = deduped.find { it.isSpeaking }
                     _socketUiState.update { state ->
-                        var newState = state.copy(roomMembers = members)
+                        var newState = state.copy(roomMembers = deduped)
                         if (currentlySpeaking != null) {
                             newState = newState.copy(
                                 lastSpeakerName = currentlySpeaking.username,
@@ -134,7 +142,7 @@ object SocketManager {
                     _events.tryEmit(msg)
                     _socketUiState.update { state ->
                         state.copy(
-                            roomMembers = state.roomMembers.filter { it.username != username }
+                            roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
                         )
                     }
                     updateActivity()
@@ -144,14 +152,12 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? JSONObject ?: return@on
                     signalingListener?.onOfferReceived(data.optString("sdp"))
-                    // onCallStarted fires from ICE CONNECTED — not here
                 }
 
                 on("answer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull() as? JSONObject ?: return@on
                     signalingListener?.onAnswerReceived(data.optString("sdp"))
-                    // onCallStarted fires from ICE CONNECTED — not here
                 }
 
                 on("ice-candidate") { args ->
@@ -173,7 +179,7 @@ object SocketManager {
                                 lastSpeakerName = sender,
                                 lastSpeakerTimestamp = System.currentTimeMillis(),
                                 roomMembers = state.roomMembers.map { m ->
-                                    if (m.username == sender) m.copy(isSpeaking = true) else m
+                                    if (m.username.equals(sender, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
                                 }
                             )
                         }

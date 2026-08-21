@@ -66,6 +66,15 @@ fun RoomsDashboardScreen(
 
     LaunchedEffect(Unit) {
         refreshData()
+        com.example.walkietalkieapp.auth.SupabaseRealtimeManager.addListener("dashboard") {
+            refreshData()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            com.example.walkietalkieapp.auth.SupabaseRealtimeManager.removeListener("dashboard")
+        }
     }
 
     Scaffold(

@@ -84,10 +84,11 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
     private var rotationSensor: Sensor? = null
     private var gyroOffset by mutableStateOf(androidx.compose.ui.geometry.Offset(0f, 0f))
 
-    private val audioPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            hasAudioPermission = isGranted
-            if (isGranted) initializeWebRTC()
+    private val permissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
+            val audioGranted = perms[Manifest.permission.RECORD_AUDIO] ?: false
+            hasAudioPermission = audioGranted
+            if (audioGranted) initializeWebRTC()
         }
 
     private val serviceConnection = object : ServiceConnection {
@@ -153,8 +154,15 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         isLoggedIn = sessionManager.isLoggedIn()
         currentUsername = sessionManager.getUsername()
 
-        if (!hasAudioPermission) {
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        val permsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val ungranted = permsToRequest.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (ungranted.isNotEmpty()) {
+            permissionsLauncher.launch(ungranted.toTypedArray())
         }
         
         SocketManager.setSignalingListener(this)
@@ -450,14 +458,26 @@ fun SquadScreen(
     var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        while(true) {
+    fun fetchPending() {
+        coroutineScope.launch {
             val pendingResult = com.example.walkietalkieapp.auth.SupabaseRoomManager.getPendingRequests(currentUserId)
             if (pendingResult is com.example.walkietalkieapp.auth.RoomResult.Success) {
                 // Filter only requests for the CURRENT room!
                 pendingRequests = pendingResult.data.filter { it.roomId == socketUiState.roomId || it.roomCode == socketUiState.roomId }
             }
-            kotlinx.coroutines.delay(5000)
+        }
+    }
+
+    LaunchedEffect(socketUiState.roomId) {
+        fetchPending()
+        com.example.walkietalkieapp.auth.SupabaseRealtimeManager.addListener("squad_pending_${socketUiState.roomId}") {
+            fetchPending()
+        }
+    }
+
+    DisposableEffect(socketUiState.roomId) {
+        onDispose {
+            com.example.walkietalkieapp.auth.SupabaseRealtimeManager.removeListener("squad_pending_${socketUiState.roomId}")
         }
     }
 
@@ -522,6 +542,7 @@ fun SquadScreen(
                                 IconButton(onClick = { 
                                     coroutineScope.launch { 
                                         com.example.walkietalkieapp.auth.SupabaseRoomManager.approveRequest(req.roomId, req.userId)
+                                        fetchPending()
                                     }
                                 }, modifier = Modifier.size(28.dp).background(Color(0xFF4CAF50), CircleShape)) {
                                     Icon(Icons.Default.Check, contentDescription = "Accept", tint = Color.White, modifier = Modifier.size(16.dp))
@@ -529,6 +550,7 @@ fun SquadScreen(
                                 IconButton(onClick = { 
                                     coroutineScope.launch { 
                                         com.example.walkietalkieapp.auth.SupabaseRoomManager.declineRequest(req.roomId, req.userId)
+                                        fetchPending()
                                     }
                                 }, modifier = Modifier.size(28.dp).background(Color(0xFFF44336), CircleShape)) {
                                     Icon(Icons.Default.Close, contentDescription = "Decline", tint = Color.White, modifier = Modifier.size(16.dp))
@@ -560,8 +582,11 @@ fun SquadScreen(
                         )
                     }
                 } else {
-                    items(members) { member ->
-                        MemberItem(member, onReplay = onReplay)
+                    items(members, key = { it.username }) { member ->
+                        val isMemberSpeaking = member.isSpeaking ||
+                            (isUserSpeaking && member.username.equals(socketUiState.username, ignoreCase = true)) ||
+                            (isOthersSpeaking && member.username.equals(socketUiState.lastSpeakerName, ignoreCase = true))
+                        MemberItem(member = member, isSpeaking = isMemberSpeaking, onReplay = onReplay)
                     }
                 }
             }
@@ -872,11 +897,11 @@ fun SettingsItem(icon: ImageVector, title: String, subtitle: String, color: Colo
 }
 
 @Composable
-fun MemberItem(member: RoomMember, onReplay: () -> Unit) {
+fun MemberItem(member: RoomMember, isSpeaking: Boolean, onReplay: () -> Unit) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     
     val speakingScale by animateFloatAsState(
-        targetValue = if (member.isSpeaking) 1.15f else 1f,
+        targetValue = if (isSpeaking) 1.15f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -905,8 +930,8 @@ fun MemberItem(member: RoomMember, onReplay: () -> Unit) {
                 modifier = Modifier
                     .size(64.dp)
                     .border(
-                        width = if (member.isSpeaking) 3.dp else 1.dp,
-                        color = if (member.isSpeaking) Color(0xFF4CAF50).copy(alpha = borderAlpha) else Color.White.copy(alpha = 0.1f),
+                        width = if (isSpeaking) 3.dp else 1.dp,
+                        color = if (isSpeaking) Color(0xFF4CAF50).copy(alpha = borderAlpha) else Color.White.copy(alpha = 0.1f),
                         shape = CircleShape
                     )
                     .padding(4.dp)
@@ -920,13 +945,13 @@ fun MemberItem(member: RoomMember, onReplay: () -> Unit) {
             ) {
                 Text(
                     text = member.username.take(1).uppercase(), 
-                    color = if(member.isSpeaking) Color.White else Color.White.copy(alpha = 0.5f), 
+                    color = if(isSpeaking) Color.White else Color.White.copy(alpha = 0.5f), 
                     fontWeight = FontWeight.ExtraBold, 
                     fontSize = 22.sp
                 )
                 
                 // Overlay "Playing" state if they are speaking
-                if (member.isSpeaking) {
+                if (isSpeaking) {
                     WaveformSmall()
                 }
             }
@@ -946,9 +971,9 @@ fun MemberItem(member: RoomMember, onReplay: () -> Unit) {
         
         Text(
             text = member.username, 
-            color = if(member.isSpeaking) Color.White else Color.White.copy(alpha = 0.5f), 
+            color = if(isSpeaking) Color.White else Color.White.copy(alpha = 0.5f), 
             fontSize = 12.sp, 
-            fontWeight = if(member.isSpeaking) FontWeight.Bold else FontWeight.Medium
+            fontWeight = if(isSpeaking) FontWeight.Bold else FontWeight.Medium
         )
     }
 }
@@ -1062,11 +1087,17 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
                     }
                 }
                 "OTHERS" -> {
+                    val speakerName = socketUiState.lastSpeakerName?.trim()?.uppercase()
+                    val displayText = if (!speakerName.isNullOrBlank() && speakerName != socketUiState.username.uppercase()) {
+                        "$speakerName IS SPEAKING"
+                    } else {
+                        "SQUAD MEMBER SPEAKING"
+                    }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         PulsingDot(Color(0xFFF44336))
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "SQUAD MEMBER TALKING",
+                            displayText,
                             color = Color(0xFFF44336),
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 15.sp,
