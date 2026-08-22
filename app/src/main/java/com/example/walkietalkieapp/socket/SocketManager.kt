@@ -133,17 +133,26 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val username = when (data) {
-                        is JSONObject -> data.optString("username", "Someone")
-                        is String -> data
-                        else -> "Someone"
+                        is JSONObject -> data.optString("username", "")
+                        is String -> {
+                            try {
+                                val json = JSONObject(data)
+                                json.optString("username", data)
+                            } catch (e: Exception) {
+                                data
+                            }
+                        }
+                        else -> ""
                     }
-                    val msg = "$username left the squad"
-                    addLog(msg)
-                    _events.tryEmit(msg)
-                    _socketUiState.update { state ->
-                        state.copy(
-                            roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
-                        )
+                    if (username.isNotBlank()) {
+                        val msg = "$username left the squad"
+                        addLog(msg)
+                        _events.tryEmit(msg)
+                        _socketUiState.update { state ->
+                            state.copy(
+                                roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
+                            )
+                        }
                     }
                     updateActivity()
                 }
@@ -180,14 +189,20 @@ object SocketManager {
                         }
                         else -> ""
                     }
-                    if (sender.isNotEmpty()) {
+                    if (sender.isNotBlank()) {
                         _socketUiState.update { state ->
+                            val exists = state.roomMembers.any { it.username.equals(sender, ignoreCase = true) }
+                            val updatedMembers = if (exists) {
+                                state.roomMembers.map { m ->
+                                    if (m.username.equals(sender, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
+                                }
+                            } else {
+                                state.roomMembers.map { it.copy(isSpeaking = false) } + RoomMember(sender, sender, isSpeaking = true)
+                            }
                             state.copy(
                                 lastSpeakerName = sender,
                                 lastSpeakerTimestamp = System.currentTimeMillis(),
-                                roomMembers = state.roomMembers.map { m ->
-                                    if (m.username.equals(sender, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
-                                }
+                                roomMembers = updatedMembers
                             )
                         }
                     }
@@ -216,9 +231,13 @@ object SocketManager {
 
     fun leaveRoom() {
         val oldRoomId = _socketUiState.value.roomId
+        val username = _socketUiState.value.username
         if (oldRoomId.isNotEmpty()) {
             try {
-                socket?.emit("leave-room", JSONObject().apply { put("roomId", oldRoomId) })
+                socket?.emit("leave-room", JSONObject().apply { 
+                    put("roomId", oldRoomId) 
+                    put("username", username)
+                })
             } catch (e: Exception) {
                 Log.e(TAG, "Error emitting leave-room: ${e.message}")
             }
@@ -226,6 +245,7 @@ object SocketManager {
         _socketUiState.update { 
             it.copy(
                 roomId = "", 
+                roomName = "",
                 roomMembers = emptyList(), 
                 voiceLinkState = "IDLE", 
                 lastSpeakerName = null

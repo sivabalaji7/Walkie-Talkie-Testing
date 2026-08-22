@@ -135,6 +135,11 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         if (hasAudioPermission) {
             startService()
         }
+        val currentRoom = SocketManager.socketUiState.value.roomId
+        if (currentRoom.isNotEmpty() && currentRoom != roomId) {
+            walkieTalkieService?.webRTCManager?.cleanup()
+            SocketManager.leaveRoom()
+        }
         // Always join the room code provided by Supabase
         SocketManager.joinRoom(roomId, username, roomName)
         walkieTalkieService?.startVoiceSession(roomId)
@@ -197,7 +202,7 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
                             }
                         )
                     } else if (socketUiState.roomId.isEmpty()) {
-                        RoomsDashboardScreen(
+                        com.example.walkietalkieapp.RoomsDashboardScreen(
                             currentUserId = sessionManager.getUserId(),
                             currentUsername = currentUsername,
                             onLogout = {
@@ -225,7 +230,11 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
                                 isUserSpeakingLocal = false
                                 stopPushToTalk()
                             },
-                            onLeave = { SocketManager.joinRoom("", "") },
+                            onLeave = { 
+                                walkieTalkieService?.webRTCManager?.cleanup()
+                                SocketManager.leaveRoom()
+                                walkieTalkieService?.updateNotification("Ready to talk")
+                            },
                             onShare = { shareRoom(it) },
                             vibrate = ::vibrate,
                             onReplay = { walkieTalkieService?.replayLastTransmissions() },
@@ -603,12 +612,12 @@ fun SquadScreen(
                     }
                 } else {
                     items(allUsernames, key = { it.trim().lowercase() }) { uname ->
-                        val isOnline = onlineUsernames.contains(uname.trim().lowercase())
-                        val isMemberSpeaking = isOnline && (
+                        val isMemberSpeaking = (
                             socketUiState.roomMembers.any { it.username.equals(uname, ignoreCase = true) && it.isSpeaking } ||
                             (isUserSpeaking && uname.equals(socketUiState.username, ignoreCase = true)) ||
                             (isOthersSpeaking && uname.equals(socketUiState.lastSpeakerName, ignoreCase = true))
                         )
+                        val isOnline = onlineUsernames.contains(uname.trim().lowercase()) || isMemberSpeaking
                         MemberItem(
                             username = uname,
                             isOnline = isOnline,
@@ -1117,10 +1126,11 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
             .fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
+        val anyOtherSpeaking = socketUiState.roomMembers.any { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }
         AnimatedContent(
             targetState = when {
                 isUserSpeaking -> "YOU"
-                isOthersSpeaking -> "OTHERS"
+                isOthersSpeaking || anyOtherSpeaking -> "OTHERS"
                 else -> "IDLE"
             },
             transitionSpec = {
@@ -1143,7 +1153,8 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
                     }
                 }
                 "OTHERS" -> {
-                    val speakerName = socketUiState.lastSpeakerName?.trim()?.uppercase()
+                    val activeSpeaker = socketUiState.roomMembers.find { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }?.username
+                    val speakerName = (activeSpeaker ?: socketUiState.lastSpeakerName)?.trim()?.uppercase()
                     val displayText = if (!speakerName.isNullOrBlank() && speakerName != socketUiState.username.uppercase()) {
                         "$speakerName IS SPEAKING"
                     } else {
