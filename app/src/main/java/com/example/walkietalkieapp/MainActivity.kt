@@ -1049,15 +1049,18 @@ fun PushToTalkButton(
         else -> listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
     }
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.fillMaxWidth()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(260.dp),
+        contentAlignment = Alignment.Center
     ) {
-        // WhatsApp-style Floating Swipe-Up Lock Indicator
+        // 1. WhatsApp-style Floating Swipe-Up Lock Indicator (Floats above without pushing button)
         AnimatedVisibility(
             visible = (isTransmitting || isRequesting) && !isLocked,
-            enter = fadeIn() + slideInVertically { it },
-            exit = fadeOut() + slideOutVertically { it }
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
+            modifier = Modifier.align(Alignment.TopCenter)
         ) {
             val visualDragOffset = (dragOffsetY.coerceIn(-lockThresholdPx, 0f) * 0.5f).toInt()
             Surface(
@@ -1066,7 +1069,6 @@ fun PushToTalkButton(
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.5f)),
                 modifier = Modifier
                     .offset { IntOffset(0, visualDragOffset) }
-                    .padding(bottom = 16.dp)
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -1090,7 +1092,11 @@ fun PushToTalkButton(
             }
         }
 
-        Box(contentAlignment = Alignment.Center) {
+        // 2. The PTT Button (Stationary at exact center)
+        Box(
+            modifier = Modifier.align(Alignment.Center),
+            contentAlignment = Alignment.Center
+        ) {
             // Pulsing Rings
             if (isTransmitting || isLocked) {
                 Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
@@ -1200,11 +1206,12 @@ fun PushToTalkButton(
             }
         }
 
-        // WhatsApp-like Lock "STOP" action button
+        // 3. WhatsApp-like Lock "STOP" action button (Floats below without pushing button)
         AnimatedVisibility(
             visible = isLocked,
             enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut()
+            exit = fadeOut() + scaleOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             Button(
                 onClick = {
@@ -1214,9 +1221,7 @@ fun PushToTalkButton(
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
                 shape = RoundedCornerShape(24.dp),
-                modifier = Modifier
-                    .padding(top = 16.dp)
-                    .height(44.dp)
+                modifier = Modifier.height(44.dp)
             ) {
                 Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
