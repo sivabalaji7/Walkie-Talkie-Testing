@@ -321,7 +321,17 @@ class WebRTCManager(private val context: Context) {
             }
             Log.d(TAG, "Handling remote offer from $fromPeerId")
 
-            val pc = getOrCreatePeerConnection(fromPeerId) ?: return@execute
+            var pc = peerConnections[fromPeerId]
+            if (pc != null && pc.signalingState() != PeerConnection.SignalingState.STABLE) {
+                Log.w(TAG, "Signaling collision on peer $fromPeerId (${pc.signalingState()}), resetting to accept incoming offer")
+                try { pc.dispose() } catch (e: Exception) {}
+                peerConnections.remove(fromPeerId)
+                pc = null
+            }
+            if (pc == null) {
+                pc = getOrCreatePeerConnection(fromPeerId)
+            }
+            if (pc == null) return@execute
 
             try {
                 audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION

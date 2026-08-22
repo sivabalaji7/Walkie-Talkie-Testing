@@ -149,9 +149,6 @@ object SocketManager {
                         }
                         else -> ""
                     }
-                    if (peerId.isNotEmpty()) {
-                        signalingListener?.onPeersReceived(listOf(peerId))
-                    }
                     if (username.isNotBlank()) {
                         val msg = "$username joined the squad"
                         addLog(msg)
