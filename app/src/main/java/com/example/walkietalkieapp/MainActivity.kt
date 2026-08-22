@@ -326,40 +326,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         )
                     }
 
-                    // Notification Queue Handler
-                    LaunchedEffect(notificationQueue.size, notificationMessage) {
-                        if (notificationQueue.isNotEmpty() && notificationMessage == null) {
-                            notificationMessage = notificationQueue.removeAt(0)
-                            delay(3000)
-                            notificationMessage = null
+                    // Notification Queue Handler: processes events continuously and auto-dismisses after 2.5s
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            if (notificationQueue.isNotEmpty()) {
+                                val msg = notificationQueue.removeAt(0)
+                                notificationMessage = msg
+                                delay(2500)
+                                notificationMessage = null
+                                delay(300)
+                            } else {
+                                delay(100)
+                            }
                         }
                     }
 
-                    // 1. Collect explicit events from Socket
+                    // Collect explicit events from Socket
                     LaunchedEffect(Unit) {
                         SocketManager.events.collect { event ->
                             notificationQueue.add(event)
                         }
-                    }
-
-                    // 2. Fallback: Detect member changes via diffing
-                    val currentMembers = socketUiState.roomMembers
-                    var lastMemberList by remember { mutableStateOf(currentMembers) }
-                    LaunchedEffect(currentMembers) {
-                        if (lastMemberList.isNotEmpty() && currentMembers != lastMemberList) {
-                            if (currentMembers.size > lastMemberList.size) {
-                                currentMembers.find { m -> lastMemberList.none { it.id == m.id } }?.let {
-                                    if (it.username != socketUiState.username) {
-                                        notificationQueue.add("${it.username} joined")
-                                    }
-                                }
-                            } else if (currentMembers.size < lastMemberList.size) {
-                                lastMemberList.find { m -> currentMembers.none { it.id == m.id } }?.let {
-                                    notificationQueue.add("${it.username} left")
-                                }
-                            }
-                        }
-                        lastMemberList = currentMembers
                     }
 
                     LaunchedEffect(isOthersSpeaking) {
