@@ -101,11 +101,13 @@ class WebRTCManager(private val context: Context) {
             if (localAudioTrack == null) {
                 val audioConstraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
                 }
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
@@ -113,9 +115,42 @@ class WebRTCManager(private val context: Context) {
             }
             localAudioTrack?.setEnabled(true)
             audioDeviceModule?.setMicrophoneMute(true)
-            Log.d(TAG, "Local audio track ready for mesh negotiation")
+            Log.d(TAG, "Local audio track ready for mesh negotiation (HD Full-Band Voice)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
+        }
+    }
+
+    private fun optimizeAudioSdp(sdp: String): String {
+        return try {
+            val lines = sdp.split("\r\n").toMutableList()
+            var opusPayloadType: String? = null
+
+            for (line in lines) {
+                if (line.startsWith("a=rtpmap:") && line.contains("opus/48000", ignoreCase = true)) {
+                    opusPayloadType = line.substringAfter("a=rtpmap:").substringBefore(" ").trim()
+                    break
+                }
+            }
+
+            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0"
+            if (opusPayloadType != null) {
+                val fmtpIndex = lines.indexOfFirst { it.startsWith("a=fmtp:$opusPayloadType") }
+                if (fmtpIndex != -1) {
+                    lines[fmtpIndex] = "a=fmtp:$opusPayloadType $hdFmtpParams"
+                } else {
+                    val rtpmapIndex = lines.indexOfFirst { it.startsWith("a=rtpmap:$opusPayloadType") }
+                    if (rtpmapIndex != -1) {
+                        lines.add(rtpmapIndex + 1, "a=fmtp:$opusPayloadType $hdFmtpParams")
+                    }
+                }
+                lines.joinToString("\r\n")
+            } else {
+                sdp.replace("useinbandfec=1", "useinbandfec=1;$hdFmtpParams")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error optimizing SDP: ${e.message}")
+            sdp.replace("useinbandfec=1", "useinbandfec=1;minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;dtx=0")
         }
     }
 
@@ -298,13 +333,12 @@ class WebRTCManager(private val context: Context) {
 
         pc.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                val optimizedSdp = sdp.description
-                    .replace("useinbandfec=1", "useinbandfec=1;minptime=20;cbr=1;maxaveragebitrate=32000;stereo=0;sprop-stereo=0")
+                val optimizedSdp = optimizeAudioSdp(sdp.description)
                 val newSdp = SessionDescription(sdp.type, optimizedSdp)
                 
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        Log.d(TAG, "Local offer set for $peerId, sending via socket")
+                        Log.d(TAG, "Local HD offer set for $peerId (64kbps Opus), sending via socket")
                         SocketManager.sendOffer(peerId, newSdp.description)
                     }
                 }, newSdp)
@@ -361,12 +395,15 @@ class WebRTCManager(private val context: Context) {
         }
         pc.createAnswer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sdp: SessionDescription) {
+                val optimizedSdp = optimizeAudioSdp(sdp.description)
+                val newSdp = SessionDescription(sdp.type, optimizedSdp)
+
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
-                        Log.d(TAG, "Local answer set for $peerId, sending via socket")
-                        SocketManager.sendAnswer(peerId, sdp.description)
+                        Log.d(TAG, "Local HD answer set for $peerId (64kbps Opus), sending via socket")
+                        SocketManager.sendAnswer(peerId, newSdp.description)
                     }
-                }, sdp)
+                }, newSdp)
             }
         }, constraints)
     }
