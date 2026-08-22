@@ -170,7 +170,14 @@ object SocketManager {
                     val data = args.firstOrNull()
                     val sender = when (data) {
                         is JSONObject -> data.optString("username", "")
-                        is String -> data
+                        is String -> {
+                            try {
+                                val json = JSONObject(data)
+                                json.optString("username", data)
+                            } catch (e: Exception) {
+                                data
+                            }
+                        }
                         else -> ""
                     }
                     if (sender.isNotEmpty()) {
@@ -314,8 +321,10 @@ object SocketManager {
             }) 
             _socketUiState.update { state ->
                 state.copy(
+                    lastSpeakerName = username,
+                    lastSpeakerTimestamp = System.currentTimeMillis(),
                     roomMembers = state.roomMembers.map { m ->
-                        if (m.username == username) m.copy(isSpeaking = true) else m
+                        if (m.username.equals(username, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
                     }
                 )
             }
@@ -331,9 +340,7 @@ object SocketManager {
             }) 
             _socketUiState.update { state ->
                 state.copy(
-                    roomMembers = state.roomMembers.map { m ->
-                        if (m.username == username) m.copy(isSpeaking = false) else m
-                    }
+                    roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }
                 )
             }
         }

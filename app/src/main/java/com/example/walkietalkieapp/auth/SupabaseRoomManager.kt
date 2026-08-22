@@ -170,6 +170,47 @@ object SupabaseRoomManager {
         }
     }
 
+    suspend fun getApprovedRoomMembers(roomCodeOrId: String): RoomResult<List<String>> = withContext(Dispatchers.IO) {
+        val clean = roomCodeOrId.trim()
+        if (clean.isBlank()) return@withContext RoomResult.Success(emptyList())
+        try {
+            val url = if (clean.startsWith("WT-") || clean.length <= 8) {
+                "$SUPABASE_URL/rest/v1/room_members?status=eq.APPROVED&select=username,rooms!inner(code)&rooms.code=eq.${clean.uppercase()}"
+            } else {
+                "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$clean&status=eq.APPROVED&select=username"
+            }
+            
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "getApprovedRoomMembers error ${response.code}: $responseBody")
+                    return@withContext RoomResult.Error("Failed to fetch members")
+                }
+
+                val usernames = mutableListOf<String>()
+                val jsonArray = JSONArray(responseBody)
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val uname = obj.optString("username", "")
+                    if (uname.isNotBlank()) {
+                        usernames.add(uname)
+                    }
+                }
+                return@withContext RoomResult.Success(usernames.distinct())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getApprovedRoomMembers exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
     suspend fun requestJoin(code: String, userId: String, username: String): RoomResult<String> = withContext(Dispatchers.IO) {
         val cleanCode = code.trim().uppercase()
         if (cleanCode.isBlank()) return@withContext RoomResult.Error("Code cannot be empty")
