@@ -296,9 +296,8 @@ class WebRTCManager(private val context: Context) {
         audioExecutor.execute {
             try {
                 isTalking = false
-                localAudioTrack?.setEnabled(false)
                 audioDeviceModule?.setMicrophoneMute(true)
-                Log.d(TAG, "PTT released — mic disabled")
+                Log.d(TAG, "PTT released — mic muted")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disabling audio: ${e.message}")
             }
@@ -381,6 +380,7 @@ class WebRTCManager(private val context: Context) {
             
             try {
                 audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+                @Suppress("DEPRECATION")
                 audioManager?.isSpeakerphoneOn = true
             } catch (e: Exception) {
                 Log.e(TAG, "Error configuring audio for incoming offer", e)
@@ -393,7 +393,7 @@ class WebRTCManager(private val context: Context) {
                 override fun onSetSuccess() {
                     Log.d(TAG, "Remote offer set, creating answer")
                     createAnswer()
-                    // VERY IMPORTANT: Drain candidates ONLY after remote description is set
+                    // Drain candidates ONLY after remote description is set
                     audioExecutor.execute { drainPendingCandidates() }
                 }
                 override fun onSetFailure(error: String?) {
@@ -440,13 +440,13 @@ class WebRTCManager(private val context: Context) {
         audioExecutor.execute {
             try {
                 val json = JSONObject(candidateJson)
-                val candidate = IceCandidate(
-                    json.optString("sdpMid", "0"),
-                    json.optInt("sdpMLineIndex", 0),
-                    json.optString("candidate", "")
-                )
+                val sdpMid = json.optString("sdpMid", json.optString("id", "0"))
+                val sdpMLineIndex = json.optInt("sdpMLineIndex", json.optInt("label", 0))
+                val candidateStr = json.optString("candidate", "")
                 
-                if (candidate.sdp.isEmpty()) return@execute
+                if (candidateStr.isEmpty()) return@execute
+                
+                val candidate = IceCandidate(sdpMid, sdpMLineIndex, candidateStr)
                 
                 val pc = peerConnection
                 if (pc != null && pc.remoteDescription != null) {

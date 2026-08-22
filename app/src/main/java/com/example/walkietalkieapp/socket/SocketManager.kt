@@ -182,19 +182,50 @@ object SocketManager {
 
                 on("offer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull() as? JSONObject ?: return@on
-                    signalingListener?.onOfferReceived(data.optString("sdp"))
+                    val sdp = when (val data = args.firstOrNull()) {
+                        is JSONObject -> data.optString("sdp", "")
+                        is String -> {
+                            try {
+                                JSONObject(data).optString("sdp", data)
+                            } catch (e: Exception) {
+                                data
+                            }
+                        }
+                        else -> ""
+                    }
+                    if (sdp.isNotBlank()) {
+                        signalingListener?.onOfferReceived(sdp)
+                    }
                 }
 
                 on("answer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull() as? JSONObject ?: return@on
-                    signalingListener?.onAnswerReceived(data.optString("sdp"))
+                    val sdp = when (val data = args.firstOrNull()) {
+                        is JSONObject -> data.optString("sdp", "")
+                        is String -> {
+                            try {
+                                JSONObject(data).optString("sdp", data)
+                            } catch (e: Exception) {
+                                data
+                            }
+                        }
+                        else -> ""
+                    }
+                    if (sdp.isNotBlank()) {
+                        signalingListener?.onAnswerReceived(sdp)
+                    }
                 }
 
                 on("ice-candidate") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    signalingListener?.onIceCandidateReceived(args.firstOrNull()?.toString() ?: "")
+                    val candidateStr = when (val data = args.firstOrNull()) {
+                        is JSONObject -> data.toString()
+                        is String -> data
+                        else -> ""
+                    }
+                    if (candidateStr.isNotBlank()) {
+                        signalingListener?.onIceCandidateReceived(candidateStr)
+                    }
                 }
 
                 on("start-voice") { args ->
@@ -277,13 +308,6 @@ object SocketManager {
                 voiceLinkState = "IDLE", 
                 lastSpeakerName = null
             ) 
-        }
-        // Quickly cycle socket so server's native disconnect handler drops this socket from room immediately
-        try {
-            socket?.disconnect()
-            socket?.connect()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cycling socket: ${e.message}")
         }
         addLog("Left Squad")
     }
