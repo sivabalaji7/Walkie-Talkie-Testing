@@ -66,7 +66,7 @@ import kotlinx.coroutines.*
 
 private const val TAG = "WalkieTalkieApp"
 
-class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener {
+class MainActivity : ComponentActivity(), SensorEventListener {
     private var hasAudioPermission by mutableStateOf(false)
     private var walkieTalkieService: WalkieTalkieService? = null
     private var isBound by mutableStateOf(false)
@@ -79,14 +79,14 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
 
     private var isBatterySaverEnabled by mutableStateOf(true)
 
-    // Gyro Parallax State
+    // Sensor / Gyro
     private var sensorManager: SensorManager? = null
     private var rotationSensor: Sensor? = null
     private var gyroOffset by mutableStateOf(androidx.compose.ui.geometry.Offset(0f, 0f))
 
     private val permissionsLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-            val audioGranted = perms[Manifest.permission.RECORD_AUDIO] ?: false
+            val audioGranted = perms[Manifest.permission.RECORD_AUDIO] == true
             hasAudioPermission = audioGranted
             if (audioGranted) initializeWebRTC()
         }
@@ -97,12 +97,23 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
             walkieTalkieService = binder.getService()
             isBound = true
             
+            walkieTalkieService?.onOthersSpeakingStateChange = { speaking ->
+                runOnUiThread { 
+                    if (speaking && !isOthersSpeaking) {
+                        vibrate()
+                        playTone(ToneGenerator.TONE_PROP_BEEP)
+                    }
+                    isOthersSpeaking = speaking 
+                }
+            }
+
             walkieTalkieService?.webRTCManager?.onStateChange = { state ->
                 SocketManager.updateVoiceLinkState(state.name)
             }
 
-            if (hasAudioPermission) {
-                walkieTalkieService?.webRTCManager?.prepareConnection()
+            val currentRoom = SocketManager.socketUiState.value.roomId
+            if (hasAudioPermission && currentRoom.isNotEmpty()) {
+                walkieTalkieService?.startVoiceSession(currentRoom)
             }
         }
 
@@ -170,7 +181,6 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
             permissionsLauncher.launch(ungranted.toTypedArray())
         }
         
-        SocketManager.setSignalingListener(this)
         SocketManager.initialize()
         SocketManager.connect()
 
@@ -387,40 +397,10 @@ class MainActivity : ComponentActivity(), SignalingListener, SensorEventListener
         if (walkieTalkieService != null) return
         startService()
     }
-
-    override fun onOfferReceived(sdp: String) { 
-        runOnUiThread { 
-            isOthersSpeaking = true
-            walkieTalkieService?.webRTCManager?.handleOffer(sdp) 
-            walkieTalkieService?.updateNotification("Incoming transmission...")
-        } 
-    }
-    override fun onAnswerReceived(sdp: String) { 
-        runOnUiThread { 
-            isOthersSpeaking = true
-            walkieTalkieService?.webRTCManager?.handleAnswer(sdp) 
-        } 
-    }
-    override fun onIceCandidateReceived(candidate: String) { 
-        runOnUiThread { walkieTalkieService?.webRTCManager?.handleIceCandidate(candidate) } 
-    }
-    override fun onCallStarted() { 
-        runOnUiThread { 
-            if (!isOthersSpeaking) {
-                vibrate()
-                playTone(ToneGenerator.TONE_PROP_BEEP)
-            }
-            isOthersSpeaking = true 
-        } 
-    }
-    override fun onCallEnded() { 
-        runOnUiThread { 
-            isOthersSpeaking = false 
-            walkieTalkieService?.updateNotification("Ready to talk")
-        } 
-    }
     
     private fun startPushToTalk() {
+        val roomId = SocketManager.socketUiState.value.roomId
+        if (roomId.isEmpty()) return
         if (walkieTalkieService == null) startService()
         playTone(ToneGenerator.TONE_CDMA_PIP)
         SocketManager.sendStartVoice()

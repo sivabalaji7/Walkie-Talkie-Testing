@@ -120,9 +120,9 @@ class WebRTCManager(private val context: Context) {
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
                 localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
             }
-            // Mic is OFF by default — only PTT should enable it
-            localAudioTrack?.setEnabled(false)
-            Log.d(TAG, "Local audio track initialized — mic muted until PTT")
+            localAudioTrack?.setEnabled(true)
+            audioDeviceModule?.setMicrophoneMute(true)
+            Log.d(TAG, "Local audio track initialized and enabled for SDP negotiation — mic muted until PTT")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
         }
@@ -263,6 +263,7 @@ class WebRTCManager(private val context: Context) {
         )
         
         localAudioTrack?.let { track ->
+            track.setEnabled(true)
             peerConnection?.addTrack(track, listOf("LOCAL_STREAM"))
         }
         Log.d(TAG, "PeerConnection established")
@@ -326,9 +327,11 @@ class WebRTCManager(private val context: Context) {
                 createPeerConnection()
             }
             
-            // Ensure WebRTC respects the exact PTT state right before generating SDP
-            localAudioTrack?.setEnabled(isTalking)
-            audioDeviceModule?.setMicrophoneMute(!isTalking)
+            // Ensure WebRTC negotiates bidirectional sendrecv
+            localAudioTrack?.setEnabled(true)
+            if (!isTalking) {
+                audioDeviceModule?.setMicrophoneMute(true)
+            }
             
             val pc = peerConnection ?: return@execute
             
