@@ -1,7 +1,9 @@
 package com.example.walkietalkieapp.webrtc
 
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -66,12 +68,19 @@ class WebRTCManager(private val context: Context) {
     fun ensureHandsFreeAudioRouting() {
         try {
             audioManager?.apply {
-                mode = AudioManager.MODE_IN_COMMUNICATION
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val availableDevices = availableCommunicationDevices
+                    val speaker = availableDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    if (speaker != null) {
+                        setCommunicationDevice(speaker)
+                    }
+                }
+                mode = AudioManager.MODE_NORMAL
                 @Suppress("DEPRECATION")
                 isSpeakerphoneOn = true
                 isMicrophoneMute = false
             }
-            Log.d(TAG, "Audio routed to Bottom Primary Mouth Mic + Front Beamforming Array (VOICE_RECOGNITION)")
+            Log.d(TAG, "Audio explicitly forced to Bottom External Microphone (AudioSource.MIC)")
         } catch (e: Exception) {
             Log.e(TAG, "Error ensuring hands-free audio routing: ${e.message}")
         }
@@ -83,11 +92,11 @@ class WebRTCManager(private val context: Context) {
             initializeLibrary(context)
             ensureHandsFreeAudioRouting()
             
-            // Optimized audio device module targeting Bottom Primary Mouth Mic + Front Beamforming Array
+            // Optimized audio device module targeting Bottom External Microphone (AudioSource.MIC)
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
-                .setUseHardwareAcousticEchoCanceler(true)
-                .setUseHardwareNoiseSuppressor(false) // Disabled to eliminate OEM DSP phase cancellation & low-frequency voice clipping
-                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION) // Forces Bottom Primary Mouth Microphone + Front Acoustic Array
+                .setUseHardwareAcousticEchoCanceler(false) // Disabled to prevent telephony earpiece coupling
+                .setUseHardwareNoiseSuppressor(false) // Disabled to prevent low-frequency clamping
+                .setAudioSource(android.media.MediaRecorder.AudioSource.MIC) // Directly captures from Bottom External Physical Microphone
                 .setUseStereoInput(false)
                 .setUseStereoOutput(false)
                 .createAudioDeviceModule()
@@ -104,7 +113,7 @@ class WebRTCManager(private val context: Context) {
                 .createPeerConnectionFactory()
 
             isInitialized = true
-            Log.d(TAG, "WebRTC init successful (Bottom Primary Mic + Beamforming Active)")
+            Log.d(TAG, "WebRTC init successful (Bottom External Mic Active)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init WebRTC: ${e.message}")
         }
@@ -386,13 +395,7 @@ class WebRTCManager(private val context: Context) {
             }
             if (pc == null) return@execute
 
-            try {
-                audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-                @Suppress("DEPRECATION")
-                audioManager?.isSpeakerphoneOn = true
-            } catch (e: Exception) {
-                Log.e(TAG, "Error configuring audio for incoming offer", e)
-            }
+            ensureHandsFreeAudioRouting()
 
             val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
             pc.setRemoteDescription(object : SimpleSdpObserver() {
