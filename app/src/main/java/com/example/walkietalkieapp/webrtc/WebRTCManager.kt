@@ -63,12 +63,27 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
+    fun ensureHandsFreeAudioRouting() {
+        try {
+            audioManager?.apply {
+                mode = AudioManager.MODE_IN_COMMUNICATION
+                @Suppress("DEPRECATION")
+                isSpeakerphoneOn = true
+                isMicrophoneMute = false
+            }
+            Log.d(TAG, "Audio routed to hands-free speakerphone & dual-mic array (Bottom primary + Top ambient)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error ensuring hands-free audio routing: ${e.message}")
+        }
+    }
+
     fun init() {
         if (isInitialized) return
         try {
             initializeLibrary(context)
+            ensureHandsFreeAudioRouting()
             
-            // Optimized audio device module for VoIP
+            // Optimized audio device module for VoIP with multi-mic array
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
                 .setUseHardwareAcousticEchoCanceler(true)
                 .setUseHardwareNoiseSuppressor(false) // Disabled to eliminate OEM DSP phase cancellation & low-frequency voice clipping
@@ -89,7 +104,7 @@ class WebRTCManager(private val context: Context) {
                 .createPeerConnectionFactory()
 
             isInitialized = true
-            Log.d(TAG, "WebRTC init successful")
+            Log.d(TAG, "WebRTC init successful (Dual-Mic Hands-free Array Active)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init WebRTC: ${e.message}")
         }
@@ -485,13 +500,11 @@ class WebRTCManager(private val context: Context) {
                     isSessionActive = true
                     if (!isInitialized) initialize()
                 }
-                audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-                @Suppress("DEPRECATION")
-                audioManager?.isSpeakerphoneOn = true
+                ensureHandsFreeAudioRouting()
                 if (audioDeviceModule == null) initialize()
                 localAudioTrack?.setEnabled(true)
                 audioDeviceModule?.setMicrophoneMute(false)
-                Log.d(TAG, "PTT started — mic unmuted, broadcasting to ${peerConnections.size} peer(s)")
+                Log.d(TAG, "PTT started — dual-mic array active, mic unmuted, broadcasting to ${peerConnections.size} peer(s)")
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting audio: ${e.message}")
             }
