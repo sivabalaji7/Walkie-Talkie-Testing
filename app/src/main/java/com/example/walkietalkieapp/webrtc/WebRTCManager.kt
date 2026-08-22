@@ -71,7 +71,7 @@ class WebRTCManager(private val context: Context) {
             // Optimized audio device module for VoIP
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
                 .setUseHardwareAcousticEchoCanceler(true)
-                .setUseHardwareNoiseSuppressor(true)
+                .setUseHardwareNoiseSuppressor(false) // Disabled to eliminate OEM DSP phase cancellation & low-frequency voice clipping
                 .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setUseStereoInput(false)
                 .setUseStereoOutput(false)
@@ -101,12 +101,11 @@ class WebRTCManager(private val context: Context) {
             if (localAudioTrack == null) {
                 val audioConstraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false")) // Disabled: allows 50Hz-150Hz deep human voice fundamentals to pass unhindered
+                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "false")) // Disabled: prevents double-gating and chopping of low vocal harmonics
+                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "false")) // Disabled: prevents attenuation of low-pitch speech
                     mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
                 }
@@ -115,7 +114,7 @@ class WebRTCManager(private val context: Context) {
             }
             localAudioTrack?.setEnabled(true)
             audioDeviceModule?.setMicrophoneMute(true)
-            Log.d(TAG, "Local audio track ready for mesh negotiation (HD Full-Band Voice)")
+            Log.d(TAG, "Local audio track ready for mesh negotiation (Deep Voice + Noise Suppressed)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
         }
@@ -133,7 +132,7 @@ class WebRTCManager(private val context: Context) {
                 }
             }
 
-            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0"
+            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0;x-google-min-bitrate=48;sprop-maxcapturerate=48000;maxplaybackrate=48000"
             if (opusPayloadType != null) {
                 val fmtpIndex = lines.indexOfFirst { it.startsWith("a=fmtp:$opusPayloadType") }
                 if (fmtpIndex != -1) {
@@ -150,7 +149,7 @@ class WebRTCManager(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error optimizing SDP: ${e.message}")
-            sdp.replace("useinbandfec=1", "useinbandfec=1;minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;dtx=0")
+            sdp.replace("useinbandfec=1", "useinbandfec=1;minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;dtx=0;x-google-min-bitrate=48;sprop-maxcapturerate=48000;maxplaybackrate=48000")
         }
     }
 
