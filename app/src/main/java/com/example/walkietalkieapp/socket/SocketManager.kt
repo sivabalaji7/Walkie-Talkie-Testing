@@ -87,31 +87,45 @@ object SocketManager {
 
                 on("room-update") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull() as? org.json.JSONArray ?: return@on
+                    val raw = args.firstOrNull() ?: return@on
+                    val jsonArray: org.json.JSONArray? = when (raw) {
+                        is org.json.JSONArray -> raw
+                        is JSONObject -> raw.optJSONArray("members") ?: raw.optJSONArray("users") ?: raw.optJSONArray("roomMembers")
+                        is String -> {
+                            try {
+                                if (raw.trim().startsWith("[")) org.json.JSONArray(raw)
+                                else {
+                                    val obj = JSONObject(raw)
+                                    obj.optJSONArray("members") ?: obj.optJSONArray("users") ?: obj.optJSONArray("roomMembers")
+                                }
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }
+                        else -> null
+                    }
+                    if (jsonArray == null) return@on
+
                     val currentSpeakingUser = _socketUiState.value.roomMembers.find { it.isSpeaking }?.username
                     val members = mutableListOf<RoomMember>()
-                    for (i in 0 until data.length()) {
-                        val obj = data.getJSONObject(i)
-                        val uname = obj.optString("username", "")
+                    for (i in 0 until jsonArray.length()) {
+                        val item = jsonArray.opt(i)
+                        val uname = when (item) {
+                            is JSONObject -> item.optString("username", item.optString("name", item.optString("user", "")))
+                            is String -> item
+                            else -> ""
+                        }
+                        val id = if (item is JSONObject) item.optString("id", uname) else uname
+                        val isSpk = if (item is JSONObject) item.optBoolean("isSpeaking", false) else false
                         if (uname.isNotBlank()) {
-                            val isSpk = if (currentSpeakingUser != null) uname.equals(currentSpeakingUser, ignoreCase = true) else obj.optBoolean("isSpeaking", false)
-                            members.add(RoomMember(obj.optString("id", uname), uname, isSpk))
+                            val activeSpk = if (currentSpeakingUser != null) uname.equals(currentSpeakingUser, ignoreCase = true) else isSpk
+                            members.add(RoomMember(id, uname, activeSpk))
                         }
                     }
                     
-                    // Deduplicate members strictly by username to avoid duplicate avatar glitches
                     val deduped = members.distinctBy { it.username.trim().lowercase() }
-                    
-                    val currentlySpeaking = deduped.find { it.isSpeaking }
                     _socketUiState.update { state ->
-                        var newState = state.copy(roomMembers = deduped)
-                        if (currentlySpeaking != null) {
-                            newState = newState.copy(
-                                lastSpeakerName = currentlySpeaking.username,
-                                lastSpeakerTimestamp = System.currentTimeMillis()
-                            )
-                        }
-                        newState
+                        state.copy(roomMembers = deduped)
                     }
                 }
 
@@ -119,11 +133,11 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val username = when (data) {
-                        is JSONObject -> data.optString("username", "")
+                        is JSONObject -> data.optString("username", data.optString("name", data.optString("user", "")))
                         is String -> {
                             try {
                                 val json = JSONObject(data)
-                                json.optString("username", data)
+                                json.optString("username", json.optString("name", json.optString("user", data)))
                             } catch (e: Exception) {
                                 data
                             }
@@ -150,11 +164,13 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isNotEmpty()) {
                         val data = args.firstOrNull()
                         val username = when (data) {
-                            is JSONObject -> data.optString("username", "")
+                            is JSONObject -> {
+                                data.optString("username", data.optString("name", data.optString("user", data.optString("sender", data.optString("userId", data.optString("id", ""))))))
+                            }
                             is String -> {
                                 try {
                                     val json = JSONObject(data)
-                                    json.optString("username", data)
+                                    json.optString("username", json.optString("name", json.optString("user", json.optString("sender", json.optString("userId", json.optString("id", data))))))
                                 } catch (e: Exception) {
                                     data
                                 }
@@ -167,7 +183,10 @@ object SocketManager {
                             _events.tryEmit(msg)
                             _socketUiState.update { state ->
                                 state.copy(
-                                    roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
+                                    roomMembers = state.roomMembers.filter { 
+                                        !it.username.equals(username, ignoreCase = true) && 
+                                        !it.id.equals(username, ignoreCase = true) 
+                                    }
                                 )
                             }
                         }
@@ -291,11 +310,17 @@ object SocketManager {
                 val payload = JSONObject().apply { 
                     put("roomId", oldRoomId) 
                     put("username", username)
+                    put("userId", username)
+                    put("name", username)
                 }
                 socket?.emit("leave-room", payload)
+                socket?.emit("leaveRoom", payload)
+                socket?.emit("leave_room", payload)
                 socket?.emit("leave", payload)
                 socket?.emit("leave-room", oldRoomId)
                 socket?.emit("user-left", payload)
+                socket?.emit("user_left", payload)
+                socket?.emit("member-left", payload)
             } catch (e: Exception) {
                 Log.e(TAG, "Error emitting leave-room: ${e.message}")
             }
