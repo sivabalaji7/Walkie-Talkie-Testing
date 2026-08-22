@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 import java.net.URISyntaxException
+import com.example.walkietalkieapp.floor.FloorManager
 
 data class RoomMember(
     val id: String,
@@ -308,6 +309,50 @@ object SocketManager {
                 on("stop-voice", onStopVoiceHandler)
                 on("stopVoice", onStopVoiceHandler)
                 on("stop_voice", onStopVoiceHandler)
+
+                // ── FLOOR ARBITRATION PROTOCOL ──────────────────────
+                on("floor-granted") { args ->
+                    val data = args.firstOrNull()
+                    val expiresAt = when (data) {
+                        is JSONObject -> data.optLong("expiresAt", System.currentTimeMillis() + 20000)
+                        else -> System.currentTimeMillis() + 20000
+                    }
+                    FloorManager.handleFloorGranted(expiresAt)
+                }
+
+                on("floor-denied") { args ->
+                    val data = args.firstOrNull()
+                    val reason = if (data is JSONObject) data.optString("reason", "CHANNEL_BUSY") else "CHANNEL_BUSY"
+                    val speaker = if (data is JSONObject) data.optString("currentSpeakerName", "Someone") else "Someone"
+                    FloorManager.handleFloorDenied(reason, speaker)
+                }
+
+                on("floor-status") { args ->
+                    val data = args.firstOrNull()
+                    if (data is JSONObject) {
+                        val state = data.optString("state", "IDLE")
+                        if (state.equals("LOCKED", ignoreCase = true)) {
+                            val speakerId = data.optString("speakerId", "")
+                            val speakerName = data.optString("speakerName", "")
+                            val expiresAt = data.optLong("expiresAt", 0)
+                            FloorManager.handleFloorLocked(speakerId, speakerName, expiresAt)
+                        } else if (state.equals("IDLE", ignoreCase = true)) {
+                            FloorManager.handleFloorIdle()
+                        }
+                    }
+                }
+
+                on("floor-revoked") {
+                    FloorManager.handleFloorRevoked()
+                }
+
+                on("floor-warning") {
+                    FloorManager.handleFloorWarning()
+                }
+
+                on("floor-timeout") {
+                    FloorManager.handleFloorTimedOut()
+                }
             }
         } catch (e: URISyntaxException) { Log.e(TAG, "Socket init failed", e) }
     }
@@ -352,6 +397,7 @@ object SocketManager {
                 lastSpeakerName = null
             ) 
         }
+        FloorManager.reset()
         addLog("Left Squad")
     }
 
@@ -362,6 +408,7 @@ object SocketManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error disconnecting socket: ${e.message}")
         }
+        FloorManager.reset()
         _socketUiState.update { 
             it.copy(
                 isConnected = false, 
@@ -474,6 +521,32 @@ object SocketManager {
                     roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }
                 )
             }
+        }
+    }
+
+    fun emitRequestFloor(isPriority: Boolean = false) {
+        val roomId = _socketUiState.value.roomId
+        val username = _socketUiState.value.username
+        if (roomId.isNotEmpty()) {
+            val payload = JSONObject().apply {
+                put("roomId", roomId)
+                put("username", username)
+                put("userId", username)
+                put("isPriority", isPriority)
+            }
+            socket?.emit("request-floor", payload)
+        }
+    }
+
+    fun emitReleaseFloor() {
+        val roomId = _socketUiState.value.roomId
+        val username = _socketUiState.value.username
+        if (roomId.isNotEmpty()) {
+            val payload = JSONObject().apply {
+                put("roomId", roomId)
+                put("username", username)
+            }
+            socket?.emit("release-floor", payload)
         }
     }
 

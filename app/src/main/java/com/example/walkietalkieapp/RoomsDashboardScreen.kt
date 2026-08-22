@@ -176,7 +176,14 @@ fun RoomsDashboardScreen(
                 } else {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(myRooms) { room ->
-                            RoomItem(room = room, onClick = { onJoinRoom(room.code, room.name) })
+                            val isOwner = room.ownerId == currentUserId
+                            val roomPendingCount = pendingRequests.count { it.roomId == room.id || it.roomCode == room.code }
+                            RoomItem(
+                                room = room, 
+                                isOwner = isOwner,
+                                pendingCount = roomPendingCount,
+                                onClick = { onJoinRoom(room.code, room.name) }
+                            )
                         }
                     }
                 }
@@ -191,9 +198,7 @@ fun RoomsDashboardScreen(
             onDismiss = { showCreateDialog = false },
             onSuccess = { roomCode ->
                 showCreateDialog = false
-                refreshData()
-                val roomName = myRooms.find { it.code == roomCode }?.name ?: roomCode
-                onJoinRoom(roomCode, roomName)
+                onJoinRoom(roomCode, "")
             }
         )
     }
@@ -211,7 +216,12 @@ fun RoomsDashboardScreen(
 }
 
 @Composable
-fun RoomItem(room: Room, onClick: () -> Unit) {
+fun RoomItem(
+    room: Room, 
+    isOwner: Boolean = false, 
+    pendingCount: Int = 0,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -229,8 +239,40 @@ fun RoomItem(room: Room, onClick: () -> Unit) {
         }
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(room.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(room.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                if (isOwner) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = Color(0xFFFFA000).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "👑 OWNER",
+                            color = Color(0xFFFFA000),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(2.dp))
             Text("Code: ${room.code}", color = Color.Gray, fontSize = 12.sp)
+        }
+        if (pendingCount > 0) {
+            Surface(
+                color = Color(0xFF00FF66).copy(alpha = 0.2f),
+                shape = CircleShape
+            ) {
+                Text(
+                    text = "$pendingCount",
+                    color = Color(0xFF00FF66),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
         }
     }
 }

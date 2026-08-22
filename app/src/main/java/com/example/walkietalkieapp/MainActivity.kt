@@ -46,6 +46,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,6 +64,9 @@ import android.os.Build
 import android.os.IBinder
 import com.example.walkietalkieapp.webrtc.WalkieTalkieService
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
+import com.example.walkietalkieapp.floor.FloorManager
+import com.example.walkietalkieapp.floor.FloorState
+import com.example.walkietalkieapp.floor.FloorStatus
 import kotlinx.coroutines.*
 
 private const val TAG = "WalkieTalkieApp"
@@ -188,6 +193,68 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             startService()
         }
 
+        // Floor Arbitration Callbacks
+        FloorManager.onFloorGranted = {
+            runOnUiThread {
+                playTone(ToneGenerator.TONE_CDMA_PIP)
+                vibrate()
+                SocketManager.sendStartVoice()
+                walkieTalkieService?.webRTCManager?.startTalking()
+                if (walkieTalkieService?.webRTCManager?.isConnected() != true) {
+                    walkieTalkieService?.webRTCManager?.createOffer()
+                }
+                walkieTalkieService?.updateNotification("🔴 Transmitting...")
+            }
+        }
+
+        FloorManager.onFloorDenied = { reason, speakerName ->
+            runOnUiThread {
+                playTone(ToneGenerator.TONE_SUP_ERROR)
+                vibrateError()
+                notificationQueue.add("🔒 Channel Busy: $speakerName is speaking")
+            }
+        }
+
+        FloorManager.onFloorRevoked = {
+            runOnUiThread {
+                walkieTalkieService?.webRTCManager?.stopTalking()
+                SocketManager.sendStopVoice()
+                playTone(ToneGenerator.TONE_SUP_ERROR)
+                vibrateError()
+                notificationQueue.add("⚠️ Priority Override: Mic Revoked")
+                val roomId = SocketManager.socketUiState.value.roomId
+                walkieTalkieService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
+            }
+        }
+
+        FloorManager.onFloorReleased = {
+            runOnUiThread {
+                walkieTalkieService?.webRTCManager?.stopTalking()
+                SocketManager.sendStopVoice()
+                playTone(ToneGenerator.TONE_PROP_BEEP2)
+                val roomId = SocketManager.socketUiState.value.roomId
+                walkieTalkieService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
+            }
+        }
+
+        FloorManager.onFloorWarning = {
+            runOnUiThread {
+                playTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD)
+            }
+        }
+
+        FloorManager.onFloorTimeout = {
+            runOnUiThread {
+                walkieTalkieService?.webRTCManager?.stopTalking()
+                SocketManager.sendStopVoice()
+                playTone(ToneGenerator.TONE_SUP_ERROR)
+                vibrateError()
+                notificationQueue.add("⏱️ Transmission timed out (20s limit)")
+                val roomId = SocketManager.socketUiState.value.roomId
+                walkieTalkieService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
+            }
+        }
+
         // Gyro Setup
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -196,10 +263,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             WalkieTalkieAppTheme(darkTheme = true) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0B)) {
                     val socketUiState by SocketManager.socketUiState.collectAsState()
-                    var isUserSpeakingLocal by remember { mutableStateOf(false) }
+                    val floorStatus by FloorManager.floorStatus.collectAsState()
+                    val isUserSpeakingLocal = floorStatus.state == FloorState.TRANSMITTING
                     
                     val othersSpeakingState = socketUiState.roomMembers.any { it.isSpeaking && it.username != socketUiState.username }
-                    val activeSpeaking = isUserSpeakingLocal || isOthersSpeaking || othersSpeakingState
+                    val activeSpeaking = isUserSpeakingLocal || isOthersSpeaking || othersSpeakingState || floorStatus.state == FloorState.RECEIVING
 
                     BackgroundComposable(activeSpeaking, gyroOffset)
 
@@ -232,12 +300,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             isOthersSpeaking = isOthersSpeaking,
                             hasAudioPermission = hasAudioPermission,
                             onRequestPermission = { permissionsLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO)) },
-                            onStartTalk = {
-                                isUserSpeakingLocal = true
-                                startPushToTalk()
+                            onStartTalk = { isPriority ->
+                                startPushToTalk(isPriority)
                             },
                             onStopTalk = {
-                                isUserSpeakingLocal = false
                                 stopPushToTalk()
                             },
                             onLeave = { 
@@ -251,11 +317,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             onRestartIce = { walkieTalkieService?.restartIce() },
                             onWhisper = {
                                 vibrate()
-                                isUserSpeakingLocal = true
-                                startPushToTalk()
+                                startPushToTalk(false)
                                 CoroutineScope(Dispatchers.Main).launch {
                                     delay(2000)
-                                    isUserSpeakingLocal = false
                                     stopPushToTalk()
                                 }
                             },
@@ -393,30 +457,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         vibrator?.vibrate(VibrationEffect.createOneShot(70, VibrationEffect.DEFAULT_AMPLITUDE))
     }
 
+    private fun vibrateError() {
+        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 80, 80, 80), -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(200)
+        }
+    }
+
     private fun initializeWebRTC() {
         if (walkieTalkieService != null) return
         startService()
     }
     
-    private fun startPushToTalk() {
+    private fun startPushToTalk(isPriority: Boolean = false) {
         val roomId = SocketManager.socketUiState.value.roomId
         if (roomId.isEmpty()) return
         if (walkieTalkieService == null) startService()
-        playTone(ToneGenerator.TONE_CDMA_PIP)
-        SocketManager.sendStartVoice()
-        walkieTalkieService?.webRTCManager?.startTalking()
-        if (walkieTalkieService?.webRTCManager?.isConnected() != true) {
-            walkieTalkieService?.webRTCManager?.createOffer()
-        }
-        walkieTalkieService?.updateNotification("Transmitting...")
+        FloorManager.requestFloor(isPriority)
     }
     
     private fun stopPushToTalk() {
-        walkieTalkieService?.webRTCManager?.stopTalking()
-        SocketManager.sendStopVoice()
-        val roomId = SocketManager.socketUiState.value.roomId
-        val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
-        walkieTalkieService?.updateNotification(text)
+        FloorManager.releaseFloor()
     }
 
     private fun refreshAudioPermissionState() {
@@ -432,7 +496,7 @@ fun SquadScreen(
     isOthersSpeaking: Boolean,
     hasAudioPermission: Boolean,
     onRequestPermission: () -> Unit,
-    onStartTalk: () -> Unit,
+    onStartTalk: (isPriority: Boolean) -> Unit,
     onStopTalk: () -> Unit,
     onLeave: () -> Unit,
     onShare: (String) -> Unit,
@@ -444,8 +508,10 @@ fun SquadScreen(
     onBatterySaverToggle: (Boolean) -> Unit,
     notificationMessage: String? = null
 ) {
-    var isUserSpeaking by remember { mutableStateOf(false) }
+    val floorStatus by FloorManager.floorStatus.collectAsState()
+    val isUserSpeaking = floorStatus.state == FloorState.TRANSMITTING
     var showSettings by remember { mutableStateOf(false) }
+    var isOwner by remember { mutableStateOf(false) }
     
     var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
     var approvedMembers by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -472,6 +538,12 @@ fun SquadScreen(
     LaunchedEffect(socketUiState.roomId) {
         fetchPending()
         fetchApprovedMembers()
+        coroutineScope.launch {
+            val myRoomsRes = com.example.walkietalkieapp.auth.SupabaseRoomManager.getMyRooms(currentUserId)
+            if (myRoomsRes is com.example.walkietalkieapp.auth.RoomResult.Success) {
+                isOwner = myRoomsRes.data.any { (it.code.equals(socketUiState.roomId, ignoreCase = true) || it.id == socketUiState.roomId) && it.ownerId == currentUserId }
+            }
+        }
         com.example.walkietalkieapp.auth.SupabaseRealtimeManager.addListener("squad_${socketUiState.roomId}") {
             fetchPending()
             fetchApprovedMembers()
@@ -503,13 +575,28 @@ fun SquadScreen(
                 }
                 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = if (socketUiState.roomName.isNotEmpty()) socketUiState.roomName.uppercase() else "SQUAD: ${socketUiState.roomId}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Black,
-                        color = Color.White,
-                        letterSpacing = 2.sp
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (socketUiState.roomName.isNotEmpty()) socketUiState.roomName.uppercase() else "SQUAD: ${socketUiState.roomId}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Black,
+                            color = Color.White,
+                            letterSpacing = 2.sp
+                        )
+                        if (isOwner) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = Color(0xFFFFA000).copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "👑",
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
@@ -534,8 +621,12 @@ fun SquadScreen(
                 }
             }
 
+            // Floor Status Banner
+            Spacer(modifier = Modifier.height(12.dp))
+            ActiveTransmissionBanner(floorStatus = floorStatus)
+
             if (pendingRequests.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFA000).copy(alpha = 0.2f)).border(1.dp, Color(0xFFFFA000), RoundedCornerShape(12.dp)).padding(12.dp)) {
                     Text("${pendingRequests.size} Pending Request(s)", color = Color(0xFFFFA000), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     pendingRequests.forEach { req ->
@@ -568,7 +659,7 @@ fun SquadScreen(
 
             TimerView()
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Member List: Combined approved squad members with online/offline status
             val onlineUsernames = socketUiState.roomMembers.map { it.username.trim().lowercase() }.toSet()
@@ -596,10 +687,11 @@ fun SquadScreen(
                         val isMemberSpeaking = if (isSelf) {
                             isUserSpeaking
                         } else {
+                            val matchesFloorSpeaker = floorStatus.currentSpeakerName?.equals(uname, ignoreCase = true) == true
                             val activeSpeaker = socketUiState.roomMembers.find { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }?.username
-                            val matchesSpeaker = uname.equals(activeSpeaker, ignoreCase = true) || uname.equals(socketUiState.lastSpeakerName, ignoreCase = true)
+                            val matchesSocketSpeaker = uname.equals(activeSpeaker, ignoreCase = true) || uname.equals(socketUiState.lastSpeakerName, ignoreCase = true)
                             val isSingleRemote = allUsernames.size <= 2 && !isSelf
-                            (isOthersSpeaking && (matchesSpeaker || isSingleRemote)) || (matchesSpeaker && socketUiState.roomMembers.any { it.isSpeaking })
+                            matchesFloorSpeaker || (isOthersSpeaking && (matchesSocketSpeaker || isSingleRemote)) || (matchesSocketSpeaker && socketUiState.roomMembers.any { it.isSpeaking })
                         }
                         val isOnline = onlineUsernames.contains(uname.trim().lowercase()) || isMemberSpeaking
                         MemberItem(
@@ -615,36 +707,29 @@ fun SquadScreen(
             Spacer(modifier = Modifier.weight(1f))
 
             // Center Speaker Indicator
-            SpeakingIndicator(isUserSpeaking, isOthersSpeaking, socketUiState)
+            SpeakingIndicator(floorStatus = floorStatus, isOthersSpeaking = isOthersSpeaking, socketUiState = socketUiState)
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // PTT Button
+            // PTT Button with Floor Control State
             PushToTalkButton(
-                isSpeaking = isUserSpeaking,
+                floorStatus = floorStatus,
                 isConnected = socketUiState.isConnected,
-                onPress = {
+                isOwner = isOwner,
+                onPress = { isPriority ->
                     if (!hasAudioPermission) onRequestPermission()
                     else {
                         vibrate()
-                        isUserSpeaking = true
-                        onStartTalk()
+                        onStartTalk(isPriority)
                         SocketManager.updateActivity()
                     }
                 },
                 onRelease = {
-                    isUserSpeaking = false
                     onStopTalk()
                 },
                 onWhisper = {
                     if (hasAudioPermission) {
-                        isUserSpeaking = true
                         onWhisper()
-                        // Auto release after 2 seconds for whisper
-                        CoroutineScope(Dispatchers.Main).launch {
-                            delay(2000)
-                            isUserSpeaking = false
-                        }
                     }
                 }
             )
@@ -777,9 +862,116 @@ fun SquadScreen(
 }
 
 @Composable
-fun PushToTalkButton(isSpeaking: Boolean, isConnected: Boolean, onPress: () -> Unit, onRelease: () -> Unit, onWhisper: () -> Unit) {
+fun ActiveTransmissionBanner(floorStatus: FloorStatus) {
+    val infiniteTransition = rememberInfiniteTransition(label = "bannerPulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+        label = "bannerAlpha"
+    )
+
+    val (bgColor, borderColor, text, textColor, iconColor) = when (floorStatus.state) {
+        FloorState.IDLE -> FloorBannerConfig(
+            Color(0xFF1E2126),
+            Color.White.copy(alpha = 0.08f),
+            "📻 CHANNEL OPEN • HOLD TO TALK",
+            Color.White.copy(alpha = 0.7f),
+            Color(0xFF4CAF50)
+        )
+        FloorState.REQUESTING -> FloorBannerConfig(
+            Color(0xFFFFA000).copy(alpha = 0.15f),
+            Color(0xFFFFA000).copy(alpha = 0.6f),
+            "⏳ ACQUIRING CHANNEL...",
+            Color(0xFFFFA000),
+            Color(0xFFFFA000)
+        )
+        FloorState.TRANSMITTING -> {
+            val secondsRemaining = ((floorStatus.expiresAt - System.currentTimeMillis()).coerceAtLeast(0) / 1000).toInt()
+            FloorBannerConfig(
+                Color(0xFF4CAF50).copy(alpha = 0.2f),
+                Color(0xFF4CAF50),
+                "🔴 TRANSMITTING (${secondsRemaining}s remaining)",
+                Color(0xFF4CAF50),
+                Color(0xFF4CAF50)
+            )
+        }
+        FloorState.RECEIVING -> {
+            val name = floorStatus.currentSpeakerName ?: "MEMBER"
+            FloorBannerConfig(
+                Color(0xFF2196F3).copy(alpha = 0.15f),
+                Color(0xFF2196F3).copy(alpha = 0.6f),
+                "🟢 $name IS TRANSMITTING",
+                Color(0xFF2196F3),
+                Color(0xFF2196F3)
+            )
+        }
+        FloorState.BUSY_BLOCKED -> {
+            val name = floorStatus.currentSpeakerName ?: "SOMEONE"
+            FloorBannerConfig(
+                Color(0xFFE53935).copy(alpha = 0.15f),
+                Color(0xFFE53935).copy(alpha = 0.6f),
+                "🔒 CHANNEL BUSY • $name IS SPEAKING",
+                Color(0xFFFF5252),
+                Color(0xFFFF5252)
+            )
+        }
+    }
+
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .graphicsLayer(alpha = if (floorStatus.state != FloorState.IDLE) pulseAlpha else 1f)
+                    .background(iconColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = text,
+                color = textColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+        }
+    }
+}
+
+private data class FloorBannerConfig(
+    val bgColor: Color,
+    val borderColor: Color,
+    val text: String,
+    val textColor: Color,
+    val iconColor: Color
+)
+
+@Composable
+fun PushToTalkButton(
+    floorStatus: FloorStatus,
+    isConnected: Boolean,
+    isOwner: Boolean = false,
+    onPress: (isPriority: Boolean) -> Unit,
+    onRelease: () -> Unit,
+    onWhisper: () -> Unit
+) {
+    val isTransmitting = floorStatus.state == FloorState.TRANSMITTING
+    val isRequesting = floorStatus.state == FloorState.REQUESTING
+    val isBusy = floorStatus.state == FloorState.BUSY_BLOCKED || floorStatus.state == FloorState.RECEIVING
+
     val scale by animateFloatAsState(
-        targetValue = if (isSpeaking) 0.9f else 1f,
+        targetValue = if (isTransmitting) 0.92f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -822,11 +1014,57 @@ fun PushToTalkButton(isSpeaking: Boolean, isConnected: Boolean, onPress: () -> U
         label = "breathingAlpha"
     )
 
+    val ringColor = when {
+        isTransmitting -> Color(0xFF4CAF50)
+        isRequesting -> Color(0xFFFFA000)
+        isBusy -> Color(0xFFE53935)
+        else -> Color.White.copy(alpha = 0.1f)
+    }
+
+    val buttonGradient = when {
+        isTransmitting -> listOf(Color(0xFF66BB6A), Color(0xFF43A047))
+        isRequesting -> listOf(Color(0xFFFFA000), Color(0xFFFF8F00))
+        isBusy -> listOf(Color(0xFF263238), Color(0xFF1E2124))
+        else -> listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
+    }
+
     Box(contentAlignment = Alignment.Center) {
         // Pulsing Rings
-        if (isSpeaking) {
+        if (isTransmitting) {
             Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
             Box(modifier = Modifier.size(170.dp).scale(pulse2Scale).background(Color(0xFF4CAF50).copy(alpha = pulse2Alpha), CircleShape))
+        } else if (isRequesting) {
+            Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFFFFA000).copy(alpha = pulse1Alpha), CircleShape))
+        }
+
+        // Circular countdown progress ring
+        if (isTransmitting) {
+            var timeRemainingRatio by remember { mutableFloatStateOf(1f) }
+            var remainingSec by remember { mutableIntStateOf(20) }
+            LaunchedEffect(floorStatus.expiresAt) {
+                while (isTransmitting) {
+                    val remainingMs = (floorStatus.expiresAt - System.currentTimeMillis()).coerceIn(0, 20000)
+                    timeRemainingRatio = remainingMs / 20000f
+                    remainingSec = (remainingMs / 1000).toInt()
+                    delay(100)
+                }
+            }
+            androidx.compose.foundation.Canvas(modifier = Modifier.size(186.dp)) {
+                drawArc(
+                    color = Color(0xFF4CAF50).copy(alpha = 0.3f),
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = 6.dp.toPx())
+                )
+                drawArc(
+                    color = if (remainingSec <= 3) Color(0xFFFF5252) else Color(0xFF00FF66),
+                    startAngle = -90f,
+                    sweepAngle = 360f * timeRemainingRatio,
+                    useCenter = false,
+                    style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
+                )
+            }
         }
 
         Box(
@@ -834,30 +1072,28 @@ fun PushToTalkButton(isSpeaking: Boolean, isConnected: Boolean, onPress: () -> U
                 .size(170.dp)
                 .scale(scale)
                 .clip(CircleShape)
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = if (isSpeaking) 
-                            listOf(Color(0xFF66BB6A), Color(0xFF43A047)) 
-                        else 
-                            listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
-                    )
-                )
+                .background(brush = Brush.verticalGradient(colors = buttonGradient))
                 .then(
-                    if (!isSpeaking) {
+                    if (!isTransmitting && !isBusy) {
                         Modifier.graphicsLayer(alpha = breathingAlpha)
                     } else Modifier
                 )
                 .border(
-                    width = if (isSpeaking) 4.dp else 2.dp,
-                    color = if (isSpeaking) Color(0xFF81C784) else Color.White.copy(alpha = 0.1f),
+                    width = if (isTransmitting) 4.dp else 2.dp,
+                    color = ringColor,
                     shape = CircleShape
                 )
-                .pointerInput(isConnected) {
+                .pointerInput(isConnected, isOwner) {
                     if (isConnected) {
                         detectTapGestures(
                             onPress = { 
-                                onPress()
+                                onPress(false)
                                 try { awaitRelease() } finally { onRelease() }
+                            },
+                            onLongPress = {
+                                if (isOwner) {
+                                    onPress(true)
+                                }
                             },
                             onDoubleTap = {
                                 onWhisper()
@@ -869,20 +1105,33 @@ fun PushToTalkButton(isSpeaking: Boolean, isConnected: Boolean, onPress: () -> U
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    Icons.Default.Mic, 
+                    imageVector = when {
+                        isBusy -> Icons.Default.Close
+                        isRequesting -> Icons.Default.Bolt
+                        else -> Icons.Default.Mic
+                    }, 
                     contentDescription = null, 
-                    tint = Color.White, 
+                    tint = if (isBusy) Color.Gray else Color.White, 
                     modifier = Modifier
-                        .size(56.dp)
-                        .graphicsLayer(alpha = if (isSpeaking) 1f else 0.8f)
+                        .size(54.dp)
+                        .graphicsLayer(alpha = if (isTransmitting) 1f else 0.85f)
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+                val buttonText = when {
+                    isTransmitting -> {
+                        val secs = ((floorStatus.expiresAt - System.currentTimeMillis()).coerceAtLeast(0) / 1000).toInt()
+                        "TRANSMITTING (${secs}s)"
+                    }
+                    isRequesting -> "ACQUIRING..."
+                    isBusy -> "CHANNEL BUSY"
+                    else -> "HOLD TO TALK"
+                }
                 Text(
-                    text = if (isSpeaking) "TALKING..." else "HOLD TO TALK", 
-                    color = Color.White, 
-                    fontSize = 14.sp, 
+                    text = buttonText, 
+                    color = if (isBusy) Color.Gray else Color.White, 
+                    fontSize = 12.sp, 
                     fontWeight = FontWeight.Black,
-                    letterSpacing = 1.5.sp
+                    letterSpacing = 1.2.sp
                 )
             }
         }
@@ -1095,7 +1344,7 @@ fun TimerView() {
 }
 
 @Composable
-fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socketUiState: SocketUiState) {
+fun SpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolean, socketUiState: SocketUiState) {
     var currentTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while(true) {
@@ -1111,10 +1360,15 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
         contentAlignment = Alignment.Center
     ) {
         val anyOtherSpeaking = socketUiState.roomMembers.any { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }
+        val isRemoteTransmitting = floorStatus.state == FloorState.RECEIVING || floorStatus.state == FloorState.BUSY_BLOCKED
+        val isLocalTransmitting = floorStatus.state == FloorState.TRANSMITTING
+        val isRequesting = floorStatus.state == FloorState.REQUESTING
+
         AnimatedContent(
             targetState = when {
-                isUserSpeaking -> "YOU"
-                isOthersSpeaking || anyOtherSpeaking -> "OTHERS"
+                isLocalTransmitting -> "YOU"
+                isRequesting -> "REQUESTING"
+                isRemoteTransmitting || isOthersSpeaking || anyOtherSpeaking -> "OTHERS"
                 else -> "IDLE"
             },
             transitionSpec = {
@@ -1128,7 +1382,7 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
                         PulsingDot(Color(0xFF4CAF50))
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "YOU ARE SPEAKING",
+                            "YOU ARE TRANSMITTING",
                             color = Color(0xFF4CAF50),
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 15.sp,
@@ -1136,9 +1390,24 @@ fun SpeakingIndicator(isUserSpeaking: Boolean, isOthersSpeaking: Boolean, socket
                         )
                     }
                 }
+                "REQUESTING" -> {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        PulsingDot(Color(0xFFFFA000))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "ACQUIRING CHANNEL...",
+                            color = Color(0xFFFFA000),
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            letterSpacing = 1.sp
+                        )
+                    }
+                }
                 "OTHERS" -> {
-                    val activeSpeaker = socketUiState.roomMembers.find { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }?.username
-                    val speakerName = (activeSpeaker ?: socketUiState.lastSpeakerName)?.trim()?.uppercase()
+                    val activeSpeaker = floorStatus.currentSpeakerName
+                        ?: socketUiState.roomMembers.find { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }?.username
+                        ?: socketUiState.lastSpeakerName
+                    val speakerName = activeSpeaker?.trim()?.uppercase()
                     val displayText = if (!speakerName.isNullOrBlank() && speakerName != socketUiState.username.uppercase()) {
                         "$speakerName IS SPEAKING"
                     } else {
