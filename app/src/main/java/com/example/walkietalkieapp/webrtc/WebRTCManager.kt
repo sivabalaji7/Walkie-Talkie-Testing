@@ -71,7 +71,7 @@ class WebRTCManager(private val context: Context) {
                 isSpeakerphoneOn = true
                 isMicrophoneMute = false
             }
-            Log.d(TAG, "Audio routed to hands-free speakerphone & dual-mic array (Bottom primary + Top ambient)")
+            Log.d(TAG, "Audio routed to Bottom Primary Mouth Mic + Front Beamforming Array (VOICE_RECOGNITION)")
         } catch (e: Exception) {
             Log.e(TAG, "Error ensuring hands-free audio routing: ${e.message}")
         }
@@ -83,11 +83,11 @@ class WebRTCManager(private val context: Context) {
             initializeLibrary(context)
             ensureHandsFreeAudioRouting()
             
-            // Optimized audio device module for VoIP with multi-mic array
+            // Optimized audio device module targeting Bottom Primary Mouth Mic + Front Beamforming Array
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
                 .setUseHardwareAcousticEchoCanceler(true)
                 .setUseHardwareNoiseSuppressor(false) // Disabled to eliminate OEM DSP phase cancellation & low-frequency voice clipping
-                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION) // Forces Bottom Primary Mouth Microphone + Front Acoustic Array
                 .setUseStereoInput(false)
                 .setUseStereoOutput(false)
                 .createAudioDeviceModule()
@@ -104,7 +104,7 @@ class WebRTCManager(private val context: Context) {
                 .createPeerConnectionFactory()
 
             isInitialized = true
-            Log.d(TAG, "WebRTC init successful (Dual-Mic Hands-free Array Active)")
+            Log.d(TAG, "WebRTC init successful (Bottom Primary Mic + Beamforming Active)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init WebRTC: ${e.message}")
         }
