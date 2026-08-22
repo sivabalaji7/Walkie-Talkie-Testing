@@ -20,6 +20,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -38,6 +40,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,7 +55,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -870,11 +876,10 @@ fun ActiveTransmissionBanner(floorStatus: FloorStatus) {
             Color(0xFFFFA000)
         )
         FloorState.TRANSMITTING -> {
-            val secondsRemaining = ((floorStatus.expiresAt - System.currentTimeMillis()).coerceAtLeast(0) / 1000).toInt()
             FloorBannerConfig(
                 Color(0xFF4CAF50).copy(alpha = 0.2f),
                 Color(0xFF4CAF50),
-                "🔴 TRANSMITTING (${secondsRemaining}s remaining)",
+                "🔴 TRANSMITTING • LIVE",
                 Color(0xFF4CAF50),
                 Color(0xFF4CAF50)
             )
@@ -953,8 +958,21 @@ fun PushToTalkButton(
     val isRequesting = floorStatus.state == FloorState.REQUESTING
     val isBusy = floorStatus.state == FloorState.BUSY_BLOCKED || floorStatus.state == FloorState.RECEIVING
 
+    var isLocked by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val lockThresholdPx = with(density) { 65.dp.toPx() }
+
+    // Auto-reset lock when transmission ends or floor is idle/busy
+    LaunchedEffect(floorStatus.state) {
+        if (floorStatus.state != FloorState.TRANSMITTING && floorStatus.state != FloorState.REQUESTING) {
+            isLocked = false
+            dragOffsetY = 0f
+        }
+    }
+
     val scale by animateFloatAsState(
-        targetValue = if (isTransmitting) 0.92f else 1f,
+        targetValue = if (isTransmitting || isLocked) 0.95f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -998,6 +1016,7 @@ fun PushToTalkButton(
     )
 
     val ringColor = when {
+        isLocked -> Color(0xFF00E676)
         isTransmitting -> Color(0xFF4CAF50)
         isRequesting -> Color(0xFFFFA000)
         isBusy -> Color(0xFFE53935)
@@ -1005,109 +1024,185 @@ fun PushToTalkButton(
     }
 
     val buttonGradient = when {
+        isLocked -> listOf(Color(0xFF00E676), Color(0xFF2E7D32))
         isTransmitting -> listOf(Color(0xFF66BB6A), Color(0xFF43A047))
         isRequesting -> listOf(Color(0xFFFFA000), Color(0xFFFF8F00))
         isBusy -> listOf(Color(0xFF263238), Color(0xFF1E2124))
         else -> listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
     }
 
-    Box(contentAlignment = Alignment.Center) {
-        // Pulsing Rings
-        if (isTransmitting) {
-            Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
-            Box(modifier = Modifier.size(170.dp).scale(pulse2Scale).background(Color(0xFF4CAF50).copy(alpha = pulse2Alpha), CircleShape))
-        } else if (isRequesting) {
-            Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFFFFA000).copy(alpha = pulse1Alpha), CircleShape))
-        }
-
-        // Circular countdown progress ring
-        if (isTransmitting) {
-            var timeRemainingRatio by remember { mutableFloatStateOf(1f) }
-            var remainingSec by remember { mutableIntStateOf(20) }
-            LaunchedEffect(floorStatus.expiresAt) {
-                while (isTransmitting) {
-                    val remainingMs = (floorStatus.expiresAt - System.currentTimeMillis()).coerceIn(0, 20000)
-                    timeRemainingRatio = remainingMs / 20000f
-                    remainingSec = (remainingMs / 1000).toInt()
-                    delay(100)
-                }
-            }
-            androidx.compose.foundation.Canvas(modifier = Modifier.size(186.dp)) {
-                drawArc(
-                    color = Color(0xFF4CAF50).copy(alpha = 0.3f),
-                    startAngle = -90f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    style = Stroke(width = 6.dp.toPx())
-                )
-                drawArc(
-                    color = if (remainingSec <= 3) Color(0xFFFF5252) else Color(0xFF00FF66),
-                    startAngle = -90f,
-                    sweepAngle = 360f * timeRemainingRatio,
-                    useCenter = false,
-                    style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round)
-                )
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .size(170.dp)
-                .scale(scale)
-                .clip(CircleShape)
-                .background(brush = Brush.verticalGradient(colors = buttonGradient))
-                .then(
-                    if (!isTransmitting && !isBusy) {
-                        Modifier.graphicsLayer(alpha = breathingAlpha)
-                    } else Modifier
-                )
-                .border(
-                    width = if (isTransmitting) 4.dp else 2.dp,
-                    color = ringColor,
-                    shape = CircleShape
-                )
-                .pointerInput(isConnected) {
-                    if (isConnected) {
-                        detectTapGestures(
-                            onPress = { 
-                                onPress(false)
-                                try { awaitRelease() } finally { onRelease() }
-                            }
-                        )
-                    }
-                },
-            contentAlignment = Alignment.Center
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        // WhatsApp-style Floating Swipe-Up Lock Indicator
+        AnimatedVisibility(
+            visible = (isTransmitting || isRequesting) && !isLocked,
+            enter = fadeIn() + slideInVertically { it },
+            exit = fadeOut() + slideOutVertically { it }
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = when {
-                        isBusy -> Icons.Default.Close
-                        isRequesting -> Icons.Default.Bolt
-                        else -> Icons.Default.Mic
-                    }, 
-                    contentDescription = null, 
-                    tint = if (isBusy) Color.Gray else Color.White, 
-                    modifier = Modifier
-                        .size(54.dp)
-                        .graphicsLayer(alpha = if (isTransmitting) 1f else 0.85f)
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                val buttonText = when {
-                    isTransmitting -> {
-                        val secs = ((floorStatus.expiresAt - System.currentTimeMillis()).coerceAtLeast(0) / 1000).toInt()
-                        "TRANSMITTING (${secs}s)"
-                    }
-                    isRequesting -> "ACQUIRING..."
-                    isBusy -> "CHANNEL BUSY"
-                    else -> "HOLD TO TALK"
+            val visualDragOffset = (dragOffsetY.coerceIn(-lockThresholdPx, 0f) * 0.5f).toInt()
+            Surface(
+                color = Color(0xFF1E2124).copy(alpha = 0.95f),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .offset { IntOffset(0, visualDragOffset) }
+                    .padding(bottom = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = Color(0xFF4CAF50),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "SWIPE UP TO LOCK",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp
+                    )
                 }
-                Text(
-                    text = buttonText, 
-                    color = if (isBusy) Color.Gray else Color.White, 
-                    fontSize = 12.sp, 
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 1.2.sp
-                )
+            }
+        }
+
+        Box(contentAlignment = Alignment.Center) {
+            // Pulsing Rings
+            if (isTransmitting || isLocked) {
+                Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
+                Box(modifier = Modifier.size(170.dp).scale(pulse2Scale).background(Color(0xFF4CAF50).copy(alpha = pulse2Alpha), CircleShape))
+            } else if (isRequesting) {
+                Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFFFFA000).copy(alpha = pulse1Alpha), CircleShape))
+            }
+
+            // Outer Active Ring
+            if (isTransmitting || isLocked) {
+                androidx.compose.foundation.Canvas(modifier = Modifier.size(186.dp)) {
+                    drawCircle(
+                        color = if (isLocked) Color(0xFF00E676) else Color(0xFF4CAF50),
+                        style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(170.dp)
+                    .scale(scale)
+                    .clip(CircleShape)
+                    .background(brush = Brush.verticalGradient(colors = buttonGradient))
+                    .then(
+                        if (!isTransmitting && !isBusy && !isLocked) {
+                            Modifier.graphicsLayer(alpha = breathingAlpha)
+                        } else Modifier
+                    )
+                    .border(
+                        width = if (isTransmitting || isLocked) 4.dp else 2.dp,
+                        color = ringColor,
+                        shape = CircleShape
+                    )
+                    .pointerInput(isConnected, isLocked) {
+                        if (!isConnected) return@pointerInput
+                        if (isLocked) {
+                            detectTapGestures(
+                                onTap = {
+                                    isLocked = false
+                                    dragOffsetY = 0f
+                                    onRelease()
+                                }
+                            )
+                        } else {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                dragOffsetY = 0f
+                                onPress(false)
+                                var isReleased = false
+                                while (!isReleased) {
+                                    val event = awaitPointerEvent()
+                                    val pointer = event.changes.find { it.id == down.id } ?: event.changes.firstOrNull()
+                                    if (pointer == null || !pointer.pressed) {
+                                        isReleased = true
+                                        if (!isLocked) {
+                                            dragOffsetY = 0f
+                                            onRelease()
+                                        }
+                                    } else {
+                                        val currentDrag = pointer.position.y - down.position.y
+                                        if (currentDrag < 0) {
+                                            dragOffsetY = currentDrag
+                                            if (-currentDrag >= lockThresholdPx && !isLocked) {
+                                                isLocked = true
+                                            }
+                                        } else {
+                                            dragOffsetY = 0f
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = when {
+                            isLocked -> Icons.Default.Lock
+                            isBusy -> Icons.Default.Close
+                            isRequesting -> Icons.Default.Bolt
+                            else -> Icons.Default.Mic
+                        }, 
+                        contentDescription = null, 
+                        tint = if (isBusy) Color.Gray else Color.White, 
+                        modifier = Modifier
+                            .size(54.dp)
+                            .graphicsLayer(alpha = if (isTransmitting || isLocked) 1f else 0.85f)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    val buttonText = when {
+                        isLocked -> "LOCKED • LIVE"
+                        isTransmitting -> "TRANSMITTING"
+                        isRequesting -> "ACQUIRING..."
+                        isBusy -> "CHANNEL BUSY"
+                        else -> "HOLD TO TALK"
+                    }
+                    Text(
+                        text = buttonText, 
+                        color = if (isBusy) Color.Gray else Color.White, 
+                        fontSize = 12.sp, 
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.2.sp
+                    )
+                }
+            }
+        }
+
+        // WhatsApp-like Lock "STOP" action button
+        AnimatedVisibility(
+            visible = isLocked,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
+        ) {
+            Button(
+                onClick = {
+                    isLocked = false
+                    dragOffsetY = 0f
+                    onRelease()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier
+                    .padding(top = 16.dp)
+                    .height(44.dp)
+            ) {
+                Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("TAP TO STOP", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
     }

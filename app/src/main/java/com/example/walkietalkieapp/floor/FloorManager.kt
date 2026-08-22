@@ -57,7 +57,7 @@ object FloorManager {
         fallbackRunnable = Runnable {
             if (_floorStatus.value.state == FloorState.REQUESTING) {
                 Log.d(TAG, "Fallback: server did not respond, granting locally")
-                handleFloorGranted(System.currentTimeMillis() + 20000)
+                handleFloorGranted(0)
             }
         }
         mainHandler.postDelayed(fallbackRunnable!!, 600)
@@ -85,8 +85,16 @@ object FloorManager {
      */
     fun handleFloorGranted(expiresAt: Long) = runOnMain {
         cancelFallback()
-        Log.d(TAG, "Floor GRANTED")
 
+        // Fix tap race: If user already released PTT before server granted floor, do not stay transmitting!
+        if (_floorStatus.value.state != FloorState.REQUESTING) {
+            Log.d(TAG, "Floor GRANTED but user already released — immediately releasing floor")
+            com.example.walkietalkieapp.socket.SocketManager.emitReleaseFloor()
+            _floorStatus.update { FloorStatus(state = FloorState.IDLE) }
+            return@runOnMain
+        }
+
+        Log.d(TAG, "Floor GRANTED (unlimited talk time)")
         _floorStatus.update {
             FloorStatus(
                 state = FloorState.TRANSMITTING,
@@ -94,16 +102,6 @@ object FloorManager {
                 expiresAt = expiresAt
             )
         }
-
-        // Schedule hard cutoff safety timer
-        cancelTransmitTimer()
-        val durationMs = (expiresAt - System.currentTimeMillis()).coerceAtLeast(1000)
-        transmitTimeoutRunnable = Runnable {
-            if (_floorStatus.value.state == FloorState.TRANSMITTING) {
-                handleFloorTimedOut()
-            }
-        }
-        mainHandler.postDelayed(transmitTimeoutRunnable!!, durationMs)
 
         onFloorGranted?.invoke()
     }
