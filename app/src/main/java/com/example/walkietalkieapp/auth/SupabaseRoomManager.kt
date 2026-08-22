@@ -355,6 +355,85 @@ object SupabaseRoomManager {
         }
     }
 
+    suspend fun leaveRoom(roomId: String, userId: String): RoomResult<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val url = "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$roomId&user_id=eq.$userId"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .delete()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "leaveRoom error ${response.code}: ${response.body?.string()}")
+                    return@withContext RoomResult.Error("Failed to leave squad")
+                }
+                return@withContext RoomResult.Success(true)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "leaveRoom exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun getRoomByCode(code: String): RoomResult<Room> = withContext(Dispatchers.IO) {
+        val cleanCode = code.trim().uppercase()
+        try {
+            val url = "$SUPABASE_URL/rest/v1/rooms?code=eq.$cleanCode&select=id,name,code,owner_id"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) return@withContext RoomResult.Error("Failed to find squad")
+                val arr = JSONArray(body)
+                if (arr.length() == 0) return@withContext RoomResult.Error("Squad room not found")
+                val rObj = arr.getJSONObject(0)
+                return@withContext RoomResult.Success(
+                    Room(
+                        id = rObj.getString("id"),
+                        name = rObj.getString("name"),
+                        code = rObj.getString("code"),
+                        ownerId = rObj.getString("owner_id")
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getRoomByCode exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun getMemberStatus(roomId: String, userId: String): RoomResult<String?> = withContext(Dispatchers.IO) {
+        try {
+            val url = "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$roomId&user_id=eq.$userId&select=status"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) return@withContext RoomResult.Error("Failed to check status")
+                val arr = JSONArray(body)
+                if (arr.length() == 0) return@withContext RoomResult.Success(null)
+                val status = arr.getJSONObject(0).getString("status")
+                return@withContext RoomResult.Success(status)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getMemberStatus exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
     private suspend fun updateMemberStatus(roomId: String, userId: String, status: String): RoomResult<Boolean> {
         try {
             val json = JSONObject().apply {

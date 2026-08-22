@@ -1,8 +1,9 @@
 package com.example.walkietalkieapp
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,7 +33,7 @@ import com.example.walkietalkieapp.auth.RoomResult
 import com.example.walkietalkieapp.auth.SupabaseRoomManager
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun RoomsDashboardScreen(
     currentUserId: String,
@@ -47,6 +48,8 @@ fun RoomsDashboardScreen(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
+    var roomToExit by remember { mutableStateOf<Room?>(null) }
+    var isExiting by remember { mutableStateOf(false) }
 
     fun refreshData() {
         coroutineScope.launch {
@@ -182,7 +185,8 @@ fun RoomsDashboardScreen(
                                 room = room, 
                                 isOwner = isOwner,
                                 pendingCount = roomPendingCount,
-                                onClick = { onJoinRoom(room.code, room.name) }
+                                onClick = { onJoinRoom(room.code, room.name) },
+                                onLongClick = { roomToExit = room }
                             )
                         }
                     }
@@ -191,14 +195,74 @@ fun RoomsDashboardScreen(
         }
     }
 
+    if (roomToExit != null) {
+        val targetRoom = roomToExit!!
+        val isOwner = targetRoom.ownerId == currentUserId
+        AlertDialog(
+            onDismissRequest = { if (!isExiting) roomToExit = null },
+            containerColor = Color(0xFF1E2126),
+            icon = {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(28.dp))
+            },
+            title = {
+                Text(
+                    text = if (isOwner) "Leave & Delete Squad?" else "Exit Squad?",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (isOwner) {
+                        "You are the owner of \"${targetRoom.name}\" (${targetRoom.code}). Leaving will remove this squad from your dashboard."
+                    } else {
+                        "Are you sure you want to exit \"${targetRoom.name}\" (${targetRoom.code})?\n\nYou will need an invite or owner approval to rejoin."
+                    },
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isExiting = true
+                        coroutineScope.launch {
+                            SupabaseRoomManager.leaveRoom(targetRoom.id, currentUserId)
+                            roomToExit = null
+                            isExiting = false
+                            refreshData()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = !isExiting
+                ) {
+                    if (isExiting) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Exit Squad", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { roomToExit = null },
+                    enabled = !isExiting
+                ) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
     if (showCreateDialog) {
         CreateRoomDialog(
             currentUserId = currentUserId,
             currentUsername = currentUsername,
             onDismiss = { showCreateDialog = false },
-            onSuccess = { roomCode ->
+            onSuccess = { roomCode, roomName ->
                 showCreateDialog = false
-                onJoinRoom(roomCode, "")
+                onJoinRoom(roomCode, roomName)
             }
         )
     }
@@ -210,24 +274,30 @@ fun RoomsDashboardScreen(
             onDismiss = { showJoinDialog = false },
             onSuccess = { 
                 showJoinDialog = false
+                refreshData()
             }
         )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RoomItem(
     room: Room, 
     isOwner: Boolean = false, 
     pendingCount: Int = 0,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF1E2126))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -258,7 +328,11 @@ fun RoomItem(
                 }
             }
             Spacer(modifier = Modifier.height(2.dp))
-            Text("Code: ${room.code}", color = Color.Gray, fontSize = 12.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Code: ${room.code}", color = Color.Gray, fontSize = 12.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("• Hold to exit", color = Color.Gray.copy(alpha = 0.5f), fontSize = 10.sp)
+            }
         }
         if (pendingCount > 0) {
             Surface(
@@ -308,7 +382,7 @@ fun CreateRoomDialog(
     currentUserId: String,
     currentUsername: String,
     onDismiss: () -> Unit,
-    onSuccess: (String) -> Unit
+    onSuccess: (String, String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var isSubmitting by remember { mutableStateOf(false) }
@@ -345,7 +419,7 @@ fun CreateRoomDialog(
                         scope.launch {
                             val res = SupabaseRoomManager.createRoom(name, currentUserId, currentUsername)
                             if (res is RoomResult.Success) {
-                                onSuccess(res.data.code)
+                                onSuccess(res.data.code, res.data.name)
                             } else if (res is RoomResult.Error) {
                                 error = res.message
                                 isSubmitting = false

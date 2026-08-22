@@ -302,7 +302,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             if (deepLinkRoomId.isNotEmpty() && isLoggedIn && currentUsername.isNotEmpty()) {
                                 val targetCode = deepLinkRoomId
                                 deepLinkRoomId = ""
-                                enterSquad(targetCode, currentUsername, targetCode)
+                                val userId = sessionManager.getUserId()
+
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    val roomRes = com.example.walkietalkieapp.auth.SupabaseRoomManager.getRoomByCode(targetCode)
+                                    if (roomRes is com.example.walkietalkieapp.auth.RoomResult.Success) {
+                                        val room = roomRes.data
+                                        val statusRes = com.example.walkietalkieapp.auth.SupabaseRoomManager.getMemberStatus(room.id, userId)
+                                        val status = if (statusRes is com.example.walkietalkieapp.auth.RoomResult.Success) statusRes.data else null
+                                        val isOwner = room.ownerId == userId
+
+                                        if (isOwner || status == "APPROVED") {
+                                            notificationQueue.add("Entering ${room.name} 🚀")
+                                            enterSquad(room.code, currentUsername, room.name)
+                                        } else if (status == "PENDING") {
+                                            notificationQueue.add("⏳ Join request pending owner approval for ${room.name}")
+                                        } else {
+                                            val reqRes = com.example.walkietalkieapp.auth.SupabaseRoomManager.requestJoin(room.code, userId, currentUsername)
+                                            if (reqRes is com.example.walkietalkieapp.auth.RoomResult.Success) {
+                                                notificationQueue.add("⏳ Join request sent to ${room.name} owner for approval")
+                                            } else {
+                                                val errMsg = (reqRes as com.example.walkietalkieapp.auth.RoomResult.Error).message
+                                                notificationQueue.add(errMsg)
+                                            }
+                                        }
+                                    } else {
+                                        notificationQueue.add("⚠️ Squad not found for code: $targetCode")
+                                    }
+                                }
                             }
                         }
 
