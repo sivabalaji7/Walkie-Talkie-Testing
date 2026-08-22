@@ -119,20 +119,6 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val username = when (data) {
-                        is JSONObject -> data.optString("username", "Someone")
-                        is String -> data
-                        else -> "Someone"
-                    }
-                    val msg = "$username joined the squad"
-                    addLog(msg)
-                    _events.tryEmit(msg)
-                    updateActivity()
-                }
-
-                on("user-left") { args ->
-                    if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull()
-                    val username = when (data) {
                         is JSONObject -> data.optString("username", "")
                         is String -> {
                             try {
@@ -145,17 +131,54 @@ object SocketManager {
                         else -> ""
                     }
                     if (username.isNotBlank()) {
-                        val msg = "$username left the squad"
+                        val msg = "$username joined the squad"
                         addLog(msg)
                         _events.tryEmit(msg)
                         _socketUiState.update { state ->
-                            state.copy(
-                                roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
-                            )
+                            val exists = state.roomMembers.any { it.username.equals(username, ignoreCase = true) }
+                            if (!exists) {
+                                state.copy(roomMembers = state.roomMembers + RoomMember(username, username, false))
+                            } else {
+                                state
+                            }
                         }
                     }
                     updateActivity()
                 }
+
+                val onUserLeftHandler: (Array<Any>) -> Unit = { args ->
+                    if (_socketUiState.value.roomId.isNotEmpty()) {
+                        val data = args.firstOrNull()
+                        val username = when (data) {
+                            is JSONObject -> data.optString("username", "")
+                            is String -> {
+                                try {
+                                    val json = JSONObject(data)
+                                    json.optString("username", data)
+                                } catch (e: Exception) {
+                                    data
+                                }
+                            }
+                            else -> ""
+                        }
+                        if (username.isNotBlank()) {
+                            val msg = "$username left the squad"
+                            addLog(msg)
+                            _events.tryEmit(msg)
+                            _socketUiState.update { state ->
+                                state.copy(
+                                    roomMembers = state.roomMembers.filter { !it.username.equals(username, ignoreCase = true) }
+                                )
+                            }
+                        }
+                        updateActivity()
+                    }
+                }
+
+                on("user-left", onUserLeftHandler)
+                on("user_left", onUserLeftHandler)
+                on("member-left", onUserLeftHandler)
+                on("peer-disconnected", onUserLeftHandler)
 
                 on("offer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
@@ -234,10 +257,14 @@ object SocketManager {
         val username = _socketUiState.value.username
         if (oldRoomId.isNotEmpty()) {
             try {
-                socket?.emit("leave-room", JSONObject().apply { 
+                val payload = JSONObject().apply { 
                     put("roomId", oldRoomId) 
                     put("username", username)
-                })
+                }
+                socket?.emit("leave-room", payload)
+                socket?.emit("leave", payload)
+                socket?.emit("leave-room", oldRoomId)
+                socket?.emit("user-left", payload)
             } catch (e: Exception) {
                 Log.e(TAG, "Error emitting leave-room: ${e.message}")
             }
@@ -250,6 +277,13 @@ object SocketManager {
                 voiceLinkState = "IDLE", 
                 lastSpeakerName = null
             ) 
+        }
+        // Quickly cycle socket so server's native disconnect handler drops this socket from room immediately
+        try {
+            socket?.disconnect()
+            socket?.connect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cycling socket: ${e.message}")
         }
         addLog("Left Squad")
     }
