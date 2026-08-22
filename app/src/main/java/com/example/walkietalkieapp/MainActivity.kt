@@ -89,6 +89,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var toneGenerator: ToneGenerator
 
     private var isBatterySaverEnabled by mutableStateOf(true)
+    private var lastIncomingAlertTimestamp = 0L
+    private val INCOMING_ALERT_COOLDOWN_MS = 5000L
+
+    private fun triggerIncomingSpeakerAlert() {
+        val now = System.currentTimeMillis()
+        if (now - lastIncomingAlertTimestamp >= INCOMING_ALERT_COOLDOWN_MS) {
+            lastIncomingAlertTimestamp = now
+            vibrate()
+            playTone(ToneGenerator.TONE_PROP_BEEP)
+        } else {
+            Log.d(TAG, "Incoming speaker alert debounced (5s cooldown active)")
+        }
+    }
 
     // Sensor / Gyro
     private var sensorManager: SensorManager? = null
@@ -111,8 +124,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             walkieTalkieService?.onOthersSpeakingStateChange = { speaking ->
                 runOnUiThread { 
                     if (speaking && !isOthersSpeaking) {
-                        vibrate()
-                        playTone(ToneGenerator.TONE_PROP_BEEP)
+                        triggerIncomingSpeakerAlert()
                     }
                     isOthersSpeaking = speaking 
                 }
@@ -351,13 +363,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     LaunchedEffect(Unit) {
                         SocketManager.events.collect { event ->
                             notificationQueue.add(event)
-                        }
-                    }
-
-                    LaunchedEffect(isOthersSpeaking) {
-                        if (isOthersSpeaking) {
-                            vibrate()
-                            playTone(ToneGenerator.TONE_PROP_BEEP)
                         }
                     }
                 }
