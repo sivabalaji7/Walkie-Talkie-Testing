@@ -20,6 +20,12 @@ data class Room(
     val ownerId: String
 )
 
+data class RoomMember(
+    val userId: String,
+    val username: String,
+    val status: String = "APPROVED"
+)
+
 data class RoomMemberRequest(
     val roomId: String,
     val userId: String,
@@ -430,6 +436,126 @@ object SupabaseRoomManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "getMemberStatus exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun getApprovedMembers(roomId: String): RoomResult<List<RoomMember>> = withContext(Dispatchers.IO) {
+        val clean = roomId.trim()
+        if (clean.isBlank()) return@withContext RoomResult.Success(emptyList())
+        try {
+            val url = "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$clean&status=eq.APPROVED&select=user_id,username,status"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "getApprovedMembers error ${response.code}: $responseBody")
+                    return@withContext RoomResult.Error("Failed to fetch squad members")
+                }
+
+                val members = mutableListOf<RoomMember>()
+                val jsonArray = JSONArray(responseBody)
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val uId = obj.optString("user_id", "")
+                    val uName = obj.optString("username", "")
+                    val status = obj.optString("status", "APPROVED")
+                    if (uId.isNotBlank() && uName.isNotBlank()) {
+                        members.add(RoomMember(userId = uId, username = uName, status = status))
+                    }
+                }
+                return@withContext RoomResult.Success(members)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getApprovedMembers exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun transferOwnershipAndLeave(roomId: String, currentOwnerId: String, newOwnerId: String): RoomResult<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            // 1. Update owner_id in rooms table
+            val updateJson = JSONObject().apply {
+                put("owner_id", newOwnerId)
+            }.toString()
+
+            val updateRoomRequest = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rooms?id=eq.$roomId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .patch(updateJson.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            client.newCall(updateRoomRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "transferOwnership error ${response.code}: $err")
+                    return@withContext RoomResult.Error("Failed to transfer ownership")
+                }
+            }
+
+            // 2. Remove current owner from room_members
+            val deleteMemberRequest = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/room_members?room_id=eq.$roomId&user_id=eq.$currentOwnerId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .delete()
+                .build()
+
+            client.newCall(deleteMemberRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Failed to remove previous owner from room_members: ${response.body?.string()}")
+                }
+            }
+
+            return@withContext RoomResult.Success(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "transferOwnershipAndLeave exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun destroyRoom(roomId: String): RoomResult<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            // 1. Delete all room_members
+            val deleteMembersRequest = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/room_members?room_id=eq.$roomId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .delete()
+                .build()
+
+            client.newCall(deleteMembersRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Warning deleting room_members: ${response.body?.string()}")
+                }
+            }
+
+            // 2. Delete room from rooms table
+            val deleteRoomRequest = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/rooms?id=eq.$roomId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .delete()
+                .build()
+
+            client.newCall(deleteRoomRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "destroyRoom error ${response.code}: $err")
+                    return@withContext RoomResult.Error("Failed to destroy room")
+                }
+            }
+
+            return@withContext RoomResult.Success(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "destroyRoom exception", e)
             return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
         }
     }

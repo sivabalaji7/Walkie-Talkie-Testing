@@ -27,7 +27,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Warning
 import com.example.walkietalkieapp.auth.Room
+import com.example.walkietalkieapp.auth.RoomMember
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.auth.RoomResult
 import com.example.walkietalkieapp.auth.SupabaseRoomManager
@@ -48,8 +54,17 @@ fun RoomsDashboardScreen(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
-    var roomToExit by remember { mutableStateOf<Room?>(null) }
-    var isExiting by remember { mutableStateOf(false) }
+
+    // Dialog & Action States for Long Press
+    var selectedRoomForAction by remember { mutableStateOf<Room?>(null) }
+    var showOwnerActionDialog by remember { mutableStateOf(false) }
+    var showTransferDialog by remember { mutableStateOf(false) }
+    var showDestroyDialog by remember { mutableStateOf(false) }
+    var showMemberLeaveDialog by remember { mutableStateOf(false) }
+    var candidatesForNewOwner by remember { mutableStateOf<List<RoomMember>>(emptyList()) }
+    var selectedNewOwner by remember { mutableStateOf<RoomMember?>(null) }
+    var isLoadingMembers by remember { mutableStateOf(false) }
+    var isActionInProgress by remember { mutableStateOf(false) }
 
     fun refreshData() {
         coroutineScope.launch {
@@ -186,7 +201,14 @@ fun RoomsDashboardScreen(
                                 isOwner = isOwner,
                                 pendingCount = roomPendingCount,
                                 onClick = { onJoinRoom(room.code, room.name) },
-                                onLongClick = { roomToExit = room }
+                                onLongClick = {
+                                    selectedRoomForAction = room
+                                    if (isOwner) {
+                                        showOwnerActionDialog = true
+                                    } else {
+                                        showMemberLeaveDialog = true
+                                    }
+                                }
                             )
                         }
                     }
@@ -195,29 +217,239 @@ fun RoomsDashboardScreen(
         }
     }
 
-    if (roomToExit != null) {
-        val targetRoom = roomToExit!!
-        val isOwner = targetRoom.ownerId == currentUserId
+    // ── Dialog 1: Owner Options (Leave & Assign Owner vs Destroy Squad) ──
+    if (showOwnerActionDialog && selectedRoomForAction != null) {
+        val targetRoom = selectedRoomForAction!!
         AlertDialog(
-            onDismissRequest = { if (!isExiting) roomToExit = null },
+            onDismissRequest = { if (!isActionInProgress) showOwnerActionDialog = false },
+            containerColor = Color(0xFF1E2126),
+            title = {
+                Column {
+                    Text("Squad Actions", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(targetRoom.name, color = Color(0xFF00FF66), fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    // Option 1: Leave & Assign New Owner
+                    Surface(
+                        onClick = {
+                            showOwnerActionDialog = false
+                            showTransferDialog = true
+                            isLoadingMembers = true
+                            selectedNewOwner = null
+                            coroutineScope.launch {
+                                val membersRes = SupabaseRoomManager.getApprovedMembers(targetRoom.id)
+                                if (membersRes is RoomResult.Success) {
+                                    candidatesForNewOwner = membersRes.data.filter { it.userId != currentUserId }
+                                }
+                                isLoadingMembers = false
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF262B33),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.size(40.dp).background(Color(0xFF2196F3).copy(alpha = 0.2f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF2196F3))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Leave & Assign Owner", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Transfer ownership to another member", color = Color.Gray, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    // Option 2: Destroy Squad
+                    Surface(
+                        onClick = {
+                            showOwnerActionDialog = false
+                            showDestroyDialog = true
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF262B33),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.size(40.dp).background(Color(0xFFFF5252).copy(alpha = 0.2f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5252))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Destroy Squad", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Permanently delete and remove members", color = Color.Gray, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showOwnerActionDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    // ── Dialog 2: Transfer Ownership & Leave Dialog ──
+    if (showTransferDialog && selectedRoomForAction != null) {
+        val targetRoom = selectedRoomForAction!!
+        AlertDialog(
+            onDismissRequest = { if (!isActionInProgress) showTransferDialog = false },
+            containerColor = Color(0xFF1E2126),
+            title = {
+                Text("Transfer Ownership & Leave", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Select an approved member to become the new owner of \"${targetRoom.name}\":",
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (isLoadingMembers) {
+                        Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = Color(0xFF00FF66))
+                        }
+                    } else if (candidatesForNewOwner.isEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF262B33), RoundedCornerShape(12.dp))
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFA000), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("No Other Members", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "There are no other members in this squad. You can destroy the squad or wait for members to join.",
+                                color = Color.Gray,
+                                fontSize = 12.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 240.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(candidatesForNewOwner) { member ->
+                                val isSelected = selectedNewOwner?.userId == member.userId
+                                Surface(
+                                    onClick = { selectedNewOwner = member },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSelected) Color(0xFF00FF66).copy(alpha = 0.15f) else Color(0xFF262B33),
+                                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00FF66)) else null,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (isSelected) Color(0xFF00FF66) else Color.Gray,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(member.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text("Approved Member", color = Color.Gray, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (candidatesForNewOwner.isNotEmpty()) {
+                    Button(
+                        onClick = {
+                            val newOwner = selectedNewOwner ?: return@Button
+                            isActionInProgress = true
+                            coroutineScope.launch {
+                                SupabaseRoomManager.transferOwnershipAndLeave(
+                                    roomId = targetRoom.id,
+                                    currentOwnerId = currentUserId,
+                                    newOwnerId = newOwner.userId
+                                )
+                                showTransferDialog = false
+                                isActionInProgress = false
+                                refreshData()
+                            }
+                        },
+                        enabled = selectedNewOwner != null && !isActionInProgress,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66), contentColor = Color.Black),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (isActionInProgress) {
+                            CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Transfer & Leave", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            showTransferDialog = false
+                            showDestroyDialog = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Destroy Squad Instead", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showTransferDialog = false },
+                    enabled = !isActionInProgress
+                ) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    // ── Dialog 3: Destroy Squad Confirmation Dialog ──
+    if (showDestroyDialog && selectedRoomForAction != null) {
+        val targetRoom = selectedRoomForAction!!
+        AlertDialog(
+            onDismissRequest = { if (!isActionInProgress) showDestroyDialog = false },
             containerColor = Color(0xFF1E2126),
             icon = {
-                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(28.dp))
+                Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(32.dp))
             },
             title = {
-                Text(
-                    text = if (isOwner) "Leave & Delete Squad?" else "Exit Squad?",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
+                Text("Destroy Squad?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             },
             text = {
                 Text(
-                    text = if (isOwner) {
-                        "You are the owner of \"${targetRoom.name}\" (${targetRoom.code}). Leaving will remove this squad from your dashboard."
-                    } else {
-                        "Are you sure you want to exit \"${targetRoom.name}\" (${targetRoom.code})?\n\nYou will need an invite or owner approval to rejoin."
-                    },
+                    text = "Are you sure you want to permanently delete \"${targetRoom.name}\" (${targetRoom.code})?\n\nThis will remove all members and delete this squad for everyone. This cannot be undone.",
                     color = Color.White.copy(alpha = 0.8f),
                     fontSize = 14.sp
                 )
@@ -225,19 +457,71 @@ fun RoomsDashboardScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        isExiting = true
+                        isActionInProgress = true
                         coroutineScope.launch {
-                            SupabaseRoomManager.leaveRoom(targetRoom.id, currentUserId)
-                            roomToExit = null
-                            isExiting = false
+                            SupabaseRoomManager.destroyRoom(targetRoom.id)
+                            showDestroyDialog = false
+                            isActionInProgress = false
                             refreshData()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
                     shape = RoundedCornerShape(12.dp),
-                    enabled = !isExiting
+                    enabled = !isActionInProgress
                 ) {
-                    if (isExiting) {
+                    if (isActionInProgress) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Destroy Squad", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDestroyDialog = false },
+                    enabled = !isActionInProgress
+                ) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        )
+    }
+
+    // ── Dialog 4: Regular Member Exit Squad Confirmation Dialog ──
+    if (showMemberLeaveDialog && selectedRoomForAction != null) {
+        val targetRoom = selectedRoomForAction!!
+        AlertDialog(
+            onDismissRequest = { if (!isActionInProgress) showMemberLeaveDialog = false },
+            containerColor = Color(0xFF1E2126),
+            icon = {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(28.dp))
+            },
+            title = {
+                Text("Exit Squad?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to exit \"${targetRoom.name}\" (${targetRoom.code})?\n\nYou will need an invite or owner approval to rejoin.",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isActionInProgress = true
+                        coroutineScope.launch {
+                            SupabaseRoomManager.leaveRoom(targetRoom.id, currentUserId)
+                            showMemberLeaveDialog = false
+                            isActionInProgress = false
+                            refreshData()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = !isActionInProgress
+                ) {
+                    if (isActionInProgress) {
                         CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     } else {
                         Text("Exit Squad", color = Color.White, fontWeight = FontWeight.Bold)
@@ -246,8 +530,8 @@ fun RoomsDashboardScreen(
             },
             dismissButton = {
                 TextButton(
-                    onClick = { roomToExit = null },
-                    enabled = !isExiting
+                    onClick = { showMemberLeaveDialog = false },
+                    enabled = !isActionInProgress
                 ) {
                     Text("Cancel", color = Color.Gray)
                 }
