@@ -133,6 +133,10 @@ object SocketManager {
                 on("user-joined") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
+                    val peerId = when (data) {
+                        is JSONObject -> data.optString("id", "")
+                        else -> ""
+                    }
                     val username = when (data) {
                         is JSONObject -> data.optString("username", data.optString("name", data.optString("user", "")))
                         is String -> {
@@ -144,6 +148,9 @@ object SocketManager {
                             }
                         }
                         else -> ""
+                    }
+                    if (peerId.isNotEmpty()) {
+                        signalingListener?.onPeersReceived(listOf(peerId))
                     }
                     if (username.isNotBlank()) {
                         val msg = "$username joined the squad"
@@ -164,6 +171,14 @@ object SocketManager {
                 val onUserLeftHandler: (Array<Any>) -> Unit = { args ->
                     if (_socketUiState.value.roomId.isNotEmpty()) {
                         val data = args.firstOrNull()
+                        val peerId = when (data) {
+                            is JSONObject -> data.optString("id", "")
+                            else -> ""
+                        }
+                        if (peerId.isNotEmpty()) {
+                            signalingListener?.onPeerLeft(peerId)
+                        }
+
                         val username = when (data) {
                             is JSONObject -> {
                                 data.optString("username", data.optString("name", data.optString("user", data.optString("sender", data.optString("userId", data.optString("id", ""))))))
@@ -196,13 +211,40 @@ object SocketManager {
                 }
 
                 on("user-left", onUserLeftHandler)
+                on("userLeft", onUserLeftHandler)
                 on("user_left", onUserLeftHandler)
                 on("member-left", onUserLeftHandler)
                 on("peer-disconnected", onUserLeftHandler)
+                on("member-left", onUserLeftHandler)
+                on("peer-disconnected", onUserLeftHandler)
+
+                // ── MULTI-PEER MESH SIGNALING ──────────────────────
+                on("room-peers") { args ->
+                    if (_socketUiState.value.roomId.isEmpty()) return@on
+                    val data = args.firstOrNull()
+                    if (data is JSONObject) {
+                        val peersArray = data.optJSONArray("peers")
+                        val peerIds = mutableListOf<String>()
+                        if (peersArray != null) {
+                            for (i in 0 until peersArray.length()) {
+                                val p = peersArray.optJSONObject(i)
+                                val pId = p?.optString("id", "") ?: ""
+                                if (pId.isNotEmpty()) peerIds.add(pId)
+                            }
+                        }
+                        Log.d(TAG, "Received room-peers: $peerIds")
+                        signalingListener?.onPeersReceived(peerIds)
+                    }
+                }
 
                 on("offer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val sdp = when (val data = args.firstOrNull()) {
+                    val data = args.firstOrNull()
+                    val fromPeerId = when (data) {
+                        is JSONObject -> data.optString("from", "")
+                        else -> ""
+                    }
+                    val sdp = when (data) {
                         is JSONObject -> data.optString("sdp", "")
                         is String -> {
                             try {
@@ -214,13 +256,19 @@ object SocketManager {
                         else -> ""
                     }
                     if (sdp.isNotBlank()) {
-                        signalingListener?.onOfferReceived(sdp)
+                        Log.d(TAG, "Received offer from $fromPeerId")
+                        signalingListener?.onOfferReceived(fromPeerId, sdp)
                     }
                 }
 
                 on("answer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val sdp = when (val data = args.firstOrNull()) {
+                    val data = args.firstOrNull()
+                    val fromPeerId = when (data) {
+                        is JSONObject -> data.optString("from", "")
+                        else -> ""
+                    }
+                    val sdp = when (data) {
                         is JSONObject -> data.optString("sdp", "")
                         is String -> {
                             try {
@@ -232,19 +280,30 @@ object SocketManager {
                         else -> ""
                     }
                     if (sdp.isNotBlank()) {
-                        signalingListener?.onAnswerReceived(sdp)
+                        Log.d(TAG, "Received answer from $fromPeerId")
+                        signalingListener?.onAnswerReceived(fromPeerId, sdp)
                     }
                 }
 
                 on("ice-candidate") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val candidateStr = when (val data = args.firstOrNull()) {
-                        is JSONObject -> data.toString()
+                    val data = args.firstOrNull()
+                    val fromPeerId = when (data) {
+                        is JSONObject -> data.optString("from", "")
+                        else -> ""
+                    }
+                    val candidateStr = when (data) {
+                        is JSONObject -> {
+                            val cand = data.opt("candidate")
+                            if (cand is JSONObject) cand.toString()
+                            else if (cand is String) cand
+                            else data.toString()
+                        }
                         is String -> data
                         else -> ""
                     }
                     if (candidateStr.isNotBlank()) {
-                        signalingListener?.onIceCandidateReceived(candidateStr)
+                        signalingListener?.onIceCandidateReceived(fromPeerId, candidateStr)
                     }
                 }
 
@@ -453,30 +512,41 @@ object SocketManager {
         addLog("Joining Squad: $roomId")
     }
 
-    fun sendOffer(sdp: String) { 
+    fun sendOffer(targetPeerId: String, sdp: String) { 
         val roomId = _socketUiState.value.roomId
         val username = _socketUiState.value.username
         socket?.emit("offer", JSONObject().apply { 
+            put("to", targetPeerId)
             put("sdp", sdp) 
             put("roomId", roomId) 
             put("username", username)
         }) 
     }
-    fun sendAnswer(sdp: String) { 
+    fun sendAnswer(targetPeerId: String, sdp: String) { 
         val roomId = _socketUiState.value.roomId
         socket?.emit("answer", JSONObject().apply { 
+            put("to", targetPeerId)
             put("sdp", sdp) 
-            put("roomId", roomId)
+            put("roomId", roomId) 
         }) 
     }
-    fun sendIceCandidate(c: String) { 
+    fun sendIceCandidate(targetPeerId: String, c: String) { 
         val roomId = _socketUiState.value.roomId
         try { 
             val json = JSONObject(c)
+            json.put("to", targetPeerId)
             json.put("roomId", roomId)
-            socket?.emit("ice-candidate", json) 
-        } catch(e:Exception) { 
-            socket?.emit("ice-candidate", c) 
+            socket?.emit("ice-candidate", JSONObject().apply {
+                put("to", targetPeerId)
+                put("candidate", json)
+                put("roomId", roomId)
+            }) 
+        } catch(e: Exception) { 
+            socket?.emit("ice-candidate", JSONObject().apply {
+                put("to", targetPeerId)
+                put("candidate", c)
+                put("roomId", roomId)
+            }) 
         } 
     }
     fun sendStartVoice() { 

@@ -54,10 +54,10 @@ class WalkieTalkieService : Service(), SignalingListener {
         }
     }
 
-    override fun onOfferReceived(sdp: String) {
+    override fun onOfferReceived(fromPeerId: String, sdp: String) {
         if (SocketManager.socketUiState.value.roomId.isEmpty()) return
-        Log.d(TAG, "onOfferReceived in background service")
-        webRTCManager?.handleOffer(sdp)
+        Log.d(TAG, "onOfferReceived from $fromPeerId")
+        webRTCManager?.handleOffer(fromPeerId, sdp)
         val speaker = SocketManager.socketUiState.value.lastSpeakerName
         val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
             "$speaker is transmitting..."
@@ -65,23 +65,31 @@ class WalkieTalkieService : Service(), SignalingListener {
             "Incoming transmission..."
         }
         updateNotification(text)
-        // Don't call onOthersSpeakingStateChange here — wait for ICE CONNECTED via onCallConnected
     }
 
-    override fun onAnswerReceived(sdp: String) {
+    override fun onAnswerReceived(fromPeerId: String, sdp: String) {
         if (SocketManager.socketUiState.value.roomId.isEmpty()) return
-        Log.d(TAG, "onAnswerReceived in background service")
-        webRTCManager?.handleAnswer(sdp)
-        // Don't call onOthersSpeakingStateChange here — wait for ICE CONNECTED
+        Log.d(TAG, "onAnswerReceived from $fromPeerId")
+        webRTCManager?.handleAnswer(fromPeerId, sdp)
     }
 
-    override fun onIceCandidateReceived(candidate: String) {
+    override fun onIceCandidateReceived(fromPeerId: String, candidate: String) {
         if (SocketManager.socketUiState.value.roomId.isEmpty()) return
-        webRTCManager?.handleIceCandidate(candidate)
+        webRTCManager?.handleIceCandidate(fromPeerId, candidate)
+    }
+
+    override fun onPeersReceived(peers: List<String>) {
+        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        Log.d(TAG, "onPeersReceived: connecting to ${peers.size} peer(s)")
+        webRTCManager?.connectToPeers(peers)
+    }
+
+    override fun onPeerLeft(peerId: String) {
+        Log.d(TAG, "onPeerLeft: removing peer $peerId")
+        webRTCManager?.removePeer(peerId)
     }
 
     override fun onCallStarted() {
-        // Now triggered only from start-voice socket event (local speaker indicator)
         val speaker = SocketManager.socketUiState.value.lastSpeakerName
         val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
             "$speaker is speaking..."

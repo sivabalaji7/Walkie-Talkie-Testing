@@ -200,9 +200,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 vibrate()
                 SocketManager.sendStartVoice()
                 walkieTalkieService?.webRTCManager?.startTalking()
-                if (walkieTalkieService?.webRTCManager?.isConnected() != true) {
-                    walkieTalkieService?.webRTCManager?.createOffer()
-                }
                 walkieTalkieService?.updateNotification("🔴 Transmitting...")
             }
         }
