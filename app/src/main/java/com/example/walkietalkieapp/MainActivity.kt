@@ -295,6 +295,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             }
                         )
                     } else if (socketUiState.roomId.isEmpty()) {
+                        LaunchedEffect(deepLinkRoomId, isLoggedIn) {
+                            if (deepLinkRoomId.isNotEmpty() && isLoggedIn && currentUsername.isNotEmpty()) {
+                                val targetCode = deepLinkRoomId
+                                deepLinkRoomId = ""
+                                enterSquad(targetCode, currentUsername, targetCode)
+                            }
+                        }
+
                         com.example.walkietalkieapp.RoomsDashboardScreen(
                             currentUserId = sessionManager.getUserId(),
                             currentUsername = currentUsername,
@@ -427,16 +435,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun handleIntent(intent: android.content.Intent?) {
         intent?.data?.let { data ->
-            val roomId = data.getQueryParameter("roomId")
-            if (!roomId.isNullOrEmpty()) {
-                deepLinkRoomId = roomId.uppercase()
+            val paramRoomId = data.getQueryParameter("roomId") ?: data.getQueryParameter("code")
+            val pathRoomId = if (data.pathSegments.size >= 2 && data.pathSegments[0].equals("join", ignoreCase = true)) {
+                data.pathSegments[1]
+            } else null
+            
+            val roomId = paramRoomId ?: pathRoomId
+            if (!roomId.isNullOrBlank()) {
+                deepLinkRoomId = roomId.trim().uppercase()
                 Log.d(TAG, "Deep link received for room: $deepLinkRoomId")
             }
         }
     }
 
     private fun shareRoom(roomId: String) {
-        val inviteLink = "https://walkie-talkie-web.vercel.app/join?roomId=$roomId"
+        val inviteLink = "https://walkie-talkie-app-server.onrender.com/join?roomId=$roomId"
         val intent = android.content.Intent().apply {
             action = android.content.Intent.ACTION_SEND
             putExtra(android.content.Intent.EXTRA_TEXT, "Join my Squad on Squad Talk!\n\nLink: $inviteLink\n\nCode: $roomId")

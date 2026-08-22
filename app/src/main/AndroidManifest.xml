@@ -38,12 +38,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep Link: https://yourapp.com/join?roomId=XXXXXX -->
-            <intent-filter android:label="Join Squad">
+            <!-- Deep Link: https://walkie-talkie-app-server.onrender.com/join?roomId=XXXXXX -->
+            <intent-filter android:label="Join Squad" android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="yourapp.com" android:path="/join" />
+                <data android:scheme="https" android:host="walkie-talkie-app-server.onrender.com" android:pathPrefix="/join" />
             </intent-filter>
 
             <!-- Custom Scheme: walkietalkie://join?roomId=XXXXXX -->
