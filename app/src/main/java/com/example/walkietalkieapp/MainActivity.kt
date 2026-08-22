@@ -1083,20 +1083,12 @@ fun PushToTalkButton(
                     color = ringColor,
                     shape = CircleShape
                 )
-                .pointerInput(isConnected, isOwner) {
+                .pointerInput(isConnected) {
                     if (isConnected) {
                         detectTapGestures(
                             onPress = { 
                                 onPress(false)
                                 try { awaitRelease() } finally { onRelease() }
-                            },
-                            onLongPress = {
-                                if (isOwner) {
-                                    onPress(true)
-                                }
-                            },
-                            onDoubleTap = {
-                                onWhisper()
                             }
                         )
                     }

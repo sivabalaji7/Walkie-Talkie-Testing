@@ -1,6 +1,7 @@
 package com.example.walkietalkieapp.floor
 
-import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -10,6 +11,8 @@ import kotlinx.coroutines.flow.update
 private const val TAG = "FloorManager"
 
 object FloorManager {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _floorStatus = MutableStateFlow(FloorStatus())
     val floorStatus: StateFlow<FloorStatus> = _floorStatus.asStateFlow()
@@ -22,18 +25,26 @@ object FloorManager {
     var onFloorWarning: (() -> Unit)? = null
     var onFloorTimeout: (() -> Unit)? = null
 
-    private var transmitTimer: CountDownTimer? = null
-    private var fallbackTimer: android.os.Handler? = null
+    private var transmitTimeoutRunnable: Runnable? = null
     private var fallbackRunnable: Runnable? = null
+    private var busyResetRunnable: Runnable? = null
+
+    private fun runOnMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
 
     /**
      * Called when user presses PTT.
      * Transitions to REQUESTING and waits for server grant.
      * If server doesn't respond in 500ms, grants locally (backward compat).
      */
-    fun requestFloor(isPriority: Boolean = false) {
-        if (_floorStatus.value.state == FloorState.TRANSMITTING) return
-        if (_floorStatus.value.state == FloorState.BUSY_BLOCKED) return
+    fun requestFloor(isPriority: Boolean = false) = runOnMain {
+        if (_floorStatus.value.state == FloorState.TRANSMITTING) return@runOnMain
+        if (_floorStatus.value.state == FloorState.BUSY_BLOCKED) return@runOnMain
 
         Log.d(TAG, "Requesting floor (isPriority=$isPriority)...")
         _floorStatus.update { it.copy(state = FloorState.REQUESTING) }
@@ -41,21 +52,21 @@ object FloorManager {
         // Emit request to signaling server
         com.example.walkietalkieapp.socket.SocketManager.emitRequestFloor(isPriority)
 
-        // Fallback: if server doesn't respond in 500ms, grant locally
-        fallbackTimer = android.os.Handler(android.os.Looper.getMainLooper())
+        // Fallback: if server doesn't respond in 600ms, grant locally
+        cancelFallback()
         fallbackRunnable = Runnable {
             if (_floorStatus.value.state == FloorState.REQUESTING) {
                 Log.d(TAG, "Fallback: server did not respond, granting locally")
                 handleFloorGranted(System.currentTimeMillis() + 20000)
             }
         }
-        fallbackTimer?.postDelayed(fallbackRunnable!!, 500)
+        mainHandler.postDelayed(fallbackRunnable!!, 600)
     }
 
     /**
      * Called when user releases PTT.
      */
-    fun releaseFloor() {
+    fun releaseFloor() = runOnMain {
         cancelFallback()
         cancelTransmitTimer()
 
@@ -72,7 +83,7 @@ object FloorManager {
     /**
      * Server granted floor to this user.
      */
-    fun handleFloorGranted(expiresAt: Long) {
+    fun handleFloorGranted(expiresAt: Long) = runOnMain {
         cancelFallback()
         Log.d(TAG, "Floor GRANTED")
 
@@ -84,14 +95,23 @@ object FloorManager {
             )
         }
 
-        startTransmitTimer(expiresAt)
+        // Schedule hard cutoff safety timer
+        cancelTransmitTimer()
+        val durationMs = (expiresAt - System.currentTimeMillis()).coerceAtLeast(1000)
+        transmitTimeoutRunnable = Runnable {
+            if (_floorStatus.value.state == FloorState.TRANSMITTING) {
+                handleFloorTimedOut()
+            }
+        }
+        mainHandler.postDelayed(transmitTimeoutRunnable!!, durationMs)
+
         onFloorGranted?.invoke()
     }
 
     /**
      * Server denied floor — someone else is speaking.
      */
-    fun handleFloorDenied(reason: String, currentSpeakerName: String) {
+    fun handleFloorDenied(reason: String, currentSpeakerName: String) = runOnMain {
         cancelFallback()
         Log.d(TAG, "Floor DENIED: $reason (speaker: $currentSpeakerName)")
 
@@ -105,19 +125,20 @@ object FloorManager {
         onFloorDenied?.invoke(reason, currentSpeakerName)
 
         // Auto-reset to IDLE after 2 seconds so user can retry
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        busyResetRunnable?.let { mainHandler.removeCallbacks(it) }
+        busyResetRunnable = Runnable {
             if (_floorStatus.value.state == FloorState.BUSY_BLOCKED) {
                 _floorStatus.update { it.copy(state = FloorState.IDLE) }
             }
-        }, 2000)
+        }
+        mainHandler.postDelayed(busyResetRunnable!!, 2000)
     }
 
     /**
      * Server broadcast: someone else is now speaking.
      */
-    fun handleFloorLocked(speakerId: String?, speakerName: String?, expiresAt: Long) {
-        // Don't override our own TRANSMITTING state
-        if (_floorStatus.value.state == FloorState.TRANSMITTING) return
+    fun handleFloorLocked(speakerId: String?, speakerName: String?, expiresAt: Long) = runOnMain {
+        if (_floorStatus.value.state == FloorState.TRANSMITTING) return@runOnMain
 
         Log.d(TAG, "Floor LOCKED by $speakerName")
         _floorStatus.update {
@@ -133,8 +154,8 @@ object FloorManager {
     /**
      * Server broadcast: floor is now idle.
      */
-    fun handleFloorIdle() {
-        if (_floorStatus.value.state == FloorState.TRANSMITTING) return
+    fun handleFloorIdle() = runOnMain {
+        if (_floorStatus.value.state == FloorState.TRANSMITTING) return@runOnMain
 
         Log.d(TAG, "Floor IDLE")
         cancelTransmitTimer()
@@ -144,7 +165,7 @@ object FloorManager {
     /**
      * Server revoked our floor (owner priority override).
      */
-    fun handleFloorRevoked() {
+    fun handleFloorRevoked() = runOnMain {
         cancelTransmitTimer()
         Log.d(TAG, "Floor REVOKED")
 
@@ -155,7 +176,7 @@ object FloorManager {
     /**
      * Server warning: 3 seconds remaining.
      */
-    fun handleFloorWarning() {
+    fun handleFloorWarning() = runOnMain {
         Log.d(TAG, "Floor WARNING: 3 seconds remaining")
         onFloorWarning?.invoke()
     }
@@ -163,7 +184,7 @@ object FloorManager {
     /**
      * Server forcibly timed out our transmission.
      */
-    fun handleFloorTimedOut() {
+    fun handleFloorTimedOut() = runOnMain {
         cancelTransmitTimer()
         Log.d(TAG, "Floor TIMEOUT")
 
@@ -174,39 +195,21 @@ object FloorManager {
     /**
      * Reset everything when leaving a room.
      */
-    fun reset() {
+    fun reset() = runOnMain {
         cancelFallback()
         cancelTransmitTimer()
+        busyResetRunnable?.let { mainHandler.removeCallbacks(it) }
         _floorStatus.update { FloorStatus() }
     }
 
-    // ── Internal Timers ────────────────────────────────────────────
-
-    private fun startTransmitTimer(expiresAt: Long) {
-        cancelTransmitTimer()
-        val durationMs = (expiresAt - System.currentTimeMillis()).coerceAtLeast(1000)
-
-        transmitTimer = object : CountDownTimer(durationMs, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                _floorStatus.update { it.copy(expiresAt = System.currentTimeMillis() + millisUntilFinished) }
-            }
-            override fun onFinish() {
-                // Server should send floor-timeout, but as safety net:
-                if (_floorStatus.value.state == FloorState.TRANSMITTING) {
-                    handleFloorTimedOut()
-                }
-            }
-        }.start()
-    }
-
     private fun cancelTransmitTimer() {
-        transmitTimer?.cancel()
-        transmitTimer = null
+        transmitTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        transmitTimeoutRunnable = null
     }
 
     private fun cancelFallback() {
-        fallbackRunnable?.let { fallbackTimer?.removeCallbacks(it) }
-        fallbackTimer = null
+        fallbackRunnable?.let { mainHandler.removeCallbacks(it) }
         fallbackRunnable = null
     }
 }
+
