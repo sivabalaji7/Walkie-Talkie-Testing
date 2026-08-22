@@ -110,6 +110,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
+    var isKrispAiEnabled: Boolean = true
+
     fun initialize() {
         if (!isInitialized) init()
         try {
@@ -117,11 +119,14 @@ class WebRTCManager(private val context: Context) {
                 val audioConstraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false")) // Disabled: allows 50Hz-150Hz deep human voice fundamentals to pass unhindered
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "false")) // Disabled: prevents double-gating and chopping of low vocal harmonics
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "false")) // Disabled: prevents attenuation of low-pitch speech
+                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false")) // Preserves deep vocal fundamentals (50Hz-150Hz)
+                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "false")) // Avoids destructive double-gating
+                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "false"))
                     mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("googTransientSuppression", if (isKrispAiEnabled) "true" else "false")) // Krisp-style Deep Transient Denoising
+                    mandatory.add(MediaConstraints.KeyValuePair("googExperimentalNoiseSuppression", if (isKrispAiEnabled) "true" else "false")) // Neural Spectral Masking
                     mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
                 }
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
@@ -129,7 +134,7 @@ class WebRTCManager(private val context: Context) {
             }
             localAudioTrack?.setEnabled(true)
             audioDeviceModule?.setMicrophoneMute(true)
-            Log.d(TAG, "Local audio track ready for mesh negotiation (Deep Voice + Noise Suppressed)")
+            Log.d(TAG, "Local audio track ready for mesh negotiation (Krisp AI Active: $isKrispAiEnabled)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
         }

@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -89,6 +91,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var toneGenerator: ToneGenerator
 
     private var isBatterySaverEnabled by mutableStateOf(true)
+    private var isKrispAiEnabled by mutableStateOf(true)
     private var lastIncomingAlertTimestamp = 0L
     private val INCOMING_ALERT_COOLDOWN_MS = 5000L
 
@@ -348,6 +351,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             },
                             isBatterySaverEnabled = isBatterySaverEnabled,
                             onBatterySaverToggle = { isBatterySaverEnabled = it },
+                            isKrispAiEnabled = isKrispAiEnabled,
+                            onKrispAiToggle = { enabled ->
+                                isKrispAiEnabled = enabled
+                                walkieTalkieService?.webRTCManager?.isKrispAiEnabled = enabled
+                                notificationQueue.add(if (enabled) "✨ Krisp AI Voice Denoising Active" else "Krisp AI Voice Denoising Disabled")
+                            },
                             notificationMessage = notificationMessage
                         )
                     }
@@ -513,6 +522,8 @@ fun SquadScreen(
     onWhisper: () -> Unit,
     isBatterySaverEnabled: Boolean,
     onBatterySaverToggle: (Boolean) -> Unit,
+    isKrispAiEnabled: Boolean,
+    onKrispAiToggle: (Boolean) -> Unit,
     notificationMessage: String? = null
 ) {
     val floorStatus by FloorManager.floorStatus.collectAsState()
@@ -606,17 +617,39 @@ fun SquadScreen(
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .padding(top = 4.dp)
-                            .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(top = 4.dp)
                     ) {
-                        val (statusText, statusColor) = when {
-                            !socketUiState.isConnected -> "🔴 Disconnected" to Color(0xFFF44336)
-                            socketUiState.detail.contains("Retrying") -> "🟡 Reconnecting" to Color(0xFFFFA000)
-                            else -> "🟢 Connected" to Color(0xFF4CAF50)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            val (statusText, statusColor) = when {
+                                !socketUiState.isConnected -> "🔴 Disconnected" to Color(0xFFF44336)
+                                socketUiState.detail.contains("Retrying") -> "🟡 Reconnecting" to Color(0xFFFFA000)
+                                else -> "🟢 Connected" to Color(0xFF4CAF50)
+                            }
+                            Text(text = statusText, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = statusColor)
                         }
-                        Text(text = statusText, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = statusColor)
+
+                        if (isKrispAiEnabled) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = Color(0xFF00E676).copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.4f))
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(10.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("KRISP AI", color = Color(0xFF00E676), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -801,6 +834,16 @@ fun SquadScreen(
                     
                     Spacer(modifier = Modifier.height(16.dp))
                     
+                    SettingsItem(
+                        icon = Icons.Default.GraphicEq,
+                        title = "✨ Krisp AI Denoising",
+                        subtitle = if (isKrispAiEnabled) "Active: Neural background & transient noise filter" else "Standard audio filtering",
+                        color = if (isKrispAiEnabled) Color(0xFF00E676) else Color.Gray,
+                        onClick = { onKrispAiToggle(!isKrispAiEnabled) }
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+
                     SettingsItem(
                         icon = Icons.Default.BatterySaver,
                         title = "Battery Saver",
