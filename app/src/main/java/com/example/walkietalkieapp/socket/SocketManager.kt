@@ -247,50 +247,67 @@ object SocketManager {
                     }
                 }
 
-                on("start-voice") { args ->
-                    if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull()
-                    val sender = when (data) {
-                        is JSONObject -> data.optString("username", "")
-                        is String -> {
-                            try {
-                                val json = JSONObject(data)
-                                json.optString("username", data)
-                            } catch (e: Exception) {
-                                data
+                val onStartVoiceHandler: (Array<Any>) -> Unit = { args ->
+                    if (_socketUiState.value.roomId.isNotEmpty()) {
+                        val data = args.firstOrNull()
+                        val sender = when (data) {
+                            is JSONObject -> {
+                                data.optString("username", data.optString("sender", data.optString("name", data.optString("user", ""))))
                             }
+                            is String -> {
+                                try {
+                                    val json = JSONObject(data)
+                                    json.optString("username", json.optString("sender", json.optString("name", json.optString("user", data))))
+                                } catch (e: Exception) {
+                                    data
+                                }
+                            }
+                            else -> ""
                         }
-                        else -> ""
-                    }
-                    if (sender.isNotBlank()) {
                         _socketUiState.update { state ->
-                            val exists = state.roomMembers.any { it.username.equals(sender, ignoreCase = true) }
-                            val updatedMembers = if (exists) {
-                                state.roomMembers.map { m ->
-                                    if (m.username.equals(sender, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
+                            val resolvedSender = if (sender.isNotBlank() && !sender.startsWith("{")) sender 
+                                else state.roomMembers.find { !it.username.equals(state.username, ignoreCase = true) }?.username ?: ""
+                            
+                            val updatedMembers = if (resolvedSender.isNotBlank()) {
+                                val exists = state.roomMembers.any { it.username.equals(resolvedSender, ignoreCase = true) }
+                                if (exists) {
+                                    state.roomMembers.map { m ->
+                                        if (m.username.equals(resolvedSender, ignoreCase = true)) m.copy(isSpeaking = true) else m.copy(isSpeaking = false)
+                                    }
+                                } else {
+                                    state.roomMembers.map { it.copy(isSpeaking = false) } + RoomMember(resolvedSender, resolvedSender, isSpeaking = true)
                                 }
                             } else {
-                                state.roomMembers.map { it.copy(isSpeaking = false) } + RoomMember(sender, sender, isSpeaking = true)
+                                state.roomMembers
                             }
                             state.copy(
-                                lastSpeakerName = sender,
+                                lastSpeakerName = if (resolvedSender.isNotBlank()) resolvedSender else state.lastSpeakerName,
                                 lastSpeakerTimestamp = System.currentTimeMillis(),
                                 roomMembers = updatedMembers
                             )
                         }
+                        signalingListener?.onCallStarted()
                     }
-                    signalingListener?.onCallStarted()
                 }
 
-                on("stop-voice") { 
-                    if (_socketUiState.value.roomId.isEmpty()) return@on
-                    _socketUiState.update { state ->
-                        state.copy(
-                            roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }
-                        )
+                on("start-voice", onStartVoiceHandler)
+                on("startVoice", onStartVoiceHandler)
+                on("start_voice", onStartVoiceHandler)
+
+                val onStopVoiceHandler: (Array<Any>) -> Unit = {
+                    if (_socketUiState.value.roomId.isNotEmpty()) {
+                        _socketUiState.update { state ->
+                            state.copy(
+                                roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }
+                            )
+                        }
+                        signalingListener?.onCallEnded()
                     }
-                    signalingListener?.onCallEnded() 
                 }
+
+                on("stop-voice", onStopVoiceHandler)
+                on("stopVoice", onStopVoiceHandler)
+                on("stop_voice", onStopVoiceHandler)
             }
         } catch (e: URISyntaxException) { Log.e(TAG, "Socket init failed", e) }
     }
@@ -312,6 +329,7 @@ object SocketManager {
                     put("username", username)
                     put("userId", username)
                     put("name", username)
+                    put("sender", username)
                 }
                 socket?.emit("leave-room", payload)
                 socket?.emit("leaveRoom", payload)
@@ -393,7 +411,7 @@ object SocketManager {
         val username = _socketUiState.value.username
         socket?.emit("offer", JSONObject().apply { 
             put("sdp", sdp) 
-            put("roomId", roomId)
+            put("roomId", roomId) 
             put("username", username)
         }) 
     }
@@ -418,10 +436,15 @@ object SocketManager {
         val roomId = _socketUiState.value.roomId
         val username = _socketUiState.value.username
         if (roomId.isNotEmpty()) {
-            socket?.emit("start-voice", JSONObject().apply { 
+            val payload = JSONObject().apply { 
                 put("roomId", roomId) 
                 put("username", username)
-            }) 
+                put("sender", username)
+                put("name", username)
+            }
+            socket?.emit("start-voice", payload)
+            socket?.emit("startVoice", payload)
+            socket?.emit("start_voice", payload)
             _socketUiState.update { state ->
                 state.copy(
                     lastSpeakerName = username,
@@ -437,10 +460,15 @@ object SocketManager {
         val roomId = _socketUiState.value.roomId
         val username = _socketUiState.value.username
         if (roomId.isNotEmpty()) {
-            socket?.emit("stop-voice", JSONObject().apply { 
+            val payload = JSONObject().apply { 
                 put("roomId", roomId) 
                 put("username", username)
-            }) 
+                put("sender", username)
+                put("name", username)
+            }
+            socket?.emit("stop-voice", payload)
+            socket?.emit("stopVoice", payload)
+            socket?.emit("stop_voice", payload)
             _socketUiState.update { state ->
                 state.copy(
                     roomMembers = state.roomMembers.map { it.copy(isSpeaking = false) }

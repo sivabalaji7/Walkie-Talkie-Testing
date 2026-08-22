@@ -592,11 +592,15 @@ fun SquadScreen(
                     }
                 } else {
                     items(allUsernames, key = { it.trim().lowercase() }) { uname ->
-                        val isMemberSpeaking = (
-                            socketUiState.roomMembers.any { it.username.equals(uname, ignoreCase = true) && it.isSpeaking } ||
-                            (isUserSpeaking && uname.equals(socketUiState.username, ignoreCase = true)) ||
-                            (isOthersSpeaking && uname.equals(socketUiState.lastSpeakerName, ignoreCase = true))
-                        )
+                        val isSelf = uname.equals(socketUiState.username, ignoreCase = true)
+                        val isMemberSpeaking = if (isSelf) {
+                            isUserSpeaking
+                        } else {
+                            val activeSpeaker = socketUiState.roomMembers.find { it.isSpeaking && !it.username.equals(socketUiState.username, ignoreCase = true) }?.username
+                            val matchesSpeaker = uname.equals(activeSpeaker, ignoreCase = true) || uname.equals(socketUiState.lastSpeakerName, ignoreCase = true)
+                            val isSingleRemote = allUsernames.size <= 2 && !isSelf
+                            (isOthersSpeaking && (matchesSpeaker || isSingleRemote)) || (matchesSpeaker && socketUiState.roomMembers.any { it.isSpeaking })
+                        }
                         val isOnline = onlineUsernames.contains(uname.trim().lowercase()) || isMemberSpeaking
                         MemberItem(
                             username = uname,
