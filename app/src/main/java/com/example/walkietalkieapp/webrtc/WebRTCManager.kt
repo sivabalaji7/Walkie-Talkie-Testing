@@ -204,7 +204,7 @@ class WebRTCManager(private val context: Context) {
                 }
             }
 
-            val hdFmtpParams = "minptime=10;ptime=20;cbr=0;maxaveragebitrate=32000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=1;x-google-min-bitrate=16;sprop-maxcapturerate=48000;maxplaybackrate=48000"
+            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=32000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0;x-google-min-bitrate=16;sprop-maxcapturerate=48000;maxplaybackrate=48000"
             if (opusPayloadType != null) {
                 val fmtpIndex = lines.indexOfFirst { it.startsWith("a=fmtp:$opusPayloadType") }
                 if (fmtpIndex != -1) {
@@ -495,14 +495,22 @@ class WebRTCManager(private val context: Context) {
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             try {
-                val json = JSONObject(candidateJson)
-                val sdpMid = json.optString("sdpMid", json.optString("id", "0"))
-                val sdpMLineIndex = json.optInt("sdpMLineIndex", json.optInt("label", 0))
-                val candidateStr = json.optString("candidate", "")
-                
-                if (candidateStr.isEmpty()) return@execute
-                
-                val candidate = IceCandidate(sdpMid, sdpMLineIndex, candidateStr)
+                val candidate: IceCandidate? = try {
+                    val json = JSONObject(candidateJson)
+                    val candidateStr = json.optString("candidate", "")
+                    if (candidateStr.isNotEmpty()) {
+                        val sdpMid = json.optString("sdpMid", json.optString("id", "0"))
+                        val sdpMLineIndex = json.optInt("sdpMLineIndex", json.optInt("label", 0))
+                        IceCandidate(sdpMid, sdpMLineIndex, candidateStr)
+                    } else null
+                } catch (e: Exception) {
+                    if (candidateJson.startsWith("candidate:")) {
+                        IceCandidate("0", 0, candidateJson)
+                    } else null
+                }
+
+                if (candidate == null) return@execute
+
                 val pc = peerConnections[fromPeerId]
                 if (pc != null && pc.remoteDescription != null) {
                     pc.addIceCandidate(candidate)
@@ -556,8 +564,22 @@ class WebRTCManager(private val context: Context) {
                 }
                 ensureHandsFreeAudioRouting()
                 if (audioDeviceModule == null) initialize()
+                if (localAudioTrack == null) initialize()
+                
                 localAudioTrack?.setEnabled(true)
                 audioDeviceModule?.setMicrophoneMute(false)
+                audioManager?.isMicrophoneMute = false
+                
+                // Ensure localAudioTrack is attached to audio senders in all peer connections
+                peerConnections.values.forEach { pc ->
+                    val audioSender = pc.senders.find { it.track()?.kind() == "audio" }
+                    if (audioSender != null) {
+                        audioSender.setTrack(localAudioTrack, false)
+                    } else if (localAudioTrack != null) {
+                        pc.addTrack(localAudioTrack, listOf("LOCAL_STREAM"))
+                    }
+                }
+                
                 Log.d(TAG, "PTT started — dual-mic array active, mic unmuted, broadcasting to ${peerConnections.size} peer(s)")
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting audio: ${e.message}")

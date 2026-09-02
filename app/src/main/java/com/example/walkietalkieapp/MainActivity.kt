@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     // WebRTC / Online Background Service
     private var webRtcService: WalkieTalkieService? = null
     private var isWebRtcBound by mutableStateOf(false)
+    private var pendingTalkStart = false
 
     // Bluetooth & Wi-Fi Direct Offline Background Service
     private var offlineService: BluetoothWalkieTalkieService? = null
@@ -188,6 +189,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (hasAudioPermission && currentRoom.isNotEmpty()) {
                 webRtcService?.startVoiceSession(currentRoom)
             }
+
+            if (pendingTalkStart) {
+                pendingTalkStart = false
+                webRtcService?.webRTCManager?.startTalking()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -272,13 +278,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 playTone(ToneGenerator.TONE_CDMA_PIP)
                 vibrate()
                 SocketManager.sendStartVoice()
-                webRtcService?.webRTCManager?.startTalking()
+                if (webRtcService?.webRTCManager != null) {
+                    webRtcService?.webRTCManager?.startTalking()
+                } else {
+                    pendingTalkStart = true
+                    startWebRtcService()
+                }
                 webRtcService?.updateNotification("🔴 Transmitting...")
             }
         }
 
         FloorManager.onFloorDenied = { _, speakerName ->
             runOnUiThread {
+                pendingTalkStart = false
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
                 notificationQueue.add("🔒 Channel Busy: $speakerName is speaking")
@@ -287,6 +299,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         FloorManager.onFloorRevoked = {
             runOnUiThread {
+                pendingTalkStart = false
                 webRtcService?.webRTCManager?.stopTalking()
                 SocketManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
@@ -299,6 +312,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         FloorManager.onFloorReleased = {
             runOnUiThread {
+                pendingTalkStart = false
                 webRtcService?.webRTCManager?.stopTalking()
                 SocketManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_PROP_BEEP2)
@@ -770,11 +784,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun startPushToTalkOnline(isPriority: Boolean = false) {
         val roomId = SocketManager.socketUiState.value.roomId
         if (roomId.isEmpty()) return
-        if (webRtcService == null) startWebRtcService()
+        if (webRtcService == null) {
+            startWebRtcService()
+        }
         FloorManager.requestFloor(isPriority)
     }
 
     private fun stopPushToTalkOnline() {
+        pendingTalkStart = false
         FloorManager.releaseFloor()
     }
 

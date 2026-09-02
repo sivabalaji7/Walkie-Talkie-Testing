@@ -138,7 +138,8 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val peerId = when (data) {
-                        is JSONObject -> data.optString("id", "")
+                        is JSONObject -> data.optString("id", data.optString("socketId", data.optString("userId", data.optString("username", ""))))
+                        is String -> data
                         else -> ""
                     }
                     val username = when (data) {
@@ -166,6 +167,9 @@ object SocketManager {
                             }
                         }
                     }
+                    if (peerId.isNotBlank() && !peerId.equals(_socketUiState.value.username, ignoreCase = true)) {
+                        signalingListener?.onPeersReceived(listOf(peerId))
+                    }
                     updateActivity()
                 }
 
@@ -173,7 +177,7 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isNotEmpty()) {
                         val data = args.firstOrNull()
                         val peerId = when (data) {
-                            is JSONObject -> data.optString("id", "")
+                            is JSONObject -> data.optString("id", data.optString("socketId", data.optString("userId", "")))
                             else -> ""
                         }
                         if (peerId.isNotEmpty()) {
@@ -216,47 +220,87 @@ object SocketManager {
                 on("user_left", onUserLeftHandler)
                 on("member-left", onUserLeftHandler)
                 on("peer-disconnected", onUserLeftHandler)
-                on("member-left", onUserLeftHandler)
-                on("peer-disconnected", onUserLeftHandler)
 
                 // ── MULTI-PEER MESH SIGNALING ──────────────────────
-                on("room-peers") { args ->
-                    if (_socketUiState.value.roomId.isEmpty()) return@on
-                    val data = args.firstOrNull()
-                    if (data is JSONObject) {
-                        val peersArray = data.optJSONArray("peers")
+                val onPeersHandler: (Array<Any>) -> Unit = { args ->
+                    if (_socketUiState.value.roomId.isNotEmpty()) {
+                        val data = args.firstOrNull()
                         val peerIds = mutableListOf<String>()
-                        if (peersArray != null) {
-                            for (i in 0 until peersArray.length()) {
-                                val p = peersArray.optJSONObject(i)
-                                val pId = p?.optString("id", "") ?: ""
-                                if (pId.isNotEmpty()) peerIds.add(pId)
+                        if (data is JSONObject) {
+                            val peersArray = data.optJSONArray("peers") 
+                                ?: data.optJSONArray("roomPeers") 
+                                ?: data.optJSONArray("users") 
+                                ?: data.optJSONArray("members")
+                            if (peersArray != null) {
+                                for (i in 0 until peersArray.length()) {
+                                    val p = peersArray.opt(i)
+                                    val pId = when (p) {
+                                        is JSONObject -> p.optString("id", p.optString("socketId", p.optString("userId", p.optString("username", ""))))
+                                        is String -> p
+                                        else -> ""
+                                    }
+                                    if (pId.isNotEmpty() && !pId.equals(_socketUiState.value.username, ignoreCase = true)) {
+                                        peerIds.add(pId)
+                                    }
+                                }
+                            }
+                        } else if (data is org.json.JSONArray) {
+                            for (i in 0 until data.length()) {
+                                val p = data.opt(i)
+                                val pId = when (p) {
+                                    is JSONObject -> p.optString("id", p.optString("socketId", p.optString("userId", p.optString("username", ""))))
+                                    is String -> p
+                                    else -> ""
+                                }
+                                if (pId.isNotEmpty() && !pId.equals(_socketUiState.value.username, ignoreCase = true)) {
+                                    peerIds.add(pId)
+                                }
                             }
                         }
-                        Log.d(TAG, "Received room-peers: $peerIds")
-                        signalingListener?.onPeersReceived(peerIds)
+                        if (peerIds.isNotEmpty()) {
+                            Log.d(TAG, "Received room peers: $peerIds")
+                            signalingListener?.onPeersReceived(peerIds)
+                        }
                     }
                 }
+
+                on("room-peers", onPeersHandler)
+                on("roomPeers", onPeersHandler)
+                on("room_peers", onPeersHandler)
+                on("peers", onPeersHandler)
 
                 on("offer") { args ->
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val fromPeerId = when (data) {
-                        is JSONObject -> data.optString("from", "")
-                        else -> ""
-                    }
-                    val sdp = when (data) {
-                        is JSONObject -> data.optString("sdp", "")
+                        is JSONObject -> data.optString("from", data.optString("sender", data.optString("fromPeer", data.optString("socketId", data.optString("userId", data.optString("username", ""))))))
                         is String -> {
                             try {
-                                JSONObject(data).optString("sdp", data)
-                            } catch (e: Exception) {
-                                data
-                            }
+                                val json = JSONObject(data)
+                                json.optString("from", json.optString("sender", json.optString("fromPeer", json.optString("socketId", json.optString("userId", json.optString("username", ""))))))
+                            } catch (e: Exception) { "" }
                         }
                         else -> ""
                     }
-                    if (sdp.isNotBlank()) {
+                    val sdp = when (data) {
+                        is JSONObject -> {
+                            val sdpObj = data.opt("sdp")
+                            if (sdpObj is JSONObject) sdpObj.optString("sdp", sdpObj.toString())
+                            else if (sdpObj is String) sdpObj
+                            else data.optString("description", "")
+                        }
+                        is String -> {
+                            try {
+                                val json = JSONObject(data)
+                                val sdpObj = json.opt("sdp")
+                                if (sdpObj is JSONObject) sdpObj.optString("sdp", sdpObj.toString())
+                                else if (sdpObj is String) sdpObj
+                                else json.optString("description", data)
+                            } catch (e: Exception) { data }
+                        }
+                        else -> ""
+                    }
+                    if (fromPeerId.isNotBlank() && sdp.isNotBlank()) {
                         Log.d(TAG, "Received offer from $fromPeerId")
                         signalingListener?.onOfferReceived(fromPeerId, sdp)
                     }
@@ -266,21 +310,34 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val fromPeerId = when (data) {
-                        is JSONObject -> data.optString("from", "")
-                        else -> ""
-                    }
-                    val sdp = when (data) {
-                        is JSONObject -> data.optString("sdp", "")
+                        is JSONObject -> data.optString("from", data.optString("sender", data.optString("fromPeer", data.optString("socketId", data.optString("userId", data.optString("username", ""))))))
                         is String -> {
                             try {
-                                JSONObject(data).optString("sdp", data)
-                            } catch (e: Exception) {
-                                data
-                            }
+                                val json = JSONObject(data)
+                                json.optString("from", json.optString("sender", json.optString("fromPeer", json.optString("socketId", json.optString("userId", json.optString("username", ""))))))
+                            } catch (e: Exception) { "" }
                         }
                         else -> ""
                     }
-                    if (sdp.isNotBlank()) {
+                    val sdp = when (data) {
+                        is JSONObject -> {
+                            val sdpObj = data.opt("sdp")
+                            if (sdpObj is JSONObject) sdpObj.optString("sdp", sdpObj.toString())
+                            else if (sdpObj is String) sdpObj
+                            else data.optString("description", "")
+                        }
+                        is String -> {
+                            try {
+                                val json = JSONObject(data)
+                                val sdpObj = json.opt("sdp")
+                                if (sdpObj is JSONObject) sdpObj.optString("sdp", sdpObj.toString())
+                                else if (sdpObj is String) sdpObj
+                                else json.optString("description", data)
+                            } catch (e: Exception) { data }
+                        }
+                        else -> ""
+                    }
+                    if (fromPeerId.isNotBlank() && sdp.isNotBlank()) {
                         Log.d(TAG, "Received answer from $fromPeerId")
                         signalingListener?.onAnswerReceived(fromPeerId, sdp)
                     }
@@ -290,7 +347,13 @@ object SocketManager {
                     if (_socketUiState.value.roomId.isEmpty()) return@on
                     val data = args.firstOrNull()
                     val fromPeerId = when (data) {
-                        is JSONObject -> data.optString("from", "")
+                        is JSONObject -> data.optString("from", data.optString("sender", data.optString("fromPeer", data.optString("socketId", data.optString("userId", data.optString("username", ""))))))
+                        is String -> {
+                            try {
+                                val json = JSONObject(data)
+                                json.optString("from", json.optString("sender", json.optString("fromPeer", json.optString("socketId", json.optString("userId", json.optString("username", ""))))))
+                            } catch (e: Exception) { "" }
+                        }
                         else -> ""
                     }
                     val candidateStr = when (data) {
@@ -303,7 +366,7 @@ object SocketManager {
                         is String -> data
                         else -> ""
                     }
-                    if (candidateStr.isNotBlank()) {
+                    if (fromPeerId.isNotBlank() && candidateStr.isNotBlank()) {
                         signalingListener?.onIceCandidateReceived(fromPeerId, candidateStr)
                     }
                 }
