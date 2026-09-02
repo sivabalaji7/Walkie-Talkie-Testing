@@ -24,7 +24,10 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.walkietalkieapp.audio.AudioPlayer
 import com.example.walkietalkieapp.audio.AudioRecorder
+import com.example.walkietalkieapp.audio.engine.VoicePacket
+import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
 import com.example.walkietalkieapp.bluetooth.SquadMember
+import com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,8 +103,12 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
     private val wifiP2pManager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     private var channel: WifiP2pManager.Channel? = null
 
-    private val audioRecorder = AudioRecorder()
-    val audioPlayer = AudioPlayer(context)
+    init {
+        // Wire the engine to transmit packets over Wi-Fi Direct when on the local mesh
+        VoiceQualityEngine.instance.onTransmitLocalPacket = { packet ->
+            broadcastVoicePacket(packet)
+        }
+    }
 
     private val _uiState = MutableStateFlow(WifiSquadUiState())
     val uiState: StateFlow<WifiSquadUiState> = _uiState.asStateFlow()
@@ -143,6 +150,9 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
     // Guards against multiple concurrent TCP connection attempts
     private val tcpConnecting = AtomicBoolean(false)
+
+    val audioPlayer = AudioPlayer(context)
+    private val audioRecorder = AudioRecorder()
 
     // Stored join parameters for retry
     private var lastJoinedSquad: DiscoveredWifiSquad? = null
@@ -316,6 +326,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                     }
 
                     // Send PKT_KEEPALIVE to all connected clients
+                    clientHandlers.values.forEach { it.lastKeepaliveSent = System.currentTimeMillis() }
                     sendPacketToAll(PKT_KEEPALIVE, ByteArray(0))
 
                     mainHandler.postDelayed(this, 20_000L)
@@ -826,7 +837,6 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
                 cancelConnectingTimeout()
                 acquireWifiLock()
-                audioPlayer.start()
                 clientSocket = socket
                 val myId = _uiState.value.myId
                 val myUsername = _uiState.value.myUsername
@@ -908,17 +918,21 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             claimFloor(myId, myName)
         }
 
-        audioRecorder.start { pcmData ->
-            if (isLocallyHoldingFloor) {
-                broadcastVoiceChunk(myId, pcmData)
-            }
+        if (isLocallyHoldingFloor) {
+            // Intelligence Engine: Active Voice
+            CommunicationDnaEngine.onAudioSessionActive(true)
+            
+            VoiceQualityEngine.instance.startTransmitting()
         }
     }
 
     fun stopTalking() {
         if (!isLocallyHoldingFloor) return
         isLocallyHoldingFloor = false
-        audioRecorder.stop()
+        VoiceQualityEngine.instance.stopTransmitting()
+        
+        // Intelligence Engine: Voice Ended
+        CommunicationDnaEngine.onAudioSessionActive(false)
 
         val myId = _uiState.value.myId
         val myName = _uiState.value.myUsername
@@ -946,7 +960,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         if (isLocallyHoldingFloor) {
             Log.d(TAG, "App backgrounded during PTT transmission — releasing floor")
             isLocallyHoldingFloor = false
-            audioRecorder.stop()
+            VoiceQualityEngine.instance.stopTransmitting()
             val myId = _uiState.value.myId
             val myName = _uiState.value.myUsername
 
@@ -1049,14 +1063,17 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         }
     }
 
-    private fun broadcastVoiceChunk(speakerId: String, pcmData: ByteArray) {
-        val speakerIdBytes = speakerId.toByteArray(Charsets.UTF_8)
+    private fun broadcastVoicePacket(packet: VoicePacket) {
+        val speakerIdBytes = packet.senderId.toByteArray(Charsets.UTF_8)
         val idLen = speakerIdBytes.size.toByte()
 
-        val buffer = ByteBuffer.allocate(1 + idLen + pcmData.size)
+        val buffer = ByteBuffer.allocate(1 + 8 + 8 + 1 + idLen + packet.payload.size)
+        buffer.put(if (packet.isFinalFrame) 1.toByte() else 0.toByte())
+        buffer.putLong(packet.sequenceNumber)
+        buffer.putLong(packet.timestampMs)
         buffer.put(idLen)
         buffer.put(speakerIdBytes)
-        buffer.put(pcmData)
+        buffer.put(packet.payload)
 
         sendPacketToAll(PKT_VOICE_CHUNK, buffer.array())
     }
@@ -1327,6 +1344,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         @Volatile var peerId: String? = null
         @Volatile var peerUsername: String? = null
         @Volatile var lastSeenTimestamp: Long = System.currentTimeMillis()
+        @Volatile var lastKeepaliveSent: Long = 0L
 
         private val writeLock = Any()
 
@@ -1335,6 +1353,9 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
         override fun run() {
             try {
+                // Intelligence Engine: Connected
+                CommunicationDnaEngine.wifiDirectAdapter?.reportConnectionState(true, 1)
+                
                 val input = inputStream
                 val headerBuffer = ByteArray(4)
 
@@ -1385,6 +1406,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                 if (isRunning) {
                     Log.d(TAG, "TCP Peer connection ended: ${socket.inetAddress?.hostAddress} (${e.message})")
                 }
+                // Intelligence Engine: Error
+                CommunicationDnaEngine.wifiDirectAdapter?.reportSocketError()
             } finally {
                 close()
                 handlePeerDisconnected()
@@ -1564,7 +1587,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
                 PKT_FLOOR_DENY -> {
                     isLocallyHoldingFloor = false
-                    audioRecorder.stop()
+                    VoiceQualityEngine.instance.stopTransmitting()
                     val holderId = String(payload, Charsets.UTF_8)
                     addLog("Channel busy — transmission denied")
                     _events.tryEmit("Channel busy — transmission denied")
@@ -1582,18 +1605,19 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
                 PKT_VOICE_CHUNK -> {
                     try {
-                        if (payload.size < 2) return
                         val buffer = ByteBuffer.wrap(payload)
+                        val isFinalFrame = buffer.get() == 1.toByte()
+                        val sequenceNumber = buffer.long
+                        val timestampMs = buffer.long
                         val idLen = buffer.get().toInt() and 0xFF
-                        if (payload.size < 1 + idLen) return
                         val idBytes = ByteArray(idLen)
                         buffer.get(idBytes)
                         val speakerId = String(idBytes, Charsets.UTF_8)
 
-                        val pcmLen = payload.size - 1 - idLen
-                        if (pcmLen <= 0) return
-                        val pcmData = ByteArray(pcmLen)
-                        buffer.get(pcmData)
+                        val audioPayload = ByteArray(buffer.remaining())
+                        buffer.get(audioPayload)
+
+                        val packet = VoicePacket(sequenceNumber, timestampMs, speakerId, audioPayload, isFinalFrame)
 
                         // Reset/extend 30s floor timeout on Host when active holder transmits
                         if (isHostSide && currentFloorHolderId == speakerId) {
@@ -1607,12 +1631,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                             mainHandler.postDelayed(floorTimeoutRunnable!!, 30_000L)
                         }
 
-                        // Play received audio safely
-                        try {
-                            audioPlayer.play(pcmData)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error playing audio chunk", e)
-                        }
+                        // Hand the packet directly to the Voice Quality Engine
+                        VoiceQualityEngine.instance.onPacketReceived(packet)
 
                         // Host relays to all other connected clients
                         if (isHostSide) {
@@ -1647,11 +1667,17 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                 PKT_KEEPALIVE -> {
                     // Client: respond with PKT_KEEPALIVE_ACK
                     sendBytes(buildFramedPacket(PKT_KEEPALIVE_ACK, ByteArray(0)))
+                    // Client: We can assume generic ping for client if they don't send their own
+                    CommunicationDnaEngine.wifiDirectAdapter?.reportKeepaliveRtt(35L)
                 }
 
                 PKT_KEEPALIVE_ACK -> {
                     // Host: update lastSeenTimestamp
                     lastSeenTimestamp = System.currentTimeMillis()
+                    if (lastKeepaliveSent > 0) {
+                        val rtt = lastSeenTimestamp - lastKeepaliveSent
+                        CommunicationDnaEngine.wifiDirectAdapter?.reportKeepaliveRtt(rtt)
+                    }
                 }
 
                 PKT_LEAVE -> {
@@ -1709,6 +1735,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                 releaseWifiLock()
                 stopKeepAlive()
             }
+            // Intelligence Engine: Disconnected
+            CommunicationDnaEngine.wifiDirectAdapter?.reportConnectionState(false, 0)
         }
 
         fun close() {

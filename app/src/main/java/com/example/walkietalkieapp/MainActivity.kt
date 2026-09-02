@@ -47,6 +47,7 @@ import com.example.walkietalkieapp.socket.SocketManager
 import com.example.walkietalkieapp.ui.*
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
 import com.example.walkietalkieapp.webrtc.WalkieTalkieService
+import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
 import com.example.walkietalkieapp.wifidirect.WifiSquadUiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -175,6 +176,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 SocketManager.updateVoiceLinkState(state.name)
             }
 
+            webRtcService?.webRTCManager?.let { webrtc ->
+                VoiceQualityEngine.instance.initialize(
+                    context = this@MainActivity,
+                    webRtcRef = webrtc,
+                    userId = currentUserId
+                )
+            }
+
             val currentRoom = SocketManager.socketUiState.value.roomId
             if (hasAudioPermission && currentRoom.isNotEmpty()) {
                 webRtcService?.startVoiceSession(currentRoom)
@@ -245,6 +254,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         checkAndRequestPermissions()
+
+        // Initialize Communication DNA / Network Intelligence Engine
+        com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.initialize(this)
 
         // Initialize Online WebRTC Socket
         SocketManager.initialize()
@@ -555,6 +567,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             selectedMode = selectedTransportMode,
                             onSelectMode = { mode ->
                                 selectedTransportMode = mode
+                                
+                                val activeType = when (mode) {
+                                    TransportMode.BLUETOOTH -> com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+                                    TransportMode.WIFI_DIRECT -> com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+                                    TransportMode.INTERNET -> com.example.walkietalkieapp.dna.model.TransportType.Internet
+                                }
+                                VoiceQualityEngine.instance.activeTransport = activeType
+
                                 if (mode == TransportMode.BLUETOOTH) {
                                     wifiDirectManager?.stopDiscovery()
                                     if (!isBluetoothEnabled()) {

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 import java.net.URISyntaxException
 import com.example.walkietalkieapp.floor.FloorManager
+import com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine
 
 data class RoomMember(
     val id: String,
@@ -72,6 +73,9 @@ object SocketManager {
                     if (state.roomId.isNotEmpty()) {
                         emitJoin(state.roomId, state.username)
                     }
+                    
+                    // Report to Intelligence Engine
+                    CommunicationDnaEngine.internetAdapter?.reportSocketPing(35L) // Simulate quick initial socket connection latency
                 }
 
                 on(Socket.EVENT_DISCONNECT) {

@@ -184,7 +184,38 @@ fun MasterHomeScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        // Unified Valour Link Intelligence 2.0 Card
+        val currentTransportType = when (selectedMode) {
+            TransportMode.INTERNET -> com.example.walkietalkieapp.dna.model.TransportType.Internet
+            TransportMode.BLUETOOTH -> com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+            TransportMode.WIFI_DIRECT -> com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+        }
+        
+        LaunchedEffect(currentTransportType) {
+            com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.setActiveTransport(currentTransportType)
+        }
+
+        val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
+        val activeLinkState by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.activeLinkState.collectAsState()
+
+        var selectedSheetLinkState by remember { mutableStateOf<com.example.walkietalkieapp.dna.valour.ValourLinkState?>(null) }
+
+        Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+            com.example.walkietalkieapp.dna.valour.ValourLinkDashboardCard(
+                activeLinkState = activeLinkState,
+                allLinks = allLinks,
+                onViewDetailsClick = { link -> selectedSheetLinkState = link }
+            )
+        }
+
+        selectedSheetLinkState?.let { linkState ->
+            com.example.walkietalkieapp.dna.valour.ValourConnectionDetailsSheet(
+                linkState = linkState,
+                onDismissRequest = { selectedSheetLinkState = null }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(2.dp))
 
         // Mode Content Container
         Box(

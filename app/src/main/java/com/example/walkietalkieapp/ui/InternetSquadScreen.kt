@@ -168,18 +168,24 @@ fun InternetSquadScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(top = 4.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            val (statusText, statusColor) = when {
-                                !socketUiState.isConnected -> "🔴 Disconnected" to Color(0xFFF44336)
-                                socketUiState.detail.contains("Retrying") -> "🟡 Reconnecting" to Color(0xFFFFA000)
-                                else -> "🟢 Connected" to Color(0xFF4CAF50)
-                            }
-                            Text(text = statusText, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = statusColor)
+                        val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
+                        val internetLinkState = allLinks[com.example.walkietalkieapp.dna.model.TransportType.Internet]
+                            ?: com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.mapToValourLinkState(
+                                com.example.walkietalkieapp.dna.model.CommunicationPathAssessment.unavailable(com.example.walkietalkieapp.dna.model.TransportType.Internet)
+                            )
+
+                        var showDetailsSheet by remember { mutableStateOf(false) }
+
+                        com.example.walkietalkieapp.dna.valour.ValourLinkPill(
+                            linkState = internetLinkState,
+                            onClick = { showDetailsSheet = true }
+                        )
+
+                        if (showDetailsSheet) {
+                            com.example.walkietalkieapp.dna.valour.ValourConnectionDetailsSheet(
+                                linkState = internetLinkState,
+                                onDismissRequest = { showDetailsSheet = false }
+                            )
                         }
 
                         if (isKrispAiEnabled) {

@@ -503,6 +503,9 @@ class WebRTCManager(private val context: Context) {
     fun startTalking() {
         audioExecutor.execute {
             try {
+                // Intelligence Engine: Active Voice
+                com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.onAudioSessionActive(true)
+                
                 isTalking = true
                 if (!isSessionActive) {
                     isSessionActive = true
@@ -522,6 +525,9 @@ class WebRTCManager(private val context: Context) {
     fun stopTalking() {
         audioExecutor.execute {
             try {
+                // Intelligence Engine: Voice Ended
+                com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.onAudioSessionActive(false)
+                
                 isTalking = false
                 audioDeviceModule?.setMicrophoneMute(true)
                 Log.d(TAG, "PTT released — mic muted")

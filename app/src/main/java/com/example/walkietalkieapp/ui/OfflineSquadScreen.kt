@@ -125,18 +125,28 @@ fun OfflineSquadScreen(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .padding(top = 4.dp)
-                            .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(top = 4.dp)
                     ) {
-                        val (statusText, statusColor) = when {
-                            isBeaconActive -> "📡 Broadcasting Beacon (${beaconCountdownSeconds}s)" to Color(0xFF00E5FF)
-                            connectionState == "HOSTING" -> "🟢 Active Host (${members.size} in squad)" to Color(0xFF4CAF50)
-                            connectionState == "CONNECTED" -> "🟢 Connected (${members.size} in squad)" to Color(0xFF4CAF50)
-                            else -> "🟡 Connecting..." to Color(0xFFFFA000)
+                        val transportType = if (mode == TransportMode.BLUETOOTH) com.example.walkietalkieapp.dna.model.TransportType.Bluetooth else com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+                        val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
+                        val offlineLinkState = allLinks[transportType]
+                            ?: com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.mapToValourLinkState(
+                                com.example.walkietalkieapp.dna.model.CommunicationPathAssessment.unavailable(transportType)
+                            )
+
+                        var showDetailsSheet by remember { mutableStateOf(false) }
+
+                        com.example.walkietalkieapp.dna.valour.ValourLinkPill(
+                            linkState = offlineLinkState,
+                            onClick = { showDetailsSheet = true }
+                        )
+
+                        if (showDetailsSheet) {
+                            com.example.walkietalkieapp.dna.valour.ValourConnectionDetailsSheet(
+                                linkState = offlineLinkState,
+                                onDismissRequest = { showDetailsSheet = false }
+                            )
                         }
-                        Text(text = statusText, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = statusColor)
                     }
                 }
 

@@ -8,6 +8,9 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.util.Log
+import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
+import com.example.walkietalkieapp.audio.intelligence.EnhancementPolicyEngine
+import com.example.walkietalkieapp.audio.intelligence.EnvironmentAnalyzer
 import java.util.concurrent.Executors
 
 class AudioRecorder {
@@ -31,6 +34,10 @@ class AudioRecorder {
 
     // Real-Time Vocal-Enhanced DSP Engine (High-Sensitivity Far-Field & AGC)
     private val dspProcessor = AudioDspProcessor(sampleRate = sampleRate)
+    
+    // Intelligence Layer
+    private val environmentAnalyzer = EnvironmentAnalyzer()
+    private val policyEngine = EnhancementPolicyEngine()
 
     private val cleanupExecutor = Executors.newSingleThreadExecutor()
 
@@ -39,6 +46,9 @@ class AudioRecorder {
         if (isRecording) return
 
         dspProcessor.reset()
+        environmentAnalyzer.reset()
+        policyEngine.reset()
+        
         val activeRecorder = createRecorder() ?: return
         isRecording = true
 
@@ -57,8 +67,21 @@ class AudioRecorder {
             while (isRecording) {
                 val read = activeRecorder.read(buffer, 0, buffer.size)
                 if (read > 0 && isRecording) {
-                    // Apply real-time vocal presence boost, noise reduction, and AGC
-                    val processedAudio = dspProcessor.process(buffer, 0, read)
+                    // 1. Analyze the raw acoustic environment
+                    environmentAnalyzer.analyzeFrame(buffer, 0, read)
+                    
+                    // 2. Decide the optimal enhancement profile
+                    val activeProfile = policyEngine.evaluate(environmentAnalyzer.currentEnvironment)
+
+                    // 3. Report environment to VoiceQualityEngine (for Krisp management on Internet transport)
+                    VoiceQualityEngine.instance.onEnvironmentUpdate(
+                        environmentAnalyzer.currentEnvironment,
+                        environmentAnalyzer.getNoiseFloor()
+                    )
+
+                    // 4. Apply real-time vocal presence boost, noise reduction, and AGC using the dynamic profile
+                    val processedAudio = dspProcessor.process(buffer, 0, read, activeProfile)
+                    
                     onData(processedAudio)
                 }
             }

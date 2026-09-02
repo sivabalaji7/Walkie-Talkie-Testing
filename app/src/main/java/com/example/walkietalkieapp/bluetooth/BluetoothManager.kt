@@ -22,6 +22,9 @@ import android.os.ParcelUuid
 import android.util.Log
 import com.example.walkietalkieapp.audio.AudioPlayer
 import com.example.walkietalkieapp.audio.AudioRecorder
+import com.example.walkietalkieapp.audio.engine.VoicePacket
+import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
+import com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,8 +107,13 @@ class BluetoothManager(private val context: Context) {
     }
 
     private var bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
-    private val audioRecorder = AudioRecorder()
-    val audioPlayer = AudioPlayer(context)
+
+    init {
+        // Wire the engine to transmit packets over Bluetooth when on the local mesh
+        VoiceQualityEngine.instance.onTransmitLocalPacket = { packet ->
+            broadcastVoicePacket(packet)
+        }
+    }
 
     private val _uiState = MutableStateFlow(BluetoothSquadUiState())
     val uiState: StateFlow<BluetoothSquadUiState> = _uiState.asStateFlow()
@@ -142,6 +150,9 @@ class BluetoothManager(private val context: Context) {
 
     @Volatile
     private var isShuttingDown = false
+
+    val audioPlayer = AudioPlayer(context)
+    private val audioRecorder = AudioRecorder()
 
     // =========================================================================
     // BLE FILTERED SCANNER (SCAN ON-AIR BUTTON TRIGGER)
@@ -604,17 +615,21 @@ class BluetoothManager(private val context: Context) {
             claimFloor(myId, myName)
         }
 
-        audioRecorder.start { pcmData ->
-            if (isLocallyHoldingFloor) {
-                broadcastVoiceChunk(myId, pcmData)
-            }
+        if (isLocallyHoldingFloor) {
+            // Intelligence Engine: Active Voice
+            CommunicationDnaEngine.onAudioSessionActive(true)
+            
+            VoiceQualityEngine.instance.startTransmitting()
         }
     }
 
     fun stopTalking() {
         if (!isLocallyHoldingFloor) return
         isLocallyHoldingFloor = false
-        audioRecorder.stop()
+        VoiceQualityEngine.instance.stopTransmitting()
+        
+        // Intelligence Engine: Voice Ended
+        CommunicationDnaEngine.onAudioSessionActive(false)
 
         val myId = _uiState.value.myId
         val myName = _uiState.value.myUsername
@@ -642,7 +657,7 @@ class BluetoothManager(private val context: Context) {
         if (isLocallyHoldingFloor) {
             Log.d(TAG, "App backgrounded during PTT transmission — releasing floor")
             isLocallyHoldingFloor = false
-            audioRecorder.stop()
+            VoiceQualityEngine.instance.stopTransmitting()
             val myId = _uiState.value.myId
             val myName = _uiState.value.myUsername
 
@@ -745,14 +760,17 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
-    private fun broadcastVoiceChunk(speakerId: String, pcmData: ByteArray) {
-        val speakerIdBytes = speakerId.toByteArray(Charsets.UTF_8)
+    private fun broadcastVoicePacket(packet: VoicePacket) {
+        val speakerIdBytes = packet.senderId.toByteArray(Charsets.UTF_8)
         val idLen = speakerIdBytes.size.toByte()
 
-        val buffer = ByteBuffer.allocate(1 + idLen + pcmData.size)
+        val buffer = ByteBuffer.allocate(1 + 8 + 8 + 1 + idLen + packet.payload.size)
+        buffer.put(if (packet.isFinalFrame) 1.toByte() else 0.toByte())
+        buffer.putLong(packet.sequenceNumber)
+        buffer.putLong(packet.timestampMs)
         buffer.put(idLen)
         buffer.put(speakerIdBytes)
-        buffer.put(pcmData)
+        buffer.put(packet.payload)
 
         sendPacketToAll(PKT_VOICE_CHUNK, buffer.array())
     }
@@ -1004,11 +1022,29 @@ class BluetoothManager(private val context: Context) {
 
         @Volatile
         private var isRunning = true
+        
+        private var lastKeepaliveSent = 0L
+        private var keepaliveRunnable: Runnable? = null
 
         override fun run() {
             try {
+                // Intelligence Engine: Report Connection
+                CommunicationDnaEngine.bluetoothAdapter?.reportConnectionState(true, 1)
+                
                 val input = inputStream
                 val headerBuffer = ByteArray(4)
+
+                // Keepalive Pinger Loop (Client and Host send ping)
+                keepaliveRunnable = object : Runnable {
+                    override fun run() {
+                        if (isRunning) {
+                            lastKeepaliveSent = System.currentTimeMillis()
+                            sendBytes(buildFramedPacket(PKT_KEEPALIVE, ByteArray(0)))
+                            mainHandler.postDelayed(this, 15_000L) // Ping every 15s
+                        }
+                    }
+                }
+                mainHandler.postDelayed(keepaliveRunnable!!, 5000L)
 
                 while (isRunning) {
                     // 1. Scan byte-by-byte until MAGIC_BYTE (0x57) is found
@@ -1050,7 +1086,10 @@ class BluetoothManager(private val context: Context) {
                 if (isRunning) {
                     Log.d(TAG, "Peer connection ended: ${socket.remoteDevice?.address} (${e.message})")
                 }
+                // Intelligence Engine: Report socket error
+                CommunicationDnaEngine.bluetoothAdapter?.reportSocketError()
             } finally {
+                keepaliveRunnable?.let { mainHandler.removeCallbacks(it) }
                 close()
                 handlePeerDisconnected()
             }
@@ -1227,7 +1266,7 @@ class BluetoothManager(private val context: Context) {
 
                 PKT_FLOOR_DENY -> {
                     isLocallyHoldingFloor = false
-                    audioRecorder.stop()
+                    VoiceQualityEngine.instance.stopTransmitting()
                     val holderId = String(payload, Charsets.UTF_8)
                     addLog("Channel busy — transmission denied")
                     _events.tryEmit("Channel busy — transmission denied")
@@ -1245,13 +1284,18 @@ class BluetoothManager(private val context: Context) {
 
                 PKT_VOICE_CHUNK -> {
                     val buffer = ByteBuffer.wrap(payload)
+                    val isFinalFrame = buffer.get() == 1.toByte()
+                    val sequenceNumber = buffer.long
+                    val timestampMs = buffer.long
                     val idLen = buffer.get().toInt() and 0xFF
                     val idBytes = ByteArray(idLen)
                     buffer.get(idBytes)
                     val speakerId = String(idBytes, Charsets.UTF_8)
 
-                    val pcmData = ByteArray(payload.size - 1 - idLen)
-                    buffer.get(pcmData)
+                    val audioPayload = ByteArray(buffer.remaining())
+                    buffer.get(audioPayload)
+                    
+                    val packet = VoicePacket(sequenceNumber, timestampMs, speakerId, audioPayload, isFinalFrame)
 
                     // Reset/extend 30s floor timeout on Host when active holder transmits
                     if (isHostSide && currentFloorHolderId == speakerId) {
@@ -1265,8 +1309,8 @@ class BluetoothManager(private val context: Context) {
                         mainHandler.postDelayed(floorTimeoutRunnable!!, 30_000L)
                     }
 
-                    // Play received audio immediately
-                    audioPlayer.play(pcmData)
+                    // Hand the packet directly to the Voice Quality Engine
+                    VoiceQualityEngine.instance.onPacketReceived(packet)
 
                     // Host relays to all other connected clients
                     if (isHostSide) {
@@ -1299,6 +1343,17 @@ class BluetoothManager(private val context: Context) {
                     val json = JSONObject(String(payload, Charsets.UTF_8))
                     val id = json.optString("id")
                     handlePeerDisconnected(id)
+                }
+
+                PKT_KEEPALIVE -> {
+                    // Respond with ACK immediately
+                    sendBytes(buildFramedPacket(PKT_KEEPALIVE_ACK, ByteArray(0)))
+                }
+
+                PKT_KEEPALIVE_ACK -> {
+                    val rtt = System.currentTimeMillis() - lastKeepaliveSent
+                    // Intelligence Engine: Report real RTT telemetry
+                    CommunicationDnaEngine.bluetoothAdapter?.reportKeepaliveRtt(rtt)
                 }
             }
         }
@@ -1345,6 +1400,8 @@ class BluetoothManager(private val context: Context) {
                     _events.tryEmit("Disconnected from Host")
                 }
             }
+            // Intelligence Engine: Disconnected
+            CommunicationDnaEngine.bluetoothAdapter?.reportConnectionState(false, 0)
         }
 
         fun close() {
