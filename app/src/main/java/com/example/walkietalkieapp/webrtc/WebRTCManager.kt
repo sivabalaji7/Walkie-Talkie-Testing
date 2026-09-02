@@ -239,6 +239,8 @@ class WebRTCManager(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.services.mozilla.com").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
             PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
             
             // TURN Servers
@@ -426,18 +428,7 @@ class WebRTCManager(private val context: Context) {
             }
             Log.d(TAG, "Handling remote offer from $fromPeerId")
 
-            var pc = peerConnections[fromPeerId]
-            if (pc != null && pc.signalingState() != PeerConnection.SignalingState.STABLE) {
-                Log.w(TAG, "Signaling collision on peer $fromPeerId (${pc.signalingState()}), resetting to accept incoming offer")
-                try { pc.dispose() } catch (e: Exception) {}
-                peerConnections.remove(fromPeerId)
-                pc = null
-            }
-            if (pc == null) {
-                pc = getOrCreatePeerConnection(fromPeerId)
-            }
-            if (pc == null) return@execute
-
+            val pc = getOrCreatePeerConnection(fromPeerId) ?: return@execute
             ensureHandsFreeAudioRouting()
 
             val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
@@ -448,7 +439,16 @@ class WebRTCManager(private val context: Context) {
                     audioExecutor.execute { drainPendingCandidates(fromPeerId) }
                 }
                 override fun onSetFailure(error: String?) {
-                    Log.e(TAG, "Failed to set remote offer for $fromPeerId: $error")
+                    Log.w(TAG, "Failed to set remote offer for $fromPeerId: $error, recreating connection")
+                    try { pc.dispose() } catch (e: Exception) {}
+                    peerConnections.remove(fromPeerId)
+                    val newPc = getOrCreatePeerConnection(fromPeerId) ?: return
+                    newPc.setRemoteDescription(object : SimpleSdpObserver() {
+                        override fun onSetSuccess() {
+                            createAnswerForPeer(fromPeerId, newPc)
+                            audioExecutor.execute { drainPendingCandidates(fromPeerId) }
+                        }
+                    }, sessionDescription)
                 }
             }, sessionDescription)
         }

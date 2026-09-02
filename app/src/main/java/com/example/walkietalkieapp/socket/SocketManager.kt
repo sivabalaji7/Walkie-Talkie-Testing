@@ -167,9 +167,8 @@ object SocketManager {
                             }
                         }
                     }
-                    if (peerId.isNotBlank() && !peerId.equals(_socketUiState.value.username, ignoreCase = true)) {
-                        signalingListener?.onPeersReceived(listOf(peerId))
-                    }
+                    // Note: We do NOT initiate an offer here. The joining peer receives 'room-peers'
+                    // from the server and initiates the offer, avoiding simultaneous WebRTC offer glare.
                     updateActivity()
                 }
 
