@@ -68,19 +68,30 @@ class WebRTCManager(private val context: Context) {
     fun ensureHandsFreeAudioRouting() {
         try {
             audioManager?.apply {
+                mode = AudioManager.MODE_IN_COMMUNICATION
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val availableDevices = availableCommunicationDevices
-                    val speaker = availableDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    if (speaker != null) {
-                        setCommunicationDevice(speaker)
+                    val devices = availableCommunicationDevices
+                    val preferredDevice = devices.firstOrNull { 
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                    } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    
+                    if (preferredDevice != null) {
+                        setCommunicationDevice(preferredDevice)
+                        Log.d(TAG, "Audio routed to communication device: ${preferredDevice.type}")
+                    } else {
+                        @Suppress("DEPRECATION")
+                        isSpeakerphoneOn = true
                     }
+                } else {
+                    @Suppress("DEPRECATION")
+                    isSpeakerphoneOn = true
                 }
-                mode = AudioManager.MODE_NORMAL
-                @Suppress("DEPRECATION")
-                isSpeakerphoneOn = true
                 isMicrophoneMute = false
             }
-            Log.d(TAG, "Audio explicitly forced to Bottom External Microphone (AudioSource.MIC)")
+            Log.d(TAG, "Hands-free audio routing active (MODE_IN_COMMUNICATION)")
         } catch (e: Exception) {
             Log.e(TAG, "Error ensuring hands-free audio routing: ${e.message}")
         }
@@ -92,11 +103,11 @@ class WebRTCManager(private val context: Context) {
             initializeLibrary(context)
             ensureHandsFreeAudioRouting()
             
-            // Optimized audio device module targeting Bottom External Microphone (AudioSource.MIC)
+            // Production-grade Audio Device Module utilizing hardware Voice Communication & Noise Suppression
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
-                .setUseHardwareAcousticEchoCanceler(false) // Disabled to prevent telephony earpiece coupling
-                .setUseHardwareNoiseSuppressor(false) // Disabled to prevent low-frequency clamping
-                .setAudioSource(android.media.MediaRecorder.AudioSource.MIC) // Directly captures from Bottom External Physical Microphone
+                .setUseHardwareAcousticEchoCanceler(JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported())
+                .setUseHardwareNoiseSuppressor(JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported())
+                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION) // Activates hardware dual-mic beamforming & wind suppression
                 .setUseStereoInput(false)
                 .setUseStereoOutput(false)
                 .createAudioDeviceModule()
@@ -113,7 +124,7 @@ class WebRTCManager(private val context: Context) {
                 .createPeerConnectionFactory()
 
             isInitialized = true
-            Log.d(TAG, "WebRTC init successful (Bottom External Mic Active)")
+            Log.d(TAG, "WebRTC init successful (Hardware AEC/NS & VOICE_COMMUNICATION active)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init WebRTC: ${e.message}")
         }
@@ -121,29 +132,61 @@ class WebRTCManager(private val context: Context) {
     
     var isKrispAiEnabled: Boolean = true
 
+    fun setKrispEnabled(enabled: Boolean) {
+        if (isKrispAiEnabled == enabled) return
+        isKrispAiEnabled = enabled
+        audioExecutor.execute {
+            try {
+                if (peerConnectionFactory != null && isInitialized && localAudioTrack != null) {
+                    val audioConstraints = createAudioConstraints(enabled)
+                    val oldSource = audioSource
+                    val newSource = peerConnectionFactory?.createAudioSource(audioConstraints)
+                    val newTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", newSource)
+                    newTrack?.setEnabled(isTalking)
+                    
+                    peerConnections.values.forEach { pc ->
+                        pc.senders.find { it.track()?.kind() == "audio" }?.setTrack(newTrack, false)
+                    }
+                    
+                    localAudioTrack = newTrack
+                    audioSource = newSource
+                    try { oldSource?.dispose() } catch (e: Exception) {}
+                    Log.d(TAG, "Krisp AI toggled to $enabled — updated audio track across ${peerConnections.size} peer(s)")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating Krisp track: ${e.message}")
+            }
+        }
+    }
+
+    private fun createAudioConstraints(krispActive: Boolean): MediaConstraints {
+        return MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true")) // CRITICAL: Cuts wind rumble and low-freq noise (<150Hz)
+            mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googTransientSuppression", if (krispActive) "true" else "false")) // Krisp-style Deep Transient Denoising
+            mandatory.add(MediaConstraints.KeyValuePair("googExperimentalNoiseSuppression", if (krispActive) "true" else "false")) // Neural Spectral Masking
+            mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
+        }
+    }
+
     fun initialize() {
         if (!isInitialized) init()
         try {
             if (localAudioTrack == null) {
-                val audioConstraints = MediaConstraints().apply {
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false")) // Preserves deep vocal fundamentals (50Hz-150Hz)
-                    mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "false")) // Avoids destructive double-gating
-                    mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "false"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("googTransientSuppression", if (isKrispAiEnabled) "true" else "false")) // Krisp-style Deep Transient Denoising
-                    mandatory.add(MediaConstraints.KeyValuePair("googExperimentalNoiseSuppression", if (isKrispAiEnabled) "true" else "false")) // Neural Spectral Masking
-                    mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
-                }
+                val audioConstraints = createAudioConstraints(isKrispAiEnabled)
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
                 localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
             }
-            localAudioTrack?.setEnabled(true)
+            // Initially disable until user holds PTT to prevent background bleed
+            localAudioTrack?.setEnabled(false)
             audioDeviceModule?.setMicrophoneMute(true)
-            Log.d(TAG, "Local audio track ready for mesh negotiation (Krisp AI Active: $isKrispAiEnabled)")
+            Log.d(TAG, "Local audio track ready for mesh negotiation (Krisp AI Active: $isKrispAiEnabled, Highpass: ON)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
         }
@@ -161,7 +204,7 @@ class WebRTCManager(private val context: Context) {
                 }
             }
 
-            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0;x-google-min-bitrate=48;sprop-maxcapturerate=48000;maxplaybackrate=48000"
+            val hdFmtpParams = "minptime=10;ptime=20;cbr=0;maxaveragebitrate=32000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=1;x-google-min-bitrate=16;sprop-maxcapturerate=48000;maxplaybackrate=48000"
             if (opusPayloadType != null) {
                 val fmtpIndex = lines.indexOfFirst { it.startsWith("a=fmtp:$opusPayloadType") }
                 if (fmtpIndex != -1) {
@@ -178,7 +221,7 @@ class WebRTCManager(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error optimizing SDP: ${e.message}")
-            sdp.replace("useinbandfec=1", "useinbandfec=1;minptime=10;ptime=20;cbr=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;dtx=0;x-google-min-bitrate=48;sprop-maxcapturerate=48000;maxplaybackrate=48000")
+            sdp
         }
     }
 
@@ -530,7 +573,8 @@ class WebRTCManager(private val context: Context) {
                 
                 isTalking = false
                 audioDeviceModule?.setMicrophoneMute(true)
-                Log.d(TAG, "PTT released — mic muted")
+                localAudioTrack?.setEnabled(false)
+                Log.d(TAG, "PTT released — mic muted and track disabled")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disabling audio: ${e.message}")
             }

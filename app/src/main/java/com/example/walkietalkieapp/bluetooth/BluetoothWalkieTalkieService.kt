@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.walkietalkieapp.MainActivity
+import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
 import com.example.walkietalkieapp.wifidirect.WifiDirectManager
 
 class BluetoothWalkieTalkieService : Service() {
@@ -35,6 +36,7 @@ class BluetoothWalkieTalkieService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        VoiceQualityEngine.instance.initialize(context = this)
         bluetoothManager = BluetoothManager(this)
         wifiDirectManager = WifiDirectManager(this)
     }

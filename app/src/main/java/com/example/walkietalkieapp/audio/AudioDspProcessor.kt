@@ -248,32 +248,28 @@ class AudioDspProcessor(
             val sampleAbs = abs(lpOut)
             frameEnergySum += sampleAbs * sampleAbs
 
-            // Stage 5: Adaptive Background Noise Estimation
-            // CRITICAL FIX: Much faster upward tracking (was 0.0002, now 0.005)
-            // This lets the noise floor rise quickly when wind/noise appears
+            // Stage 5: Signal Envelope Follower & Noise Estimation
             smoothedEnergy = 0.985f * smoothedEnergy + 0.015f * sampleAbs
-            if (sampleAbs < noiseFloorEnergy) {
-                noiseFloorEnergy = 0.997f * noiseFloorEnergy + 0.003f * sampleAbs // fast down
+            if (smoothedEnergy < noiseFloorEnergy) {
+                noiseFloorEnergy = 0.999f * noiseFloorEnergy + 0.001f * smoothedEnergy
             } else {
-                noiseFloorEnergy = 0.995f * noiseFloorEnergy + 0.005f * sampleAbs // much faster up (was 0.0002)
+                noiseFloorEnergy = 0.9998f * noiseFloorEnergy + 0.0002f * smoothedEnergy
             }
 
-            // Stage 6: Noise Gate + Spectral Subtraction
-            // NEW: Two-stage approach:
-            //   a) If sample energy is close to noise floor, apply hard gating (reduce to near-zero)
-            //   b) Otherwise, apply spectral subtraction proportional to noise ratio
+            // Stage 6: Envelope-Based Noise Gate + Spectral Subtraction
+            // Evaluating gate on smoothedEnergy prevents zero-crossing distortion / raspy vocal artifacts
             val noiseFloorSqrt = sqrt(noiseFloorEnergy)
             val cleanedSample: Float
             
-            if (noiseGateThresholdMultiplier > 0f && sampleAbs < noiseFloorSqrt * noiseGateThresholdMultiplier) {
-                // Below gate threshold — heavily attenuate (soft gate, not hard zero to avoid clicks)
-                val gateRatio = sampleAbs / (noiseFloorSqrt * noiseGateThresholdMultiplier + 0.0001f)
-                cleanedSample = lpOut * gateRatio * gateRatio // quadratic curve for smooth gating
+            if (noiseGateThresholdMultiplier > 0f && smoothedEnergy < noiseFloorSqrt * noiseGateThresholdMultiplier) {
+                // Envelope below gate threshold — smooth attenuation without zero-crossing distortion
+                val gateRatio = (smoothedEnergy / (noiseFloorSqrt * noiseGateThresholdMultiplier + 0.0001f)).coerceIn(0.05f, 1f)
+                cleanedSample = lpOut * gateRatio
             } else {
-                // Above gate — apply spectral subtraction
-                val noiseRatio = (noiseFloorEnergy / (sampleAbs + 0.0001f)).coerceIn(0f, 1f)
+                // Above gate — smooth spectral subtraction based on signal-to-noise ratio
+                val noiseRatio = (noiseFloorEnergy / (smoothedEnergy + 0.0001f)).coerceIn(0f, 1f)
                 val attenuation = 1f - (spectralSubtractionStrength * noiseRatio)
-                cleanedSample = lpOut * attenuation.coerceAtLeast(0.05f) // never fully zero
+                cleanedSample = lpOut * attenuation.coerceAtLeast(0.1f)
             }
 
             // Stage 7: Vocal Amplification (AGC)

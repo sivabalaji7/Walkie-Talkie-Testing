@@ -44,6 +44,8 @@ class JitterBuffer(
         }
     }
 
+    private var emptyPollCount = 0
+
     /**
      * Polls the next chronological packet.
      * Returns null if buffering, or if there is no packet available (indicating silence should be played).
@@ -53,6 +55,7 @@ class JitterBuffer(
             if (buffer.size >= minBufferFrames) {
                 isBuffering = false
                 expectedNextSequence = buffer.firstKey()
+                emptyPollCount = 0
                 Log.d(TAG, "Buffering complete. Starting playback from seq: $expectedNextSequence")
             } else {
                 return null // Still buffering
@@ -60,10 +63,14 @@ class JitterBuffer(
         }
 
         if (buffer.isEmpty()) {
-            Log.v(TAG, "Buffer empty, possible underflow or end of transmission")
-            isBuffering = true
+            emptyPollCount++
+            // Only trigger full rebuffering after 6 consecutive empty polls (~240ms of sustained underflow)
+            if (emptyPollCount >= 6) {
+                isBuffering = true
+            }
             return null
         }
+        emptyPollCount = 0
 
         val packet = buffer.remove(expectedNextSequence)
         if (packet != null) {
@@ -74,7 +81,6 @@ class JitterBuffer(
             return packet
         } else {
             // Packet loss detected! The packet we expected isn't here.
-            // We must advance the sequence and yield null (silence) to keep time moving.
             Log.w(TAG, "Packet loss detected at seq: $expectedNextSequence")
             expectedNextSequence++
             return null
@@ -85,6 +91,7 @@ class JitterBuffer(
         buffer.clear()
         isBuffering = true
         expectedNextSequence = -1
+        emptyPollCount = 0
         Log.d(TAG, "JitterBuffer reset")
     }
 }

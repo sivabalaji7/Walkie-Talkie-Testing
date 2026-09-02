@@ -413,7 +413,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             isKrispAiEnabled = isKrispAiEnabled,
                             onKrispAiToggle = { enabled ->
                                 isKrispAiEnabled = enabled
-                                webRtcService?.webRTCManager?.isKrispAiEnabled = enabled
+                                webRtcService?.webRTCManager?.setKrispEnabled(enabled)
                                 notificationQueue.add(if (enabled) "✨ Krisp AI Voice Denoising Active" else "Krisp AI Voice Denoising Disabled")
                             },
                             notificationMessage = notificationMessage

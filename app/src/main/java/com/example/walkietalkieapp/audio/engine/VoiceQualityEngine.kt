@@ -44,17 +44,31 @@ class VoiceQualityEngine private constructor() {
     private var packetSequence: Long = 0
     private var myUserId: String = ""
 
-    // Callback used by the Bluetooth/WifiDirect transports to actually send the packet over the network
+    // Transport-specific callbacks for local mesh routing
+    var onTransmitBluetoothPacket: ((VoicePacket) -> Unit)? = null
+    var onTransmitWifiDirectPacket: ((VoicePacket) -> Unit)? = null
     var onTransmitLocalPacket: ((VoicePacket) -> Unit)? = null
 
-    fun initialize(context: Context, webRtcRef: WebRTCManager, userId: String) {
+    private fun routeLocalPacket(packet: VoicePacket) {
+        when (activeTransport) {
+            TransportType.Bluetooth -> onTransmitBluetoothPacket?.invoke(packet) ?: onTransmitLocalPacket?.invoke(packet)
+            TransportType.WifiDirect -> onTransmitWifiDirectPacket?.invoke(packet) ?: onTransmitLocalPacket?.invoke(packet)
+            else -> onTransmitLocalPacket?.invoke(packet)
+        }
+    }
+
+    fun initialize(context: Context, webRtcRef: WebRTCManager? = null, userId: String = "") {
         if (audioRecorder == null) {
             audioRecorder = AudioRecorder()
             audioPlayer = AudioPlayer(context)
-            this.webRtcManager = webRtcRef
-            this.myUserId = userId
-            Log.d(TAG, "Voice Quality Engine initialized.")
         }
+        if (webRtcRef != null) {
+            this.webRtcManager = webRtcRef
+        }
+        if (userId.isNotEmpty()) {
+            this.myUserId = userId
+        }
+        Log.d(TAG, "Voice Quality Engine initialized (Recorder/Player ready).")
     }
 
     // =========================================================================
@@ -73,7 +87,7 @@ class VoiceQualityEngine private constructor() {
         if (activeTransport == TransportType.Internet) {
             val shouldEnableKrisp = environment != AcousticEnvironment.QUIET
             if (webRtcManager?.isKrispAiEnabled != shouldEnableKrisp) {
-                webRtcManager?.isKrispAiEnabled = shouldEnableKrisp
+                webRtcManager?.setKrispEnabled(shouldEnableKrisp)
                 Log.d(TAG, "Intelligence: Krisp AI ${if (shouldEnableKrisp) "ENABLED" else "DISABLED"} (env=$environment)")
             }
         }
@@ -118,8 +132,6 @@ class VoiceQualityEngine private constructor() {
             audioRecorder?.start { processedPcm ->
                 // The AudioRecorder internally applies the AudioDspProcessor.
                 // We must check if the DSP suppressed this frame (VAD).
-                
-                // Since AudioRecorder is a black box passing bytes, if it sends an empty array, it's silence.
                 if (processedPcm.isEmpty()) return@start // Silence suppressed by VAD
 
                 // 1. Encode via G.711
@@ -134,8 +146,8 @@ class VoiceQualityEngine private constructor() {
                     isFinalFrame = false
                 )
 
-                // 3. Hand off to transport
-                onTransmitLocalPacket?.invoke(packet)
+                // 3. Hand off to active local transport
+                routeLocalPacket(packet)
             }
             currentState = VoiceQualityState.TRANSMITTING
         }
@@ -161,7 +173,7 @@ class VoiceQualityEngine private constructor() {
                 payload = ByteArray(0),
                 isFinalFrame = true
             )
-            onTransmitLocalPacket?.invoke(finalPacket)
+            routeLocalPacket(finalPacket)
         }
         
         currentState = VoiceQualityState.IDLE
@@ -183,12 +195,6 @@ class VoiceQualityEngine private constructor() {
         if (activeTransport == TransportType.Internet) return // Ignore local packets if internet is active
         
         jitterBuffer.push(packet)
-        
-        if (packet.isFinalFrame) {
-            currentState = VoiceQualityState.IDLE
-            return
-        }
-        
         currentState = VoiceQualityState.RECEIVING
         startJitterDrainerIfNeeded()
     }
@@ -199,20 +205,30 @@ class VoiceQualityEngine private constructor() {
 
         playbackExecutor.execute {
             Log.d(TAG, "Jitter buffer drainer started.")
+            var consecutiveEmptyFrames = 0
             while (isPlaying && currentState == VoiceQualityState.RECEIVING) {
                 val packet = jitterBuffer.poll()
                 
                 if (packet != null) {
+                    consecutiveEmptyFrames = 0
                     if (packet.payload.isNotEmpty()) {
                         // 1. Decode G.711 to PCM
                         val pcm = G711Codec.decode(packet.payload)
                         // 2. Play
                         audioPlayer?.play(pcm)
                     }
+                    if (packet.isFinalFrame) {
+                        Log.d(TAG, "Final frame drained from jitter buffer. Transmission cleanly completed.")
+                        currentState = VoiceQualityState.IDLE
+                        break
+                    }
                 } else {
-                    // Packet was null. This means either we are buffering, 
-                    // or a packet was dropped/lost. 
-                    // To keep playback smooth, we just yield a silent frame.
+                    consecutiveEmptyFrames++
+                    if (consecutiveEmptyFrames > 15) { // 600ms of sustained silence / empty buffer
+                        Log.d(TAG, "Drainer timeout (600ms silence). Returning to IDLE.")
+                        currentState = VoiceQualityState.IDLE
+                        break
+                    }
                     val silence = ByteArray(1280) // 40ms of 16kHz silence
                     audioPlayer?.play(silence)
                 }

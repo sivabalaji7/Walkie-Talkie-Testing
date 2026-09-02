@@ -110,7 +110,7 @@ class BluetoothManager(private val context: Context) {
 
     init {
         // Wire the engine to transmit packets over Bluetooth when on the local mesh
-        VoiceQualityEngine.instance.onTransmitLocalPacket = { packet ->
+        VoiceQualityEngine.instance.onTransmitBluetoothPacket = { packet ->
             broadcastVoicePacket(packet)
         }
     }

@@ -105,7 +105,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
     init {
         // Wire the engine to transmit packets over Wi-Fi Direct when on the local mesh
-        VoiceQualityEngine.instance.onTransmitLocalPacket = { packet ->
+        VoiceQualityEngine.instance.onTransmitWifiDirectPacket = { packet ->
             broadcastVoicePacket(packet)
         }
     }
