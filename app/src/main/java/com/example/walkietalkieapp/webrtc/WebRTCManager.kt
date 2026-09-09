@@ -353,6 +353,20 @@ class WebRTCManager(private val context: Context) {
         if (peerConnectionFactory == null) init()
         if (!isInitialized) initialize()
 
+        // Absolute guarantee that local audio track exists BEFORE peer connection is created.
+        if (localAudioTrack == null) {
+            try {
+                if (audioDeviceModule == null) init()
+                val audioConstraints = createAudioConstraints(isKrispAiEnabled)
+                audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
+                localAudioTrack?.setEnabled(isTalking)
+                Log.d(TAG, "Forced synchronous creation of localAudioTrack before PC creation.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to forcefully create audio track: ${e.message}")
+            }
+        }
+
         val existing = peerConnections[peerId]
         if (existing != null) {
             return existing
