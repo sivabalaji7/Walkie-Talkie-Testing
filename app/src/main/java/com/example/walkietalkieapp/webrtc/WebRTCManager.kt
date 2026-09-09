@@ -290,7 +290,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    fun isPeerConnected(peerId: String): Boolean {
+    fun isPeerConnected(rawPeerId: String): Boolean {
+        val peerId = rawPeerId.trim().lowercase()
         val state = peerIceStates[peerId]
         return state == PeerConnection.IceConnectionState.CONNECTED || 
                state == PeerConnection.IceConnectionState.COMPLETED
@@ -302,14 +303,16 @@ class WebRTCManager(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.services.mozilla.com").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.twilio.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.miwifi.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:relay.metered.ca:80").createIceServer(),
             PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
             
-            // --- Free Public TURN Servers (Fallback for Mobile Data/Symmetric NATs) ---
-            // Note: In a production app, you MUST replace these with your own paid TURN servers (e.g. Twilio NTS)
+            // --- Free Public TURN / TURNS Servers (Fallback for Cellular/CGNAT/Symmetric NATs) ---
             PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
                 .setUsername("openrelayproject")
                 .setPassword("openrelayproject")
@@ -323,6 +326,10 @@ class WebRTCManager(private val context: Context) {
                 .setPassword("openrelayproject")
                 .createIceServer(),
             PeerConnection.IceServer.builder("turns:openrelay.metered.ca:443?transport=tcp")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
+                .createIceServer(),
+            PeerConnection.IceServer.builder("turns:openrelay.metered.ca:443")
                 .setUsername("openrelayproject")
                 .setPassword("openrelayproject")
                 .createIceServer()
@@ -340,7 +347,8 @@ class WebRTCManager(private val context: Context) {
     }
     
     @Synchronized
-    private fun getOrCreatePeerConnection(peerId: String): PeerConnection? {
+    private fun getOrCreatePeerConnection(rawPeerId: String): PeerConnection? {
+        val peerId = rawPeerId.trim().lowercase()
         if (peerId.isBlank()) return null
         if (peerConnectionFactory == null) init()
         if (!isInitialized) initialize()
@@ -485,7 +493,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    private fun createOfferForPeer(peerId: String, isRestart: Boolean = false) {
+    private fun createOfferForPeer(rawPeerId: String, isRestart: Boolean = false) {
+        val peerId = rawPeerId.trim().lowercase()
         val existing = peerConnections[peerId]
         val state = peerIceStates[peerId]
         if (!isRestart && existing != null) {
@@ -517,7 +526,8 @@ class WebRTCManager(private val context: Context) {
         }, constraints)
     }
 
-    fun handleOffer(fromPeerId: String, sdp: String) {
+    fun handleOffer(rawFromPeerId: String, sdp: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             if (!isSessionActive) {
@@ -552,7 +562,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    private fun createAnswerForPeer(peerId: String, pc: PeerConnection) {
+    private fun createAnswerForPeer(rawPeerId: String, pc: PeerConnection) {
+        val peerId = rawPeerId.trim().lowercase()
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         }
@@ -571,7 +582,8 @@ class WebRTCManager(private val context: Context) {
         }, constraints)
     }
 
-    fun handleAnswer(fromPeerId: String, sdp: String) {
+    fun handleAnswer(rawFromPeerId: String, sdp: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             val pc = peerConnections[fromPeerId] ?: return@execute
@@ -589,7 +601,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
-    fun handleIceCandidate(fromPeerId: String, candidateJson: String) {
+    fun handleIceCandidate(rawFromPeerId: String, candidateJson: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             try {
@@ -621,7 +634,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
-    private fun drainPendingCandidates(peerId: String) {
+    private fun drainPendingCandidates(rawPeerId: String) {
+        val peerId = rawPeerId.trim().lowercase()
         val pc = peerConnections[peerId] ?: return
         val list = pendingIceCandidates[peerId] ?: return
         val iterator = list.iterator()
@@ -632,7 +646,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    fun removePeer(peerId: String) {
+    fun removePeer(rawPeerId: String) {
+        val peerId = rawPeerId.trim().lowercase()
         audioExecutor.execute {
             Log.d(TAG, "Removing peer connection for $peerId")
             try {
