@@ -194,6 +194,14 @@ object SupabaseRealtimeManager {
                         val currentActiveNames = states.map { it.username.ifBlank { it.userId } }.filter { it.isNotBlank() }.map { it.lowercase() }.toSet()
                         val currentMyName = cleanUsername.lowercase()
                         
+                        // Add users who are already in the room
+                        states.forEach { state ->
+                            val uname = state.username.ifBlank { state.userId }
+                            if (uname.isNotBlank() && !uname.equals(cleanUsername, ignoreCase = true)) {
+                                handlePeerSeen(uname)
+                            }
+                        }
+
                         // Handle drops directly based on pure presence data instead of timeouts
                         val iterator = activePeers.entries.iterator()
                         while (iterator.hasNext()) {
@@ -307,6 +315,9 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         if (msg.sender.isBlank() || msg.sender.equals(myName, ignoreCase = true)) return // ignore self
         if (msg.to != null && !msg.to.equals(myName, ignoreCase = true)) return // not addressed to me
+
+        // Any message from a sender acts as an implicit presence heartbeat
+        handlePeerSeen(msg.sender)
 
         when (msg.type) {
             "offer" -> {

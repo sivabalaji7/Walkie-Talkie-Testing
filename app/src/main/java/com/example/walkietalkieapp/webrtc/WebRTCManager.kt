@@ -294,8 +294,9 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    fun isPeerConnected(peerId: String): Boolean {
-        val state = peerIceStates[normKey(peerId)]
+    fun isPeerConnected(rawPeerId: String): Boolean {
+        val peerId = normKey(rawPeerId)
+        val state = peerIceStates[peerId]
         return state == PeerConnection.IceConnectionState.CONNECTED || 
                state == PeerConnection.IceConnectionState.COMPLETED
     }
@@ -311,7 +312,14 @@ class WebRTCManager(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:turn.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer()
+            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
+            PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
+            
+            // Public Demo Fallback TURN Servers
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
+            PeerConnection.IceServer.builder("turns:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         )
 
         // Dynamically load active TURN servers from BuildConfig (configurable via app/build.gradle.kts)
@@ -332,7 +340,7 @@ class WebRTCManager(private val context: Context) {
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 10 
+        rtcConfig.iceCandidatePoolSize = 20 
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
@@ -341,10 +349,25 @@ class WebRTCManager(private val context: Context) {
     }
     
     @Synchronized
-    private fun getOrCreatePeerConnection(peerId: String): PeerConnection? {
+    private fun getOrCreatePeerConnection(rawPeerId: String): PeerConnection? {
+        val peerId = rawPeerId.trim().lowercase()
         if (peerId.isBlank()) return null
         if (peerConnectionFactory == null) init()
         if (!isInitialized) initialize()
+
+        // Absolute guarantee that local audio track exists BEFORE peer connection is created.
+        if (localAudioTrack == null) {
+            try {
+                if (audioDeviceModule == null) init()
+                val audioConstraints = createAudioConstraints(isKrispAiEnabled)
+                audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
+                localAudioTrack?.setEnabled(isTalking)
+                Log.d(TAG, "Forced synchronous creation of localAudioTrack before PC creation.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to forcefully create audio track: ${e.message}")
+            }
+        }
 
         val key = normKey(peerId)
         val existing = peerConnections[key]
@@ -487,10 +510,10 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    private fun createOfferForPeer(peerId: String, isRestart: Boolean = false) {
-        val key = normKey(peerId)
-        val existing = peerConnections[key]
-        val state = peerIceStates[key]
+    private fun createOfferForPeer(rawPeerId: String, isRestart: Boolean = false) {
+        val peerId = normKey(rawPeerId)
+        val existing = peerConnections[peerId]
+        val state = peerIceStates[peerId]
         if (!isRestart && existing != null) {
             Log.d(TAG, "PeerConnection for $peerId already exists (state=$state), skipping duplicate offer")
             return
@@ -520,7 +543,8 @@ class WebRTCManager(private val context: Context) {
         }, constraints)
     }
 
-    fun handleOffer(fromPeerId: String, sdp: String) {
+    fun handleOffer(rawFromPeerId: String, sdp: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             if (!isSessionActive) {
@@ -556,7 +580,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    private fun createAnswerForPeer(peerId: String, pc: PeerConnection) {
+    private fun createAnswerForPeer(rawPeerId: String, pc: PeerConnection) {
+        val peerId = rawPeerId.trim().lowercase()
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         }
@@ -575,7 +600,8 @@ class WebRTCManager(private val context: Context) {
         }, constraints)
     }
 
-    fun handleAnswer(fromPeerId: String, sdp: String) {
+    fun handleAnswer(rawFromPeerId: String, sdp: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             val key = normKey(fromPeerId)
@@ -594,7 +620,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
-    fun handleIceCandidate(fromPeerId: String, candidateJson: String) {
+    fun handleIceCandidate(rawFromPeerId: String, candidateJson: String) {
+        val fromPeerId = rawFromPeerId.trim().lowercase()
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             try {
@@ -627,10 +654,10 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
-    private fun drainPendingCandidates(peerId: String) {
-        val key = normKey(peerId)
-        val pc = peerConnections[key] ?: return
-        val list = pendingIceCandidates[key] ?: return
+    private fun drainPendingCandidates(rawPeerId: String) {
+        val peerId = normKey(rawPeerId)
+        val pc = peerConnections[peerId] ?: return
+        val list = pendingIceCandidates[peerId] ?: return
         val iterator = list.iterator()
         while (iterator.hasNext()) {
             val candidate = iterator.next()
@@ -639,7 +666,8 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    fun removePeer(peerId: String) {
+    fun removePeer(rawPeerId: String) {
+        val peerId = rawPeerId.trim().lowercase()
         audioExecutor.execute {
             val key = normKey(peerId)
             Log.d(TAG, "Removing peer connection for $peerId ($key)")
