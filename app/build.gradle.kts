@@ -19,6 +19,12 @@ android {
 
         buildConfigField("String", "SUPABASE_URL", "\"https://crlfqcrhsjybrebbbaww.supabase.co\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY\"")
+
+        // TURN Server Configuration for Cross-Network / Mobile Cellular NAT traversal
+        // Free TURN credentials can be obtained from https://dashboard.metered.ca
+        buildConfigField("String", "TURN_SERVER_URL", "\"\"")
+        buildConfigField("String", "TURN_USERNAME", "\"\"")
+        buildConfigField("String", "TURN_PASSWORD", "\"\"")
     }
 
     buildTypes {

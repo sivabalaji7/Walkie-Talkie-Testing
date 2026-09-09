@@ -20,6 +20,9 @@ private const val TAG = "WebRTCManager"
 
 class WebRTCManager(private val context: Context) {
     
+    // Case-insensitive Peer ID normalization to prevent casing mismatches in multi-device routing
+    private fun normKey(peerId: String): String = peerId.trim().lowercase()
+    
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "WebRTCAudioWorker").apply {
@@ -268,9 +271,10 @@ class WebRTCManager(private val context: Context) {
                 }
             }
 
+            // RFC 4566: b= lines MUST precede a= attributes in SDP media descriptions
             if (audioMediaIndex != -1 && !lines.any { it.startsWith("b=AS:") }) {
                 var insertPos = audioMediaIndex + 1
-                while (insertPos < lines.size && (lines[insertPos].startsWith("c=") || lines[insertPos].startsWith("a="))) {
+                while (insertPos < lines.size && lines[insertPos].startsWith("c=")) {
                     insertPos++
                 }
                 lines.add(insertPos, "b=AS:28")
@@ -291,36 +295,39 @@ class WebRTCManager(private val context: Context) {
     }
 
     fun isPeerConnected(peerId: String): Boolean {
-        val state = peerIceStates[peerId]
+        val state = peerIceStates[normKey(peerId)]
         return state == PeerConnection.IceConnectionState.CONNECTED || 
                state == PeerConnection.IceConnectionState.COMPLETED
     }
 
     private fun getRtcConfig(): PeerConnection.RTCConfiguration {
-        val iceServers = listOf(
+        val iceServers = mutableListOf(
+            // High-reliability global STUN servers (verified live over UDP)
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.services.mozilla.com").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
-            PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
-            
-            // TURN Servers
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
-                .setUsername("openrelayproject")
-                .setPassword("openrelayproject")
-                .createIceServer(),
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
-                .setUsername("openrelayproject")
-                .setPassword("openrelayproject")
-                .createIceServer(),
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
-                .setUsername("openrelayproject")
-                .setPassword("openrelayproject")
-                .createIceServer()
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:turn.cloudflare.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer()
         )
+
+        // Dynamically load active TURN servers from BuildConfig (configurable via app/build.gradle.kts)
+        val turnUrl = com.example.walkietalkieapp.BuildConfig.TURN_SERVER_URL.trim()
+        val turnUser = com.example.walkietalkieapp.BuildConfig.TURN_USERNAME.trim()
+        val turnPass = com.example.walkietalkieapp.BuildConfig.TURN_PASSWORD.trim()
+
+        if (turnUrl.isNotEmpty()) {
+            turnUrl.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { singleUrl ->
+                val builder = PeerConnection.IceServer.builder(singleUrl)
+                if (turnUser.isNotEmpty()) builder.setUsername(turnUser)
+                if (turnPass.isNotEmpty()) builder.setPassword(turnPass)
+                iceServers.add(builder.createIceServer())
+                Log.d(TAG, "Configured active TURN server: $singleUrl")
+            }
+        }
         
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -339,7 +346,8 @@ class WebRTCManager(private val context: Context) {
         if (peerConnectionFactory == null) init()
         if (!isInitialized) initialize()
 
-        val existing = peerConnections[peerId]
+        val key = normKey(peerId)
+        val existing = peerConnections[key]
         if (existing != null) {
             return existing
         }
@@ -371,7 +379,7 @@ class WebRTCManager(private val context: Context) {
                 }
                 override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
                     Log.d(TAG, "ICE [$peerId]: $newState")
-                    peerIceStates[peerId] = newState
+                    peerIceStates[key] = newState
                     mainHandler.post { onStateChange?.invoke(newState) }
                     
                     when (newState) {
@@ -458,7 +466,7 @@ class WebRTCManager(private val context: Context) {
             pc.addTrack(track, listOf("LOCAL_STREAM"))
         }
 
-        peerConnections[peerId] = pc
+        peerConnections[key] = pc
         return pc
     }
 
@@ -480,8 +488,9 @@ class WebRTCManager(private val context: Context) {
     }
 
     private fun createOfferForPeer(peerId: String, isRestart: Boolean = false) {
-        val existing = peerConnections[peerId]
-        val state = peerIceStates[peerId]
+        val key = normKey(peerId)
+        val existing = peerConnections[key]
+        val state = peerIceStates[key]
         if (!isRestart && existing != null) {
             Log.d(TAG, "PeerConnection for $peerId already exists (state=$state), skipping duplicate offer")
             return
@@ -520,7 +529,8 @@ class WebRTCManager(private val context: Context) {
             }
             Log.d(TAG, "Handling remote offer from $fromPeerId")
 
-            val pc = getOrCreatePeerConnection(fromPeerId) ?: return@execute
+            val key = normKey(fromPeerId)
+            val pc = getOrCreatePeerConnection(key) ?: return@execute
             ensureHandsFreeAudioRouting()
 
             val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
@@ -533,8 +543,8 @@ class WebRTCManager(private val context: Context) {
                 override fun onSetFailure(error: String?) {
                     Log.w(TAG, "Failed to set remote offer for $fromPeerId: $error, recreating connection")
                     try { pc.dispose() } catch (e: Exception) {}
-                    peerConnections.remove(fromPeerId)
-                    val newPc = getOrCreatePeerConnection(fromPeerId) ?: return
+                    peerConnections.remove(key)
+                    val newPc = getOrCreatePeerConnection(key) ?: return
                     newPc.setRemoteDescription(object : SimpleSdpObserver() {
                         override fun onSetSuccess() {
                             createAnswerForPeer(fromPeerId, newPc)
@@ -568,7 +578,8 @@ class WebRTCManager(private val context: Context) {
     fun handleAnswer(fromPeerId: String, sdp: String) {
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
-            val pc = peerConnections[fromPeerId] ?: return@execute
+            val key = normKey(fromPeerId)
+            val pc = peerConnections[key] ?: return@execute
             Log.d(TAG, "Handling remote answer from $fromPeerId")
             val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, sdp)
             pc.setRemoteDescription(object : SimpleSdpObserver() {
@@ -603,11 +614,12 @@ class WebRTCManager(private val context: Context) {
 
                 if (candidate == null) return@execute
 
-                val pc = peerConnections[fromPeerId]
+                val key = normKey(fromPeerId)
+                val pc = peerConnections[key]
                 if (pc != null && pc.remoteDescription != null) {
                     pc.addIceCandidate(candidate)
                 } else {
-                    pendingIceCandidates.getOrPut(fromPeerId) { mutableListOf() }.add(candidate)
+                    pendingIceCandidates.getOrPut(key) { mutableListOf() }.add(candidate)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "ICE Candidate Error from $fromPeerId: ${e.message}")
@@ -616,8 +628,9 @@ class WebRTCManager(private val context: Context) {
     }
     
     private fun drainPendingCandidates(peerId: String) {
-        val pc = peerConnections[peerId] ?: return
-        val list = pendingIceCandidates[peerId] ?: return
+        val key = normKey(peerId)
+        val pc = peerConnections[key] ?: return
+        val list = pendingIceCandidates[key] ?: return
         val iterator = list.iterator()
         while (iterator.hasNext()) {
             val candidate = iterator.next()
@@ -628,14 +641,15 @@ class WebRTCManager(private val context: Context) {
 
     fun removePeer(peerId: String) {
         audioExecutor.execute {
-            Log.d(TAG, "Removing peer connection for $peerId")
+            val key = normKey(peerId)
+            Log.d(TAG, "Removing peer connection for $peerId ($key)")
             try {
-                peerConnections.remove(peerId)?.dispose()
+                peerConnections.remove(key)?.dispose()
             } catch (e: Exception) {
                 Log.e(TAG, "Error disposing pc for $peerId: ${e.message}")
             }
-            pendingIceCandidates.remove(peerId)
-            peerIceStates.remove(peerId)
+            pendingIceCandidates.remove(key)
+            peerIceStates.remove(key)
             if (!isConnected()) {
                 mainHandler.post { onCallDisconnected?.invoke() }
             }

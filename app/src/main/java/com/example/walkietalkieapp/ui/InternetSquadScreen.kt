@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -204,6 +205,52 @@ fun InternetSquadScreen(
                                     Spacer(modifier = Modifier.width(3.dp))
                                     Text("KRISP AI", color = Color(0xFF00E676), fontSize = 9.sp, fontWeight = FontWeight.Bold)
                                 }
+                            }
+                        }
+
+                        // WebRTC Cross-Network Voice Link Live Status
+                        val voiceLink = socketUiState.voiceLinkState
+                        val isMeshUp = voiceLink == "CONNECTED"
+                        val isMeshLinking = voiceLink == "LINKING"
+                        val isMeshFailed = voiceLink == "FAILED"
+                        
+                        val linkColor = when {
+                            isMeshUp -> Color(0xFF00E676)
+                            isMeshLinking -> Color(0xFFFFB300)
+                            isMeshFailed -> Color(0xFFFF5252)
+                            else -> Color.White.copy(alpha = 0.5f)
+                        }
+                        val linkText = when {
+                            isMeshUp -> "VOICE READY"
+                            isMeshLinking -> "LINKING..."
+                            isMeshFailed -> "RETRY LINK"
+                            else -> "VOICE IDLE"
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = linkColor.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, linkColor.copy(alpha = 0.4f)),
+                            modifier = Modifier.clickable {
+                                if (isMeshFailed || !isMeshUp) {
+                                    vibrate()
+                                    onRestartIce()
+                                }
+                            }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isMeshUp) Icons.Default.CheckCircle else if (isMeshFailed) Icons.Default.Refresh else Icons.Default.Sync,
+                                    contentDescription = null,
+                                    tint = linkColor,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(linkText, color = linkColor, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
