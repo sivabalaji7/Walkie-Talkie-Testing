@@ -1,18 +1,18 @@
 package com.example.walkietalkieapp.auth
 
 import android.util.Log
+import com.example.walkietalkieapp.supabase.SupabaseClientManager
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.providers.builtin.Email
+import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.URLEncoder
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.net.UnknownHostException
-import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 sealed class AuthResult {
     data class Success(val userId: String, val username: String) : AuthResult()
@@ -22,25 +22,15 @@ sealed class AuthResult {
 object SupabaseAuthManager {
 
     private const val TAG = "SupabaseAuthManager"
-    private const val SUPABASE_URL = "https://crlfqcrhsjybrebbbaww.supabase.co"
-    private const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY"
-    private const val PASSWORD_SALT = "SquadTalk_Salt_2026#"
 
-    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
-    }
-
-    private fun hashPassword(password: String): String {
-        val salted = "$password$PASSWORD_SALT"
-        val bytes = MessageDigest.getInstance("SHA-256").digest(salted.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
+    fun toEmail(input: String): String {
+        val trimmed = input.trim()
+        return if (trimmed.contains("@")) {
+            trimmed.lowercase()
+        } else {
+            val sanitized = trimmed.lowercase().replace(Regex("[^a-z0-9_]"), "")
+            "$sanitized@squadtalk.app"
+        }
     }
 
     suspend fun signUp(username: String, password: String): AuthResult = withContext(Dispatchers.IO) {
@@ -52,55 +42,67 @@ object SupabaseAuthManager {
             return@withContext AuthResult.Error("Password must be at least 6 characters")
         }
 
+        val email = toEmail(cleanUsername)
+
         try {
-            // 1. Check if user already exists
-            val existing = getUserByUsername(cleanUsername)
-            if (existing != null) {
+            // 1. Check if username is already taken in public.users
+            val isTaken = try {
+                val existingList = SupabaseClientManager.client.from("users").select {
+                    filter {
+                        eq("username", cleanUsername)
+                    }
+                }.decodeList<JsonObject>()
+                existingList.isNotEmpty()
+            } catch (e: Exception) {
+                Log.w(TAG, "Username check warning (proceeding): ${e.message}")
+                false
+            }
+
+            if (isTaken) {
                 return@withContext AuthResult.Error("Username '$cleanUsername' is already taken")
             }
 
-            // 2. Insert new user
-            val passwordHash = hashPassword(password)
-            val bodyJson = JSONObject().apply {
-                put("username", cleanUsername)
-                put("password_hash", passwordHash)
-            }.toString()
-
-            val request = Request.Builder()
-                .url("$SUPABASE_URL/rest/v1/users")
-                .addHeader("apikey", SUPABASE_ANON_KEY)
-                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
-                .addHeader("Prefer", "return=representation")
-                .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string() ?: ""
-                if (response.isSuccessful) {
-                    val jsonArray = JSONArray(responseBody)
-                    if (jsonArray.length() > 0) {
-                        val userObj = jsonArray.getJSONObject(0)
-                        val userId = userObj.getString("id")
-                        val returnedUsername = userObj.getString("username")
-                        return@withContext AuthResult.Success(userId, returnedUsername)
-                    }
-                } else {
-                    Log.e(TAG, "SignUp HTTP error ${response.code}: $responseBody")
-                    if (responseBody.contains("unique", ignoreCase = true) || responseBody.contains("duplicate", ignoreCase = true)) {
-                        return@withContext AuthResult.Error("Username '$cleanUsername' is already taken")
-                    }
-                    return@withContext AuthResult.Error("Sign up failed (HTTP ${response.code})")
+            // 2. Sign up using official Supabase Auth
+            SupabaseClientManager.client.auth.signUpWith(Email) {
+                this.email = email
+                this.password = password
+                this.data = buildJsonObject {
+                    put("username", cleanUsername)
                 }
             }
-        } catch (e: UnknownHostException) {
-            Log.e(TAG, "No internet / DNS resolution failure", e)
-            return@withContext AuthResult.Error("Network error: Cannot reach server. Please check your internet connection or restart the emulator.")
-        } catch (e: Exception) {
-            Log.e(TAG, "SignUp exception", e)
-            return@withContext AuthResult.Error(e.localizedMessage ?: "Network error during sign up")
-        }
 
-        return@withContext AuthResult.Error("Registration failed. Please try again.")
+            // 3. Ensure user is signed in & get session
+            var currentUser = SupabaseClientManager.client.auth.currentUserOrNull()
+            if (currentUser == null) {
+                // If signUpWith didn't auto-sign-in, call signInWith
+                SupabaseClientManager.client.auth.signInWith(Email) {
+                    this.email = email
+                    this.password = password
+                }
+                currentUser = SupabaseClientManager.client.auth.currentUserOrNull()
+            }
+
+            if (currentUser != null) {
+                val userId = currentUser.id
+                val userMetadataName = currentUser.userMetadata?.get("username")?.jsonPrimitive?.contentOrNull
+                val finalUsername = userMetadataName ?: cleanUsername
+                Log.i(TAG, "SignUp successful for $finalUsername ($userId)")
+                return@withContext AuthResult.Success(userId, finalUsername)
+            } else {
+                return@withContext AuthResult.Error("Authentication succeeded but session could not be established.")
+            }
+
+        } catch (e: UnknownHostException) {
+            Log.e(TAG, "Network error during sign up", e)
+            return@withContext AuthResult.Error("Network error: Cannot reach Supabase. Check your internet connection.")
+        } catch (e: Exception) {
+            Log.e(TAG, "SignUp exception: ${e::class.java.simpleName}", e)
+            val msg = e.localizedMessage ?: e.message ?: "Sign up failed"
+            if (msg.contains("already registered", ignoreCase = true) || msg.contains("unique", ignoreCase = true)) {
+                return@withContext AuthResult.Error("Username '$cleanUsername' is already registered")
+            }
+            return@withContext AuthResult.Error(msg)
+        }
     }
 
     suspend fun signIn(username: String, password: String): AuthResult = withContext(Dispatchers.IO) {
@@ -109,49 +111,44 @@ object SupabaseAuthManager {
             return@withContext AuthResult.Error("Please enter username and password")
         }
 
+        val email = toEmail(cleanUsername)
+
         try {
-            val userRecord = getUserByUsername(cleanUsername)
-                ?: return@withContext AuthResult.Error("User '$cleanUsername' not found")
-
-            val expectedHash = userRecord.getString("password_hash")
-            val inputHash = hashPassword(password)
-
-            if (expectedHash == inputHash) {
-                val userId = userRecord.getString("id")
-                val foundUsername = userRecord.getString("username")
-                return@withContext AuthResult.Success(userId, foundUsername)
-            } else {
-                return@withContext AuthResult.Error("Invalid password. Please try again.")
+            SupabaseClientManager.client.auth.signInWith(Email) {
+                this.email = email
+                this.password = password
             }
+
+            val currentUser = SupabaseClientManager.client.auth.currentUserOrNull()
+            if (currentUser != null) {
+                val userId = currentUser.id
+                val userMetadataName = currentUser.userMetadata?.get("username")?.jsonPrimitive?.contentOrNull
+                val finalUsername = userMetadataName ?: cleanUsername
+                Log.i(TAG, "SignIn successful for $finalUsername ($userId)")
+                return@withContext AuthResult.Success(userId, finalUsername)
+            } else {
+                return@withContext AuthResult.Error("Sign in failed: No user session found.")
+            }
+
         } catch (e: UnknownHostException) {
-            Log.e(TAG, "No internet / DNS resolution failure", e)
-            return@withContext AuthResult.Error("Network error: Cannot reach server. Please check your internet connection or restart the emulator.")
+            Log.e(TAG, "Network error during sign in", e)
+            return@withContext AuthResult.Error("Network error: Cannot reach Supabase. Check your internet connection.")
         } catch (e: Exception) {
-            Log.e(TAG, "SignIn exception", e)
-            return@withContext AuthResult.Error(e.localizedMessage ?: "Network error during sign in")
+            Log.e(TAG, "SignIn exception: ${e::class.java.simpleName}", e)
+            val msg = e.localizedMessage ?: e.message ?: "Sign in failed"
+            if (msg.contains("Invalid login credentials", ignoreCase = true) || msg.contains("invalid_grant", ignoreCase = true)) {
+                return@withContext AuthResult.Error("Invalid username or password. Please try again.")
+            }
+            return@withContext AuthResult.Error(msg)
         }
     }
 
-    private fun getUserByUsername(username: String): JSONObject? {
-        val encodedUsername = URLEncoder.encode(username, "UTF-8")
-        val request = Request.Builder()
-            .url("$SUPABASE_URL/rest/v1/users?username=eq.$encodedUsername&select=id,username,password_hash")
-            .addHeader("apikey", SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
-            .get()
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            if (response.isSuccessful) {
-                val responseBody = response.body?.string() ?: ""
-                val jsonArray = JSONArray(responseBody)
-                if (jsonArray.length() > 0) {
-                    return jsonArray.getJSONObject(0)
-                }
-            } else {
-                Log.e(TAG, "getUserByUsername HTTP error ${response.code}")
-            }
+    suspend fun signOut() = withContext(Dispatchers.IO) {
+        try {
+            SupabaseClientManager.client.auth.signOut()
+            Log.i(TAG, "SignOut successful")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error during signOut", e)
         }
-        return null
     }
 }

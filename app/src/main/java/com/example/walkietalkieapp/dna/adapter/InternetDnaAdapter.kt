@@ -127,7 +127,7 @@ class InternetDnaAdapter(
     }
 
     /**
-     * Directly report RTT ping from SocketManager or WebRTC stats.
+     * Directly report RTT ping from SupabaseRealtimeManager or WebRTC stats.
      */
     fun reportSocketPing(rttMs: Long) {
         lastMeasuredRttMs = rttMs

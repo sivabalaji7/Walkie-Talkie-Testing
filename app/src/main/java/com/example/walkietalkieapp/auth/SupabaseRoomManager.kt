@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import com.example.walkietalkieapp.supabase.SupabaseClientManager
 import java.net.URLEncoder
 
 data class Room(
@@ -43,9 +44,8 @@ sealed class RoomResult<out T> {
 object SupabaseRoomManager {
 
     private const val TAG = "SupabaseRoomManager"
-    private const val SUPABASE_URL = "https://crlfqcrhsjybrebbbaww.supabase.co"
-    // Same anon key as AuthManager
-    private const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY"
+    private val SUPABASE_URL get() = SupabaseClientManager.SUPABASE_URL
+    private val SUPABASE_ANON_KEY get() = SupabaseClientManager.SUPABASE_ANON_KEY
 
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 

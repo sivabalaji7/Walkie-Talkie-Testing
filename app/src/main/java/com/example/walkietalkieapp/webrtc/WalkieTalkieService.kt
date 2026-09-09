@@ -7,12 +7,13 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.walkietalkieapp.MainActivity
 import com.example.walkietalkieapp.R
 import com.example.walkietalkieapp.socket.SignalingListener
-import com.example.walkietalkieapp.socket.SocketManager
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 
 private const val TAG = "WalkieTalkieService"
 
@@ -22,6 +23,7 @@ class WalkieTalkieService : Service(), SignalingListener {
     var webRTCManager: WebRTCManager? = null
         private set
 
+    private var wakeLock: PowerManager.WakeLock? = null
     var onOthersSpeakingStateChange: ((Boolean) -> Unit)? = null
 
     companion object {
@@ -36,30 +38,57 @@ class WalkieTalkieService : Service(), SignalingListener {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        SocketManager.setSignalingListener(this)
+        SupabaseRealtimeManager.setSignalingListener(this)
         webRTCManager = WebRTCManager(this).apply {
             init()
             initialize()
             onCallConnected = {
-                val roomId = SocketManager.socketUiState.value.roomId
+                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Voice Link Ready"
                 updateNotification(text)
             }
             onCallDisconnected = {
-                val roomId = SocketManager.socketUiState.value.roomId
+                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
                 updateNotification(text)
                 onOthersSpeakingStateChange?.invoke(false)
             }
         }
+        
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WalkieTalkieApp::VoiceServiceWakeLock")
+        acquireWakeLock(15 * 60 * 1000L) // Timed 15-min safety timeout to avoid Android battery drain warnings
+    }
+
+    private fun acquireWakeLock(timeoutMs: Long = 10 * 60 * 1000L) {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+            wakeLock?.acquire(timeoutMs)
+            Log.d(TAG, "WakeLock acquired (timeout: $timeoutMs ms)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error acquiring wake lock", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "WakeLock released")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing wake lock", e)
+        }
     }
 
     override fun onOfferReceived(fromPeerId: String, sdp: String) {
-        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onOfferReceived from $fromPeerId")
         webRTCManager?.handleOffer(fromPeerId, sdp)
-        val speaker = SocketManager.socketUiState.value.lastSpeakerName
-        val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
+        val speaker = SupabaseRealtimeManager.socketUiState.value.lastSpeakerName
+        val text = if (!speaker.isNullOrBlank() && speaker != SupabaseRealtimeManager.socketUiState.value.username) {
             "$speaker is transmitting..."
         } else {
             "Incoming transmission..."
@@ -68,18 +97,18 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     override fun onAnswerReceived(fromPeerId: String, sdp: String) {
-        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onAnswerReceived from $fromPeerId")
         webRTCManager?.handleAnswer(fromPeerId, sdp)
     }
 
     override fun onIceCandidateReceived(fromPeerId: String, candidate: String) {
-        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         webRTCManager?.handleIceCandidate(fromPeerId, candidate)
     }
 
     override fun onPeersReceived(peers: List<String>) {
-        if (SocketManager.socketUiState.value.roomId.isEmpty()) return
+        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onPeersReceived: connecting to ${peers.size} peer(s)")
         webRTCManager?.connectToPeers(peers)
     }
@@ -90,18 +119,21 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     override fun onCallStarted() {
-        val speaker = SocketManager.socketUiState.value.lastSpeakerName
-        val text = if (!speaker.isNullOrBlank() && speaker != SocketManager.socketUiState.value.username) {
-            "$speaker is speaking..."
+        acquireWakeLock(10 * 60 * 1000L) // Extend WakeLock during transmission
+        val username = SupabaseRealtimeManager.socketUiState.value.username
+        val speaker = SupabaseRealtimeManager.socketUiState.value.lastSpeakerName
+        
+        if (!speaker.isNullOrBlank() && !speaker.equals(username, ignoreCase = true)) {
+            updateNotification("$speaker is speaking...")
+            onOthersSpeakingStateChange?.invoke(true)
         } else {
-            "Squad member speaking..."
+            updateNotification("🔴 Transmitting...")
+            onOthersSpeakingStateChange?.invoke(false)
         }
-        updateNotification(text)
-        onOthersSpeakingStateChange?.invoke(true)
     }
 
     override fun onCallEnded() {
-        val roomId = SocketManager.socketUiState.value.roomId
+        val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
         onOthersSpeakingStateChange?.invoke(false)
@@ -132,11 +164,12 @@ class WalkieTalkieService : Service(), SignalingListener {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.d("WalkieTalkieService", "onTaskRemoved: App closed, stopping audio session and leaving squad")
-        SocketManager.leaveRoom()
-        SocketManager.disconnect()
+        Log.d(TAG, "onTaskRemoved: App closed, stopping audio session and leaving squad")
+        SupabaseRealtimeManager.leaveRoom()
+        SupabaseRealtimeManager.disconnect()
         webRTCManager?.cleanup()
         webRTCManager = null
+        releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -148,6 +181,7 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     fun startVoiceSession(roomId: String = "") {
+        acquireWakeLock(15 * 60 * 1000L)
         if (webRTCManager == null) {
             webRTCManager = WebRTCManager(this).apply {
                 init()
@@ -160,9 +194,10 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     fun stopVoiceSession() {
-        Log.d("WalkieTalkieService", "stopVoiceSession called")
+        Log.d(TAG, "stopVoiceSession called")
         webRTCManager?.cleanup()
         webRTCManager = null
+        releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -216,9 +251,12 @@ class WalkieTalkieService : Service(), SignalingListener {
 
     override fun onDestroy() {
         Log.d("WalkieTalkieService", "onDestroy: Cleaning up WebRTC manager")
-        SocketManager.setSignalingListener(null)
+        SupabaseRealtimeManager.setSignalingListener(null)
         webRTCManager?.cleanup()
         webRTCManager = null
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+        }
         super.onDestroy()
     }
 }

@@ -46,17 +46,22 @@ object FloorManager {
         if (_floorStatus.value.state == FloorState.TRANSMITTING) return@runOnMain
         if (_floorStatus.value.state == FloorState.BUSY_BLOCKED) return@runOnMain
 
+        if (_floorStatus.value.state == FloorState.RECEIVING && !isPriority) {
+            handleFloorDenied("Floor occupied", _floorStatus.value.currentSpeakerName ?: "Squad Member")
+            return@runOnMain
+        }
+
         Log.d(TAG, "Requesting floor (isPriority=$isPriority)...")
         _floorStatus.update { it.copy(state = FloorState.REQUESTING) }
 
-        // Emit request to signaling server
-        com.example.walkietalkieapp.socket.SocketManager.emitRequestFloor(isPriority)
+        // Emit request to signaling server / broadcast floor
+        com.example.walkietalkieapp.socket.SupabaseRealtimeManager.emitRequestFloor(isPriority)
 
         // Fallback: if server doesn't respond in 600ms, grant locally
         cancelFallback()
         fallbackRunnable = Runnable {
             if (_floorStatus.value.state == FloorState.REQUESTING) {
-                Log.d(TAG, "Fallback: server did not respond, granting locally")
+                Log.d(TAG, "Fallback: granting floor locally")
                 handleFloorGranted(0)
             }
         }
@@ -71,7 +76,7 @@ object FloorManager {
         cancelTransmitTimer()
 
         // Always emit release to server if we were requesting or transmitting
-        com.example.walkietalkieapp.socket.SocketManager.emitReleaseFloor()
+        com.example.walkietalkieapp.socket.SupabaseRealtimeManager.emitReleaseFloor()
 
         if (_floorStatus.value.state == FloorState.TRANSMITTING || _floorStatus.value.state == FloorState.REQUESTING) {
             Log.d(TAG, "Releasing floor")
@@ -89,7 +94,7 @@ object FloorManager {
         // Fix tap race: If user already released PTT before server granted floor, do not stay transmitting!
         if (_floorStatus.value.state != FloorState.REQUESTING) {
             Log.d(TAG, "Floor GRANTED but user already released — immediately releasing floor")
-            com.example.walkietalkieapp.socket.SocketManager.emitReleaseFloor()
+            com.example.walkietalkieapp.socket.SupabaseRealtimeManager.emitReleaseFloor()
             _floorStatus.update { FloorStatus(state = FloorState.IDLE) }
             return@runOnMain
         }

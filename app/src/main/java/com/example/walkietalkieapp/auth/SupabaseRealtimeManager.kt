@@ -6,16 +6,17 @@ import android.util.Log
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
+import com.example.walkietalkieapp.supabase.SupabaseClientManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object SupabaseRealtimeManager {
 
     private const val TAG = "SupabaseRealtime"
-    private const val SUPABASE_URL = "https://crlfqcrhsjybrebbbaww.supabase.co"
-    private const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY"
+    private val SUPABASE_URL get() = SupabaseClientManager.SUPABASE_URL
+    private val SUPABASE_ANON_KEY get() = SupabaseClientManager.SUPABASE_ANON_KEY
 
-    private val wsUrl = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=" + SUPABASE_ANON_KEY + "&vsn=1.0.0"
+    private val wsUrl get() = SUPABASE_URL.replace("https://", "wss://") + "/realtime/v1/websocket?apikey=" + SUPABASE_ANON_KEY + "&vsn=1.0.0"
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)

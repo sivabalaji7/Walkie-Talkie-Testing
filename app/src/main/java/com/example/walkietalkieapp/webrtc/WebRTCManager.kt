@@ -1,13 +1,15 @@
 package com.example.walkietalkieapp.webrtc
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.example.walkietalkieapp.socket.SocketManager
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -26,6 +28,7 @@ class WebRTCManager(private val context: Context) {
     }
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager?
     private var peerConnectionFactory: PeerConnectionFactory? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
     
     // Multi-Peer Mesh Map: Peer Socket ID -> PeerConnection
     private val peerConnections = ConcurrentHashMap<String, PeerConnection>()
@@ -65,8 +68,47 @@ class WebRTCManager(private val context: Context) {
         }
     }
     
+    fun requestAudioFocus() {
+        try {
+            audioManager?.let { am ->
+                if (audioFocusRequest == null) {
+                    val playbackAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+
+                    audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(playbackAttributes)
+                        .setAcceptsDelayedFocusGain(true)
+                        .setOnAudioFocusChangeListener { focusChange ->
+                            Log.d(TAG, "Audio focus changed: $focusChange")
+                        }
+                        .build()
+                }
+                am.requestAudioFocus(audioFocusRequest!!)
+                Log.d(TAG, "Requested System Audio Focus (AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error requesting audio focus: ${e.message}")
+        }
+    }
+
+    fun abandonAudioFocus() {
+        try {
+            audioManager?.let { am ->
+                audioFocusRequest?.let { req ->
+                    am.abandonAudioFocusRequest(req)
+                }
+                Log.d(TAG, "Abandoned System Audio Focus")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error abandoning audio focus: ${e.message}")
+        }
+    }
+
     fun ensureHandsFreeAudioRouting() {
         try {
+            requestAudioFocus()
             audioManager?.apply {
                 mode = AudioManager.MODE_IN_COMMUNICATION
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -195,32 +237,48 @@ class WebRTCManager(private val context: Context) {
     private fun optimizeAudioSdp(sdp: String): String {
         return try {
             val lines = sdp.split("\r\n").toMutableList()
+            var audioMediaIndex = -1
             var opusPayloadType: String? = null
 
-            for (line in lines) {
-                if (line.startsWith("a=rtpmap:") && line.contains("opus/48000", ignoreCase = true)) {
-                    opusPayloadType = line.substringAfter("a=rtpmap:").substringBefore(" ").trim()
-                    break
+            for (i in lines.indices) {
+                val line = lines[i]
+                if (line.startsWith("m=audio ")) {
+                    audioMediaIndex = i
+                }
+                if (line.contains("opus/48000", ignoreCase = true)) {
+                    val parts = line.split(" ")
+                    if (parts.isNotEmpty()) {
+                        opusPayloadType = parts[0].substringAfter("a=rtpmap:").trim()
+                    }
                 }
             }
 
-            val hdFmtpParams = "minptime=10;ptime=20;cbr=1;maxaveragebitrate=32000;stereo=0;sprop-stereo=0;useinbandfec=1;dtx=0;x-google-min-bitrate=16;sprop-maxcapturerate=48000;maxplaybackrate=48000"
             if (opusPayloadType != null) {
-                val fmtpIndex = lines.indexOfFirst { it.startsWith("a=fmtp:$opusPayloadType") }
+                val fmtpPrefix = "a=fmtp:$opusPayloadType"
+                val fmtpIndex = lines.indexOfFirst { it.startsWith(fmtpPrefix) }
+                val opusParams = "useinbandfec=1;usedtx=1;maxaveragebitrate=28000;stereo=0;sprop-stereo=0"
+
                 if (fmtpIndex != -1) {
-                    lines[fmtpIndex] = "a=fmtp:$opusPayloadType $hdFmtpParams"
-                } else {
-                    val rtpmapIndex = lines.indexOfFirst { it.startsWith("a=rtpmap:$opusPayloadType") }
-                    if (rtpmapIndex != -1) {
-                        lines.add(rtpmapIndex + 1, "a=fmtp:$opusPayloadType $hdFmtpParams")
+                    val existingFmtp = lines[fmtpIndex]
+                    if (!existingFmtp.contains("usedtx=1")) {
+                        lines[fmtpIndex] = "$existingFmtp;$opusParams"
                     }
+                } else if (audioMediaIndex != -1) {
+                    lines.add(audioMediaIndex + 1, "$fmtpPrefix $opusParams")
                 }
-                lines.joinToString("\r\n")
-            } else {
-                sdp.replace("useinbandfec=1", "useinbandfec=1;$hdFmtpParams")
             }
+
+            if (audioMediaIndex != -1 && !lines.any { it.startsWith("b=AS:") }) {
+                var insertPos = audioMediaIndex + 1
+                while (insertPos < lines.size && (lines[insertPos].startsWith("c=") || lines[insertPos].startsWith("a="))) {
+                    insertPos++
+                }
+                lines.add(insertPos, "b=AS:28")
+            }
+
+            lines.joinToString("\r\n")
         } catch (e: Exception) {
-            Log.e(TAG, "Error optimizing SDP: ${e.message}")
+            Log.e(TAG, "Error optimizing SDP: ${e.message}", e)
             sdp
         }
     }
@@ -230,6 +288,12 @@ class WebRTCManager(private val context: Context) {
             it == PeerConnection.IceConnectionState.CONNECTED || 
             it == PeerConnection.IceConnectionState.COMPLETED 
         }
+    }
+
+    fun isPeerConnected(peerId: String): Boolean {
+        val state = peerIceStates[peerId]
+        return state == PeerConnection.IceConnectionState.CONNECTED || 
+               state == PeerConnection.IceConnectionState.COMPLETED
     }
 
     private fun getRtcConfig(): PeerConnection.RTCConfiguration {
@@ -294,7 +358,7 @@ class WebRTCManager(private val context: Context) {
                                 put("sdpMLineIndex", candidate.sdpMLineIndex)
                                 put("candidate", candidate.sdp)
                             }
-                            SocketManager.sendIceCandidate(peerId, json.toString())
+                            SupabaseRealtimeManager.sendIceCandidate(peerId, json.toString())
                         } catch (e: Exception) {
                             Log.e(TAG, "Error sending ICE Candidate to $peerId: ${e.message}")
                         }
@@ -314,8 +378,12 @@ class WebRTCManager(private val context: Context) {
                         PeerConnection.IceConnectionState.CONNECTED,
                         PeerConnection.IceConnectionState.COMPLETED -> {
                             Log.d(TAG, "VOICE LINK ESTABLISHED with $peerId")
-                            SocketManager.addLog("Voice Link: $peerId")
+                            SupabaseRealtimeManager.addLog("Voice Link: $peerId")
+                            SupabaseRealtimeManager.updateVoiceLinkState("CONNECTED")
                             mainHandler.post { onCallConnected?.invoke() }
+                        }
+                        PeerConnection.IceConnectionState.CHECKING -> {
+                            SupabaseRealtimeManager.updateVoiceLinkState("LINKING")
                         }
                         PeerConnection.IceConnectionState.FAILED -> {
                             Log.d(TAG, "ICE Failed with $peerId, restarting...")
@@ -323,6 +391,7 @@ class WebRTCManager(private val context: Context) {
                         }
                         PeerConnection.IceConnectionState.DISCONNECTED -> {
                             if (!isConnected()) {
+                                SupabaseRealtimeManager.updateVoiceLinkState("IDLE")
                                 mainHandler.post { onCallDisconnected?.invoke() }
                             }
                         }
@@ -333,7 +402,22 @@ class WebRTCManager(private val context: Context) {
                 override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {
                     Log.d(TAG, "Gathering [$peerId]: $newState")
                 }
-                override fun onAddStream(stream: MediaStream) {}
+                override fun onAddStream(stream: MediaStream) {
+                    mainHandler.post {
+                        if (stream.audioTracks.isNotEmpty()) {
+                            val track = stream.audioTracks[0]
+                            Log.d(TAG, "Remote audio stream received from $peerId")
+                            try {
+                                ensureHandsFreeAudioRouting()
+                                audioDeviceModule?.setSpeakerMute(false)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error ensuring hands-free routing on stream", e)
+                            }
+                            track.setEnabled(true)
+                            track.setVolume(1.0)
+                        }
+                    }
+                }
                 override fun onRemoveStream(stream: MediaStream) {}
                 override fun onDataChannel(dc: DataChannel) {}
                 override fun onRenegotiationNeeded() {}
@@ -343,17 +427,18 @@ class WebRTCManager(private val context: Context) {
                         if (track is AudioTrack) {
                             Log.d(TAG, "Remote audio track received from $peerId")
                             try {
-                                audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-                                @Suppress("DEPRECATION")
-                                audioManager?.isSpeakerphoneOn = true
+                                requestAudioFocus()
+                                ensureHandsFreeAudioRouting()
+                                audioDeviceModule?.setSpeakerMute(false)
                             } catch (e: Exception) {
-                                Log.e(TAG, "Error setting speakerphone on track", e)
+                                Log.e(TAG, "Error ensuring hands-free routing on track", e)
                             }
                             track.setEnabled(true)
                             track.setVolume(1.0)
                             track.addSink { buffer, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames, timestamp ->
-                                val data = ByteArray(buffer.remaining())
-                                buffer.get(data)
+                                val dup = buffer.duplicate()
+                                val data = ByteArray(dup.remaining())
+                                dup.get(data)
                                 synchronized(voiceBuffer) {
                                     voiceBuffer.add(data)
                                     if (voiceBuffer.size > MAX_BUFFER_FRAMES) {
@@ -361,7 +446,7 @@ class WebRTCManager(private val context: Context) {
                                     }
                                 }
                             }
-                            SocketManager.addLog("Active stream from $peerId")
+                            SupabaseRealtimeManager.addLog("Active stream from $peerId")
                         }
                     }
                 }
@@ -369,7 +454,7 @@ class WebRTCManager(private val context: Context) {
         ) ?: return null
 
         localAudioTrack?.let { track ->
-            track.setEnabled(true)
+            track.setEnabled(isTalking)
             pc.addTrack(track, listOf("LOCAL_STREAM"))
         }
 
@@ -395,6 +480,13 @@ class WebRTCManager(private val context: Context) {
     }
 
     private fun createOfferForPeer(peerId: String, isRestart: Boolean = false) {
+        val existing = peerConnections[peerId]
+        val state = peerIceStates[peerId]
+        if (!isRestart && existing != null) {
+            Log.d(TAG, "PeerConnection for $peerId already exists (state=$state), skipping duplicate offer")
+            return
+        }
+
         val pc = getOrCreatePeerConnection(peerId) ?: return
         
         val constraints = MediaConstraints().apply {
@@ -412,7 +504,7 @@ class WebRTCManager(private val context: Context) {
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
                         Log.d(TAG, "Local HD offer set for $peerId (64kbps Opus), sending via socket")
-                        SocketManager.sendOffer(peerId, newSdp.description)
+                        SupabaseRealtimeManager.sendOffer(peerId, newSdp.description)
                     }
                 }, newSdp)
             }
@@ -466,7 +558,7 @@ class WebRTCManager(private val context: Context) {
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
                         Log.d(TAG, "Local HD answer set for $peerId (64kbps Opus), sending via socket")
-                        SocketManager.sendAnswer(peerId, newSdp.description)
+                        SupabaseRealtimeManager.sendAnswer(peerId, newSdp.description)
                     }
                 }, newSdp)
             }
@@ -596,7 +688,8 @@ class WebRTCManager(private val context: Context) {
                 isTalking = false
                 audioDeviceModule?.setMicrophoneMute(true)
                 localAudioTrack?.setEnabled(false)
-                Log.d(TAG, "PTT released — mic muted and track disabled")
+                abandonAudioFocus()
+                Log.d(TAG, "PTT released — mic muted, audio focus released")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disabling audio: ${e.message}")
             }
@@ -625,12 +718,12 @@ class WebRTCManager(private val context: Context) {
 
     fun replayLastTransmissions() {
         if (voiceBuffer.isEmpty()) {
-            SocketManager.addLog("No voice data to replay")
+            SupabaseRealtimeManager.addLog("No voice data to replay")
             return
         }
         
         val bufferCopy = synchronized(voiceBuffer) { voiceBuffer.toList() }
-        SocketManager.addLog("Replaying last 10s...")
+        SupabaseRealtimeManager.addLog("Replaying last 10s...")
         
         Thread {
             try {
@@ -670,6 +763,7 @@ class WebRTCManager(private val context: Context) {
         audioExecutor.execute {
             peerConnections.forEach { (peerId, pc) ->
                 try {
+                    pc.close()
                     pc.dispose()
                 } catch (e: Exception) {
                     Log.e(TAG, "Error disposing peer $peerId: ${e.message}")
@@ -717,6 +811,7 @@ class WebRTCManager(private val context: Context) {
                     isSpeakerphoneOn = false
                     mode = AudioManager.MODE_NORMAL
                 }
+                abandonAudioFocus()
             } catch (e: Exception) {
                 Log.e(TAG, "Error resetting audioManager: ${e.message}")
             }

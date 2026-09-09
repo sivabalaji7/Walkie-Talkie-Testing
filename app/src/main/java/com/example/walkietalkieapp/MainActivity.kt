@@ -38,12 +38,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.walkietalkieapp.auth.RoomResult
 import com.example.walkietalkieapp.auth.SessionManager
+import com.example.walkietalkieapp.auth.SupabaseAuthManager
 import com.example.walkietalkieapp.auth.SupabaseRoomManager
 import com.example.walkietalkieapp.bluetooth.BluetoothSquadUiState
 import com.example.walkietalkieapp.bluetooth.BluetoothWalkieTalkieService
 import com.example.walkietalkieapp.floor.FloorManager
 import com.example.walkietalkieapp.floor.FloorState
-import com.example.walkietalkieapp.socket.SocketManager
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.*
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
 import com.example.walkietalkieapp.webrtc.WalkieTalkieService
@@ -174,7 +175,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
 
             webRtcService?.webRTCManager?.onStateChange = { state ->
-                SocketManager.updateVoiceLinkState(state.name)
+                SupabaseRealtimeManager.updateVoiceLinkState(state.name)
             }
 
             webRtcService?.webRTCManager?.let { webrtc ->
@@ -185,7 +186,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 )
             }
 
-            val currentRoom = SocketManager.socketUiState.value.roomId
+            val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
             if (hasAudioPermission && currentRoom.isNotEmpty()) {
                 webRtcService?.startVoiceSession(currentRoom)
             }
@@ -265,10 +266,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.initialize(this)
 
         // Initialize Online WebRTC Socket
-        SocketManager.initialize()
-        SocketManager.connect()
+        SupabaseRealtimeManager.initialize()
+        SupabaseRealtimeManager.connect()
 
-        if (SocketManager.socketUiState.value.roomId.isNotEmpty()) {
+        if (SupabaseRealtimeManager.socketUiState.value.roomId.isNotEmpty()) {
             startWebRtcService()
         }
 
@@ -277,7 +278,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 playTone(ToneGenerator.TONE_CDMA_PIP)
                 vibrate()
-                SocketManager.sendStartVoice()
+                SupabaseRealtimeManager.sendStartVoice()
                 if (webRtcService?.webRTCManager != null) {
                     webRtcService?.webRTCManager?.startTalking()
                 } else {
@@ -301,11 +302,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 pendingTalkStart = false
                 webRtcService?.webRTCManager?.stopTalking()
-                SocketManager.sendStopVoice()
+                SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
                 notificationQueue.add("⚠️ Priority Override: Mic Revoked")
-                val roomId = SocketManager.socketUiState.value.roomId
+                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 webRtcService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
             }
         }
@@ -314,9 +315,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 pendingTalkStart = false
                 webRtcService?.webRTCManager?.stopTalking()
-                SocketManager.sendStopVoice()
+                SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_PROP_BEEP2)
-                val roomId = SocketManager.socketUiState.value.roomId
+                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 webRtcService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
             }
         }
@@ -330,11 +331,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         FloorManager.onFloorTimeout = {
             runOnUiThread {
                 webRtcService?.webRTCManager?.stopTalking()
-                SocketManager.sendStopVoice()
+                SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
                 notificationQueue.add("⏱️ Transmission timed out (20s limit)")
-                val roomId = SocketManager.socketUiState.value.roomId
+                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 webRtcService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
             }
         }
@@ -342,7 +343,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         setContent {
             WalkieTalkieAppTheme(darkTheme = true) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0B)) {
-                    val socketUiState by SocketManager.socketUiState.collectAsState()
+                    val socketUiState by SupabaseRealtimeManager.socketUiState.collectAsState()
                     val floorStatus by FloorManager.floorStatus.collectAsState()
 
                     val btManager = offlineService?.bluetoothManager
@@ -407,7 +408,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             },
                             onLeave = {
                                 webRtcService?.webRTCManager?.cleanup()
-                                SocketManager.leaveRoom()
+                                SupabaseRealtimeManager.leaveRoom()
                                 webRtcService?.updateNotification("Ready to talk")
                             },
                             onShare = { shareRoom(it) },
@@ -611,13 +612,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             },
                             onEditCallSign = { showCallSignDialog = true },
                             onLogout = {
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    SupabaseAuthManager.signOut()
+                                }
                                 sessionManager.clearSession()
                                 currentUserId = ""
                                 currentUsername = ""
                                 persistentCallSign = ""
                                 isLoggedIn = false
                                 webRtcService?.webRTCManager?.cleanup()
-                                SocketManager.leaveRoom()
+                                SupabaseRealtimeManager.leaveRoom()
                                 btManager?.leaveSquad()
                                 wifiDirectManager?.leaveSquad()
                             },
@@ -735,7 +739,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     // Event Collectors for Online & Offline Transports
                     LaunchedEffect(Unit) {
-                        SocketManager.events.collect { event ->
+                        SupabaseRealtimeManager.events.collect { event ->
                             notificationQueue.add(event)
                         }
                     }
@@ -772,17 +776,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (hasAudioPermission) {
             startWebRtcService()
         }
-        val currentRoom = SocketManager.socketUiState.value.roomId
+        val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
         if (currentRoom.isNotEmpty() && currentRoom != roomId) {
             webRtcService?.webRTCManager?.cleanup()
-            SocketManager.leaveRoom()
+            SupabaseRealtimeManager.leaveRoom()
         }
-        SocketManager.joinRoom(roomId, username, roomName)
+        SupabaseRealtimeManager.joinRoom(roomId, username, roomName)
         webRtcService?.startVoiceSession(roomId)
     }
 
     private fun startPushToTalkOnline(isPriority: Boolean = false) {
-        val roomId = SocketManager.socketUiState.value.roomId
+        val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
         if (roomId.isEmpty()) return
         if (webRtcService == null) {
             startWebRtcService()

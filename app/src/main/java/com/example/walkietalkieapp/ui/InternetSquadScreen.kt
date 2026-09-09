@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,7 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.example.walkietalkieapp.floor.FloorManager
 import com.example.walkietalkieapp.floor.FloorState
 import com.example.walkietalkieapp.floor.FloorStatus
-import com.example.walkietalkieapp.socket.SocketManager
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.socket.SocketUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -62,7 +63,7 @@ fun InternetSquadScreen(
     onKrispAiToggle: (Boolean) -> Unit,
     notificationMessage: String? = null
 ) {
-    val floorStatus by FloorManager.floorStatus.collectAsState()
+    val floorStatus by FloorManager.floorStatus.collectAsStateWithLifecycle()
     val isUserSpeaking = floorStatus.state == FloorState.TRANSMITTING
     var showSettings by remember { mutableStateOf(false) }
     var isOwner by remember { mutableStateOf(false) }
@@ -168,7 +169,7 @@ fun InternetSquadScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(top = 4.dp)
                     ) {
-                        val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
+                        val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsStateWithLifecycle()
                         val internetLinkState = allLinks[com.example.walkietalkieapp.dna.model.TransportType.Internet]
                             ?: com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.mapToValourLinkState(
                                 com.example.walkietalkieapp.dna.model.CommunicationPathAssessment.unavailable(com.example.walkietalkieapp.dna.model.TransportType.Internet)
@@ -288,7 +289,7 @@ fun InternetSquadScreen(
                             val isSingleRemote = allUsernames.size <= 2 && !isSelf
                             matchesFloorSpeaker || (isOthersSpeaking && (matchesSocketSpeaker || isSingleRemote)) || (matchesSocketSpeaker && socketUiState.roomMembers.any { it.isSpeaking })
                         }
-                        val isOnline = onlineUsernames.contains(uname.trim().lowercase()) || isMemberSpeaking
+                        val isOnline = isSelf || onlineUsernames.contains(uname.trim().lowercase()) || isMemberSpeaking
                         InternetMemberItem(
                             username = uname,
                             isOnline = isOnline,
@@ -316,7 +317,7 @@ fun InternetSquadScreen(
                     else {
                         vibrate()
                         onStartTalk(isPriority)
-                        SocketManager.updateActivity()
+                        SupabaseRealtimeManager.updateActivity()
                     }
                 },
                 onRelease = {
