@@ -298,16 +298,18 @@ class WebRTCManager(private val context: Context) {
 
     private fun getRtcConfig(): PeerConnection.RTCConfiguration {
         val iceServers = listOf(
+            // --- High Reliability STUN Servers ---
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.services.mozilla.com").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.twilio.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.miwifi.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
             
-            // TURN Servers
+            // --- Free Public TURN Servers (Fallback for Mobile Data/Symmetric NATs) ---
+            // Note: In a production app, you MUST replace these with your own paid TURN servers (e.g. Twilio NTS)
             PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
                 .setUsername("openrelayproject")
                 .setPassword("openrelayproject")
@@ -319,13 +321,17 @@ class WebRTCManager(private val context: Context) {
             PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp")
                 .setUsername("openrelayproject")
                 .setPassword("openrelayproject")
+                .createIceServer(),
+            PeerConnection.IceServer.builder("turns:openrelay.metered.ca:443?transport=tcp")
+                .setUsername("openrelayproject")
+                .setPassword("openrelayproject")
                 .createIceServer()
         )
         
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 10 
+        rtcConfig.iceCandidatePoolSize = 20 
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
