@@ -139,6 +139,7 @@ class WalkieTalkieService : Service(), SignalingListener {
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
         onOthersSpeakingStateChange?.invoke(false)
+        webRTCManager?.abandonAudioFocus()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

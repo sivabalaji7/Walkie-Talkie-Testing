@@ -415,24 +415,10 @@ class WebRTCManager(private val context: Context) {
                                 put("sdpMLineIndex", candidate.sdpMLineIndex)
                                 put("candidate", candidate.sdp)
                             }
-                            val candidateStr = json.toString()
-                            val list = batchedCandidates.getOrPut(peerId) { mutableListOf() }
-                            list.add(candidateStr)
-                            
-                            batchRunnables[peerId]?.let { mainHandler.removeCallbacks(it) }
-                            val runnable = Runnable {
-                                val toSend = batchedCandidates[peerId]?.toList() ?: return@Runnable
-                                batchedCandidates[peerId]?.clear()
-                                if (toSend.isNotEmpty()) {
-                                    val array = JSONArray()
-                                    toSend.forEach { array.put(it) }
-                                    SupabaseRealtimeManager.sendIceCandidate(peerId, array.toString())
-                                }
-                            }
-                            batchRunnables[peerId] = runnable
-                            mainHandler.postDelayed(runnable, 500)
+                            // Send ICE candidate immediately for sub-second NAT traversal
+                            SupabaseRealtimeManager.sendIceCandidate(peerId, json.toString())
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error batching ICE Candidate for $peerId: ${e.message}")
+                            Log.e(TAG, "Error sending ICE Candidate for $peerId: ${e.message}")
                         }
                     }
                 }
@@ -555,9 +541,22 @@ class WebRTCManager(private val context: Context) {
         val peerId = normKey(rawPeerId)
         val existing = peerConnections[peerId]
         val state = peerIceStates[peerId]
-        if (!isRestart && existing != null) {
-            Log.d(TAG, "PeerConnection for $peerId already exists (state=$state), skipping duplicate offer")
-            return
+        if (existing != null) {
+            val sigState = existing.signalingState()
+            if (sigState != PeerConnection.SignalingState.STABLE) {
+                Log.d(TAG, "PeerConnection for $peerId is in signaling state $sigState, skipping duplicate offer")
+                return
+            }
+            if (!isRestart && (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED)) {
+                Log.d(TAG, "PeerConnection for $peerId already connected, skipping duplicate offer")
+                return
+            }
+            if (state == PeerConnection.IceConnectionState.FAILED || state == PeerConnection.IceConnectionState.DISCONNECTED) {
+                Log.d(TAG, "PeerConnection for $peerId in state $state, recreating connection")
+                try { existing.dispose() } catch (e: Exception) {}
+                peerConnections.remove(peerId)
+                peerIceStates.remove(peerId)
+            }
         }
 
         val pc = getOrCreatePeerConnection(peerId) ?: return
@@ -595,7 +594,22 @@ class WebRTCManager(private val context: Context) {
             Log.d(TAG, "Handling remote offer from $fromPeerId")
 
             val key = normKey(fromPeerId)
-            val pc = getOrCreatePeerConnection(key) ?: return@execute
+            var pc = getOrCreatePeerConnection(key) ?: return@execute
+
+            if (pc.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                val myName = normKey(SupabaseRealtimeManager.socketUiState.value.username)
+                if (myName > key) {
+                    Log.d(TAG, "Signaling glare with $fromPeerId: I am polite peer, recreating PC to accept remote offer")
+                    try { pc.dispose() } catch (e: Exception) {}
+                    peerConnections.remove(key)
+                    peerIceStates.remove(key)
+                    pc = getOrCreatePeerConnection(key) ?: return@execute
+                } else {
+                    Log.d(TAG, "Signaling glare with $fromPeerId: I am impolite peer, ignoring incoming offer")
+                    return@execute
+                }
+            }
+
             ensureHandsFreeAudioRouting()
 
             val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, sdp)
@@ -780,8 +794,7 @@ class WebRTCManager(private val context: Context) {
                 
                 isTalking = false
                 localAudioTrack?.setEnabled(false)
-                abandonAudioFocus()
-                Log.d(TAG, "PTT released — mic muted, audio focus released")
+                Log.d(TAG, "PTT released — mic muted, audio focus retained for incoming transmission")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disabling audio: ${e.message}")
             }

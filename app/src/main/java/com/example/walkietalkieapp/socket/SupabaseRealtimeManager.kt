@@ -54,6 +54,7 @@ object SupabaseRealtimeManager {
     private var channel: RealtimeChannel? = null
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var heartbeatJob: Job? = null
 
     private var signalingListener: SignalingListener? = null
     fun setSignalingListener(listener: SignalingListener?) {
@@ -65,6 +66,8 @@ object SupabaseRealtimeManager {
 
     // Active squad peers map: username (lowercase) -> originalUsername
     private val activePeers = ConcurrentHashMap<String, String>()
+    // Peer heartbeat timestamp map: username (lowercase) -> lastSeenMs
+    private val peerLastSeen = ConcurrentHashMap<String, Long>()
 
     private val _socketUiState = MutableStateFlow(SocketUiState())
     val socketUiState: StateFlow<SocketUiState> = _socketUiState.asStateFlow()
@@ -158,67 +161,14 @@ object SupabaseRealtimeManager {
                 }
                 channel = ch
 
-                // 1. Listen to Broadcast Messages (Signaling, Floor Control)
+                // 1. Listen to Broadcast Messages (Signaling, Floor Control, Custom Presence Engine)
                 launch {
                     ch.broadcastFlow<SignalMessage>("webrtc").collect { msg ->
                         handleSignalMessage(msg)
                     }
                 }
 
-                // 2. Listen to Phoenix Presence changes
-                launch {
-                    ch.presenceChangeFlow().collect { action ->
-                        try {
-                            action.decodeJoinsAs<PresenceState>().forEach { joined ->
-                                val joinedName = joined.username.ifBlank { joined.userId }
-                                if (joinedName.isNotBlank() && !joinedName.equals(cleanUsername, ignoreCase = true)) {
-                                    handlePeerSeen(joinedName)
-                                }
-                            }
-                            action.decodeLeavesAs<PresenceState>().forEach { left ->
-                                val leftName = left.username.ifBlank { left.userId }
-                                if (leftName.isNotBlank()) {
-                                    handlePeerLeft(leftName)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error in presenceChangeFlow", e)
-                        }
-                    }
-                }
-
-                // 3. Listen to Native Presence Sync Data
-                launch {
-                    ch.presenceDataFlow<PresenceState>().collect { states ->
-                        // Synchronize state with current active members
-                        val currentActiveNames = states.map { it.username.ifBlank { it.userId } }.filter { it.isNotBlank() }.map { it.lowercase() }.toSet()
-                        val currentMyName = cleanUsername.lowercase()
-                        
-                        // Add users who are already in the room
-                        states.forEach { state ->
-                            val uname = state.username.ifBlank { state.userId }
-                            if (uname.isNotBlank() && !uname.equals(cleanUsername, ignoreCase = true)) {
-                                handlePeerSeen(uname)
-                            }
-                        }
-
-                        // Handle drops directly based on pure presence data instead of timeouts
-                        val iterator = activePeers.entries.iterator()
-                        while (iterator.hasNext()) {
-                            val entry = iterator.next()
-                            if (entry.key != currentMyName && !currentActiveNames.contains(entry.key)) {
-                                val leftName = entry.value
-                                iterator.remove()
-                                Log.d(TAG, "Squad peer left via Presence Sync: $leftName")
-                                addLog("$leftName left squad")
-                                signalingListener?.onPeerLeft(leftName)
-                            }
-                        }
-                        updateMemberList()
-                    }
-                }
-
-                // 4. Block subscribe until joined
+                // 2. Block subscribe until joined
                 Log.d(TAG, "Subscribing to channel squad:$cleanId...")
                 ch.subscribe(blockUntilSubscribed = true)
                 Log.d(TAG, "Subscribed to squad:$cleanId successfully. Status: ${ch.status.value}")
@@ -228,14 +178,50 @@ object SupabaseRealtimeManager {
 
                 // Add self to active peers immediately
                 activePeers[cleanUsername.lowercase()] = cleanUsername
+                peerLastSeen[cleanUsername.lowercase()] = System.currentTimeMillis()
                 updateMemberList()
 
-                // 5. Track presence
-                try {
-                    ch.track(PresenceState(userId = cleanUsername, username = cleanUsername))
-                    Log.d(TAG, "Tracked presence for $cleanUsername in squad:$cleanId")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error tracking initial presence for $cleanUsername", e)
+                // Announce presence immediately via Broadcast peer-join
+                broadcastSignal(SignalMessage(type = "peer-join", sender = cleanUsername))
+
+                // Start active presence heartbeat loop (every 8 seconds)
+                heartbeatJob?.cancel()
+                heartbeatJob = launch {
+                    while (isActive) {
+                        delay(8000)
+                        val currentRoom = _socketUiState.value.roomId
+                        val myUser = _socketUiState.value.username
+                        if (currentRoom.isNotEmpty() && myUser.isNotEmpty()) {
+                            // Ping presence
+                            broadcastSignal(SignalMessage(type = "peer-ping", sender = myUser))
+                            
+                            // Prune dead peers (>35 seconds without any ping or signal)
+                            val now = System.currentTimeMillis()
+                            val currentMyName = myUser.lowercase()
+                            val iterator = peerLastSeen.entries.iterator()
+                            var changed = false
+                            while (iterator.hasNext()) {
+                                val entry = iterator.next()
+                                if (entry.key != currentMyName && (now - entry.value > 35000L)) {
+                                    val leftKey = entry.key
+                                    iterator.remove()
+                                    val leftName = activePeers.remove(leftKey)
+                                    if (leftName != null) {
+                                        Log.d(TAG, "Pruned timed-out peer: $leftName")
+                                        addLog("$leftName left (timeout)")
+                                        signalingListener?.onPeerLeft(leftName)
+                                        changed = true
+                                    }
+                                }
+                            }
+                            if (changed) {
+                                updateMemberList()
+                            }
+                            
+                            // Ensure offer is triggered for all known peers
+                            checkAndTriggerWebRtcOffers()
+                        }
+                    }
                 }
 
             } catch (e: Exception) {
@@ -251,13 +237,13 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         if (clean.isBlank() || clean.equals(myName, ignoreCase = true)) return
         val key = clean.lowercase()
+        peerLastSeen[key] = System.currentTimeMillis()
         val isNew = !activePeers.containsKey(key)
         activePeers[key] = clean
         if (isNew) {
             Log.d(TAG, "Discovered squad peer: $clean")
             addLog("Online: $clean")
             updateMemberList()
-            // Immediately attempt connection on new presence join
             checkAndTriggerWebRtcOffers()
         }
     }
@@ -266,6 +252,7 @@ object SupabaseRealtimeManager {
         val clean = peerName.trim()
         if (clean.isBlank()) return
         val key = clean.lowercase()
+        peerLastSeen.remove(key)
         if (activePeers.remove(key) != null) {
             Log.d(TAG, "Squad peer left: $clean")
             addLog("$clean left squad")
@@ -280,6 +267,7 @@ object SupabaseRealtimeManager {
         // Always keep self in activePeers if joined
         if (myName.isNotBlank()) {
             activePeers[myName.lowercase()] = myName
+            peerLastSeen[myName.lowercase()] = System.currentTimeMillis()
         }
 
         val speaker = newSpeaker
@@ -320,6 +308,25 @@ object SupabaseRealtimeManager {
         handlePeerSeen(msg.sender)
 
         when (msg.type) {
+            "peer-join" -> {
+                Log.d(TAG, "Received peer-join from ${msg.sender}")
+                handlePeerSeen(msg.sender)
+                // Acknowledge presence so the newly joined peer discovers us immediately
+                broadcastSignal(SignalMessage(type = "peer-ack", sender = myName, to = msg.sender))
+                checkAndTriggerWebRtcOffers()
+            }
+            "peer-ack" -> {
+                Log.d(TAG, "Received peer-ack from ${msg.sender}")
+                handlePeerSeen(msg.sender)
+                checkAndTriggerWebRtcOffers()
+            }
+            "peer-ping" -> {
+                handlePeerSeen(msg.sender)
+            }
+            "peer-leave" -> {
+                Log.d(TAG, "Received peer-leave from ${msg.sender}")
+                handlePeerLeft(msg.sender)
+            }
             "offer" -> {
                 Log.d(TAG, "Received SDP offer from ${msg.sender}")
                 msg.sdp?.let { signalingListener?.onOfferReceived(msg.sender, it) }
@@ -351,12 +358,19 @@ object SupabaseRealtimeManager {
     }
 
     fun leaveRoom() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+
+        val myName = _socketUiState.value.username.trim()
+        if (myName.isNotEmpty() && channel != null) {
+            broadcastSignal(SignalMessage(type = "peer-leave", sender = myName))
+        }
+
         val currentChannel = channel
         channel = null
 
         scope.launch {
             try {
-                currentChannel?.untrack()
                 currentChannel?.unsubscribe()
             } catch (e: Exception) {
                 Log.e(TAG, "Error unsubscribing channel", e)
@@ -364,6 +378,7 @@ object SupabaseRealtimeManager {
         }
 
         activePeers.clear()
+        peerLastSeen.clear()
         _socketUiState.update { 
             it.copy(
                 roomId = "", 
@@ -449,8 +464,11 @@ object SupabaseRealtimeManager {
     }
 
     fun addLog(msg: String) {
-        val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
-        val newLogs = listOf("[$time] $msg") + _socketUiState.value.eventLog
-        _socketUiState.update { it.copy(eventLog = newLogs.take(20)) }
+        Log.d(TAG, "LOG: $msg")
+        _socketUiState.update {
+            val logs = it.eventLog.takeLast(19).toMutableList()
+            logs.add(msg)
+            it.copy(eventLog = logs)
+        }
     }
 }
