@@ -114,31 +114,49 @@ class WebRTCManager(private val context: Context) {
             requestAudioFocus()
             audioManager?.apply {
                 mode = AudioManager.MODE_IN_COMMUNICATION
+                @Suppress("DEPRECATION")
+                isSpeakerphoneOn = true
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     val devices = availableCommunicationDevices
-                    val preferredDevice = devices.firstOrNull { 
-                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
-                    } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    
-                    if (preferredDevice != null) {
-                        setCommunicationDevice(preferredDevice)
-                        Log.d(TAG, "Audio routed to communication device: ${preferredDevice.type}")
-                    } else {
-                        @Suppress("DEPRECATION")
-                        isSpeakerphoneOn = true
+                    val speaker = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    if (speaker != null) {
+                        setCommunicationDevice(speaker)
                     }
-                } else {
-                    @Suppress("DEPRECATION")
-                    isSpeakerphoneOn = true
                 }
                 isMicrophoneMute = false
             }
-            Log.d(TAG, "Hands-free audio routing active (MODE_IN_COMMUNICATION)")
+            audioDeviceModule?.setSpeakerMute(false)
+            Log.d(TAG, "Hands-free audio routing active (MODE_IN_COMMUNICATION, speakerphone ON)")
         } catch (e: Exception) {
             Log.e(TAG, "Error ensuring hands-free audio routing: ${e.message}")
+        }
+    }
+
+    fun prepareForIncomingVoice() {
+        audioExecutor.execute {
+            try {
+                ensureHandsFreeAudioRouting()
+                audioDeviceModule?.setSpeakerMute(false)
+                audioManager?.let { am ->
+                    val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+                    val currentVol = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+                    if (currentVol < (maxVol * 0.7f).toInt()) {
+                        am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.85f).toInt(), 0)
+                    }
+                }
+                peerConnections.values.forEach { pc ->
+                    pc.receivers.forEach { receiver ->
+                        val track = receiver.track()
+                        if (track is AudioTrack) {
+                            track.setEnabled(true)
+                            track.setVolume(1.0)
+                        }
+                    }
+                }
+                Log.d(TAG, "Hardware prepared for incoming voice transmission")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error preparing for incoming voice: ${e.message}")
+            }
         }
     }
 
@@ -148,16 +166,37 @@ class WebRTCManager(private val context: Context) {
             initializeLibrary(context)
             ensureHandsFreeAudioRouting()
             
-            // Production-grade Audio Device Module utilizing hardware Voice Communication & Noise Suppression
+            // Production-grade Audio Device Module with hardware AEC/NS and robust error callbacks
             audioDeviceModule = JavaAudioDeviceModule.builder(context.applicationContext)
                 .setUseHardwareAcousticEchoCanceler(JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported())
                 .setUseHardwareNoiseSuppressor(JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported())
-                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION) // Activates hardware dual-mic beamforming & wind suppression
+                .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setUseStereoInput(false)
                 .setUseStereoOutput(false)
+                .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
+                    override fun onWebRtcAudioRecordInitError(errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioRecord Init Error: $errorMessage")
+                    }
+                    override fun onWebRtcAudioRecordStartError(errorCode: JavaAudioDeviceModule.AudioRecordStartErrorCode?, errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioRecord Start Error: $errorCode - $errorMessage")
+                    }
+                    override fun onWebRtcAudioRecordError(errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioRecord Error: $errorMessage")
+                    }
+                })
+                .setAudioTrackErrorCallback(object : JavaAudioDeviceModule.AudioTrackErrorCallback {
+                    override fun onWebRtcAudioTrackInitError(errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioTrack Init Error: $errorMessage")
+                    }
+                    override fun onWebRtcAudioTrackStartError(errorCode: JavaAudioDeviceModule.AudioTrackStartErrorCode?, errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioTrack Start Error: $errorCode - $errorMessage")
+                    }
+                    override fun onWebRtcAudioTrackError(errorMessage: String?) {
+                        Log.e(TAG, "WebRTC AudioTrack Error: $errorMessage")
+                    }
+                })
                 .createAudioDeviceModule()
 
-            audioDeviceModule?.setMicrophoneMute(true)
             audioDeviceModule?.setSpeakerMute(false)
 
             peerConnectionFactory = PeerConnectionFactory.builder()
@@ -228,9 +267,8 @@ class WebRTCManager(private val context: Context) {
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
                 localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
             }
-            // Initially disable until user holds PTT to prevent background bleed
+            // Initially disable outgoing audio track until user holds PTT
             localAudioTrack?.setEnabled(false)
-            audioDeviceModule?.setMicrophoneMute(true)
             Log.d(TAG, "Local audio track ready for mesh negotiation (Krisp AI Active: $isKrispAiEnabled, Highpass: ON)")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing tracks: ${e.message}")
@@ -240,14 +278,9 @@ class WebRTCManager(private val context: Context) {
     private fun optimizeAudioSdp(sdp: String): String {
         return try {
             val lines = sdp.split("\r\n").toMutableList()
-            var audioMediaIndex = -1
             var opusPayloadType: String? = null
 
-            for (i in lines.indices) {
-                val line = lines[i]
-                if (line.startsWith("m=audio ")) {
-                    audioMediaIndex = i
-                }
+            for (line in lines) {
                 if (line.contains("opus/48000", ignoreCase = true)) {
                     val parts = line.split(" ")
                     if (parts.isNotEmpty()) {
@@ -256,28 +289,16 @@ class WebRTCManager(private val context: Context) {
                 }
             }
 
+            // Enable inband FEC and disable stereo for robust walkie-talkie voice transmission
             if (opusPayloadType != null) {
                 val fmtpPrefix = "a=fmtp:$opusPayloadType"
                 val fmtpIndex = lines.indexOfFirst { it.startsWith(fmtpPrefix) }
-                val opusParams = "useinbandfec=1;usedtx=1;maxaveragebitrate=28000;stereo=0;sprop-stereo=0"
-
                 if (fmtpIndex != -1) {
-                    val existingFmtp = lines[fmtpIndex]
-                    if (!existingFmtp.contains("usedtx=1")) {
-                        lines[fmtpIndex] = "$existingFmtp;$opusParams"
+                    val existing = lines[fmtpIndex]
+                    if (!existing.contains("useinbandfec=1")) {
+                        lines[fmtpIndex] = "$existing;useinbandfec=1"
                     }
-                } else if (audioMediaIndex != -1) {
-                    lines.add(audioMediaIndex + 1, "$fmtpPrefix $opusParams")
                 }
-            }
-
-            // RFC 4566: b= lines MUST precede a= attributes in SDP media descriptions
-            if (audioMediaIndex != -1 && !lines.any { it.startsWith("b=AS:") }) {
-                var insertPos = audioMediaIndex + 1
-                while (insertPos < lines.size && lines[insertPos].startsWith("c=")) {
-                    insertPos++
-                }
-                lines.add(insertPos, "b=AS:28")
             }
 
             lines.joinToString("\r\n")
@@ -701,7 +722,6 @@ class WebRTCManager(private val context: Context) {
                 if (localAudioTrack == null) initialize()
                 
                 localAudioTrack?.setEnabled(true)
-                audioDeviceModule?.setMicrophoneMute(false)
                 audioManager?.isMicrophoneMute = false
                 
                 // Ensure localAudioTrack is attached to audio senders in all peer connections
@@ -728,7 +748,6 @@ class WebRTCManager(private val context: Context) {
                 com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.onAudioSessionActive(false)
                 
                 isTalking = false
-                audioDeviceModule?.setMicrophoneMute(true)
                 localAudioTrack?.setEnabled(false)
                 abandonAudioFocus()
                 Log.d(TAG, "PTT released — mic muted, audio focus released")

@@ -126,6 +126,8 @@ class WalkieTalkieService : Service(), SignalingListener {
         if (!speaker.isNullOrBlank() && !speaker.equals(username, ignoreCase = true)) {
             updateNotification("$speaker is speaking...")
             onOthersSpeakingStateChange?.invoke(true)
+            // Wake up audio routing and unmute speaker for incoming voice
+            webRTCManager?.prepareForIncomingVoice()
         } else {
             updateNotification("🔴 Transmitting...")
             onOthersSpeakingStateChange?.invoke(false)
