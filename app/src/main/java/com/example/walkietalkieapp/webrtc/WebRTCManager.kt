@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
+import org.json.JSONArray
 import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -37,6 +38,10 @@ class WebRTCManager(private val context: Context) {
     private val peerConnections = ConcurrentHashMap<String, PeerConnection>()
     private val peerIceStates = ConcurrentHashMap<String, PeerConnection.IceConnectionState>()
     private val pendingIceCandidates = ConcurrentHashMap<String, MutableList<IceCandidate>>()
+    
+    // Batching ICE candidates to avoid Supabase rate limits
+    private val batchedCandidates = ConcurrentHashMap<String, MutableList<String>>()
+    private val batchRunnables = ConcurrentHashMap<String, Runnable>()
 
     private var audioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
@@ -410,9 +415,24 @@ class WebRTCManager(private val context: Context) {
                                 put("sdpMLineIndex", candidate.sdpMLineIndex)
                                 put("candidate", candidate.sdp)
                             }
-                            SupabaseRealtimeManager.sendIceCandidate(peerId, json.toString())
+                            val candidateStr = json.toString()
+                            val list = batchedCandidates.getOrPut(peerId) { mutableListOf() }
+                            list.add(candidateStr)
+                            
+                            batchRunnables[peerId]?.let { mainHandler.removeCallbacks(it) }
+                            val runnable = Runnable {
+                                val toSend = batchedCandidates[peerId]?.toList() ?: return@Runnable
+                                batchedCandidates[peerId]?.clear()
+                                if (toSend.isNotEmpty()) {
+                                    val array = JSONArray()
+                                    toSend.forEach { array.put(it) }
+                                    SupabaseRealtimeManager.sendIceCandidate(peerId, array.toString())
+                                }
+                            }
+                            batchRunnables[peerId] = runnable
+                            mainHandler.postDelayed(runnable, 500)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error sending ICE Candidate to $peerId: ${e.message}")
+                            Log.e(TAG, "Error batching ICE Candidate for $peerId: ${e.message}")
                         }
                     }
                 }
@@ -646,32 +666,43 @@ class WebRTCManager(private val context: Context) {
         audioExecutor.execute {
             if (fromPeerId.isBlank()) return@execute
             try {
-                val candidate: IceCandidate? = try {
-                    val json = JSONObject(candidateJson)
-                    val candidateStr = json.optString("candidate", "")
-                    if (candidateStr.isNotEmpty()) {
-                        val sdpMid = json.optString("sdpMid", json.optString("id", "0"))
-                        val sdpMLineIndex = json.optInt("sdpMLineIndex", json.optInt("label", 0))
-                        IceCandidate(sdpMid, sdpMLineIndex, candidateStr)
-                    } else null
-                } catch (e: Exception) {
-                    if (candidateJson.startsWith("candidate:")) {
-                        IceCandidate("0", 0, candidateJson)
-                    } else null
-                }
-
-                if (candidate == null) return@execute
-
-                val key = normKey(fromPeerId)
-                val pc = peerConnections[key]
-                if (pc != null && pc.remoteDescription != null) {
-                    pc.addIceCandidate(candidate)
+                if (candidateJson.startsWith("[")) {
+                    val array = JSONArray(candidateJson)
+                    for (i in 0 until array.length()) {
+                        processSingleCandidate(fromPeerId, array.getString(i))
+                    }
                 } else {
-                    pendingIceCandidates.getOrPut(key) { mutableListOf() }.add(candidate)
+                    processSingleCandidate(fromPeerId, candidateJson)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "ICE Candidate Error from $fromPeerId: ${e.message}")
             }
+        }
+    }
+
+    private fun processSingleCandidate(fromPeerId: String, singleJson: String) {
+        val candidate: IceCandidate? = try {
+            val json = JSONObject(singleJson)
+            val candidateStr = json.optString("candidate", "")
+            if (candidateStr.isNotEmpty()) {
+                val sdpMid = json.optString("sdpMid", json.optString("id", "0"))
+                val sdpMLineIndex = json.optInt("sdpMLineIndex", json.optInt("label", 0))
+                IceCandidate(sdpMid, sdpMLineIndex, candidateStr)
+            } else null
+        } catch (e: Exception) {
+            if (singleJson.startsWith("candidate:")) {
+                IceCandidate("0", 0, singleJson)
+            } else null
+        }
+
+        if (candidate == null) return
+
+        val key = normKey(fromPeerId)
+        val pc = peerConnections[key]
+        if (pc != null && pc.remoteDescription != null) {
+            pc.addIceCandidate(candidate)
+        } else {
+            pendingIceCandidates.getOrPut(key) { mutableListOf() }.add(candidate)
         }
     }
     
