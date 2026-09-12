@@ -174,8 +174,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
 
-            webRtcService?.webRTCManager?.onStateChange = { state ->
-                SupabaseRealtimeManager.updateVoiceLinkState(state.name)
+            webRtcService?.webRTCManager?.onStateChange = { _ ->
+                val aggState = webRtcService?.webRTCManager?.computeAggregatedVoiceLinkState() ?: "IDLE"
+                SupabaseRealtimeManager.updateVoiceLinkState(aggState)
             }
 
             webRtcService?.webRTCManager?.let { webrtc ->

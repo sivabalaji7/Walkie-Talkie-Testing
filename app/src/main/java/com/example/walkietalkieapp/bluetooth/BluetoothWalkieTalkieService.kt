@@ -48,7 +48,7 @@ class BluetoothWalkieTalkieService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // API 30+
             startForeground(

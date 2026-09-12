@@ -623,14 +623,33 @@ fun InternetPushToTalkButton(
     val isBusy = floorStatus.state == FloorState.BUSY_BLOCKED || floorStatus.state == FloorState.RECEIVING
 
     var isLocked by remember { mutableStateOf(false) }
+    var lockSecondsRemaining by remember { mutableIntStateOf(20) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     val lockThresholdPx = with(density) { 65.dp.toPx() }
+
+    LaunchedEffect(isLocked) {
+        if (isLocked) {
+            lockSecondsRemaining = 20
+            while (isLocked && lockSecondsRemaining > 0) {
+                delay(1000L)
+                lockSecondsRemaining--
+            }
+            if (isLocked && lockSecondsRemaining <= 0) {
+                isLocked = false
+                dragOffsetY = 0f
+                onRelease()
+            }
+        } else {
+            lockSecondsRemaining = 20
+        }
+    }
 
     LaunchedEffect(floorStatus.state) {
         if (floorStatus.state != FloorState.TRANSMITTING && floorStatus.state != FloorState.REQUESTING) {
             isLocked = false
             dragOffsetY = 0f
+            lockSecondsRemaining = 20
         }
     }
 
@@ -829,8 +848,11 @@ fun InternetPushToTalkButton(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     val buttonText = when {
-                        isLocked -> "LOCKED • LIVE"
-                        isTransmitting -> "TRANSMITTING"
+                        isLocked -> "LOCKED • ${lockSecondsRemaining}s"
+                        isTransmitting -> {
+                            val secs = ((floorStatus.expiresAt - System.currentTimeMillis()).coerceAtLeast(0) / 1000).toInt()
+                            if (secs in 1..20) "TRANSMITTING (${secs}s)" else "TRANSMITTING"
+                        }
                         isRequesting -> "ACQUIRING..."
                         isBusy -> "CHANNEL BUSY"
                         else -> "HOLD TO TALK"
@@ -864,7 +886,7 @@ fun InternetPushToTalkButton(
             ) {
                 Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("TAP TO STOP", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("TAP TO STOP (${lockSecondsRemaining}s)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
     }

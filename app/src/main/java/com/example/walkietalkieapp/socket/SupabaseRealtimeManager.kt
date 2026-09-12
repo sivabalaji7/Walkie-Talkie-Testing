@@ -83,12 +83,28 @@ object SupabaseRealtimeManager {
                     Realtime.Status.CONNECTED -> {
                         _socketUiState.update { it.copy(isConnected = true, status = "ONLINE", detail = "Connected") }
                         addLog("Connected to Supabase Realtime")
+                        val currentRoom = _socketUiState.value.roomId
+                        val currentUser = _socketUiState.value.username
+                        if (currentRoom.isNotEmpty() && currentUser.isNotEmpty() && (channel == null || channel?.status?.value != io.github.jan.supabase.realtime.RealtimeChannel.Status.SUBSCRIBED)) {
+                            Log.d(TAG, "Reconnected to Realtime — re-subscribing to room $currentRoom")
+                            joinRoom(currentRoom, currentUser, _socketUiState.value.roomName)
+                        }
                     }
                     Realtime.Status.CONNECTING -> {
                         _socketUiState.update { it.copy(isConnected = false, status = "CONNECTING", detail = "Connecting...") }
                     }
                     Realtime.Status.DISCONNECTED -> {
                         _socketUiState.update { it.copy(isConnected = false, status = "OFFLINE", detail = "Disconnected") }
+                        val currentRoom = _socketUiState.value.roomId
+                        if (currentRoom.isNotEmpty()) {
+                            launch {
+                                delay(2500L)
+                                if (_socketUiState.value.roomId.isNotEmpty() && SupabaseClientManager.client.realtime.status.value != Realtime.Status.CONNECTED) {
+                                    Log.d(TAG, "Auto-reconnecting to Realtime...")
+                                    try { SupabaseClientManager.client.realtime.connect() } catch (e: Exception) { Log.w(TAG, "Reconnect error: ${e.message}") }
+                                }
+                            }
+                        }
                     }
                 }
             }

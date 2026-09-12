@@ -320,6 +320,17 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
+    fun computeAggregatedVoiceLinkState(): String {
+        if (peerConnections.isEmpty()) return "IDLE"
+        val states = peerIceStates.values
+        return when {
+            states.any { it == PeerConnection.IceConnectionState.CONNECTED || it == PeerConnection.IceConnectionState.COMPLETED } -> "CONNECTED"
+            states.any { it == PeerConnection.IceConnectionState.CHECKING || it == PeerConnection.IceConnectionState.NEW } -> "LINKING"
+            states.isNotEmpty() && states.all { it == PeerConnection.IceConnectionState.FAILED } -> "FAILED"
+            else -> "IDLE"
+        }
+    }
+
     fun isPeerConnected(rawPeerId: String): Boolean {
         val peerId = normKey(rawPeerId)
         val state = peerIceStates[peerId]
@@ -329,23 +340,16 @@ class WebRTCManager(private val context: Context) {
 
     private fun getRtcConfig(): PeerConnection.RTCConfiguration {
         val iceServers = mutableListOf(
-            // High-reliability global STUN servers (verified live over UDP)
+            // High-reliability global STUN servers (verified low latency over UDP)
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:turn.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
-            PeerConnection.IceServer.builder("stun:openrelay.metered.ca:80").createIceServer(),
             
-            // Public Demo Fallback TURN Servers
+            // Public Fallback TURN Servers
             PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
             PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
-            PeerConnection.IceServer.builder("turns:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
+            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         )
 
         // Dynamically load active TURN servers from BuildConfig (configurable via app/build.gradle.kts)
@@ -366,7 +370,7 @@ class WebRTCManager(private val context: Context) {
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 20 
+        rtcConfig.iceCandidatePoolSize = 2 // Optimized from 20 to prevent socket flood and speed up gathering
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
@@ -432,16 +436,15 @@ class WebRTCManager(private val context: Context) {
                     peerIceStates[key] = newState
                     mainHandler.post { onStateChange?.invoke(newState) }
                     
+                    val aggState = computeAggregatedVoiceLinkState()
+                    SupabaseRealtimeManager.updateVoiceLinkState(aggState)
+
                     when (newState) {
                         PeerConnection.IceConnectionState.CONNECTED,
                         PeerConnection.IceConnectionState.COMPLETED -> {
                             Log.d(TAG, "VOICE LINK ESTABLISHED with $peerId")
                             SupabaseRealtimeManager.addLog("Voice Link: $peerId")
-                            SupabaseRealtimeManager.updateVoiceLinkState("CONNECTED")
                             mainHandler.post { onCallConnected?.invoke() }
-                        }
-                        PeerConnection.IceConnectionState.CHECKING -> {
-                            SupabaseRealtimeManager.updateVoiceLinkState("LINKING")
                         }
                         PeerConnection.IceConnectionState.FAILED -> {
                             Log.d(TAG, "ICE Failed with $peerId, restarting...")
@@ -449,7 +452,6 @@ class WebRTCManager(private val context: Context) {
                         }
                         PeerConnection.IceConnectionState.DISCONNECTED -> {
                             if (!isConnected()) {
-                                SupabaseRealtimeManager.updateVoiceLinkState("IDLE")
                                 mainHandler.post { onCallDisconnected?.invoke() }
                             }
                         }
@@ -547,8 +549,14 @@ class WebRTCManager(private val context: Context) {
                 Log.d(TAG, "PeerConnection for $peerId is in signaling state $sigState, skipping duplicate offer")
                 return
             }
-            if (!isRestart && (state == PeerConnection.IceConnectionState.CONNECTED || state == PeerConnection.IceConnectionState.COMPLETED)) {
-                Log.d(TAG, "PeerConnection for $peerId already connected, skipping duplicate offer")
+            if (!isRestart && (state == PeerConnection.IceConnectionState.CONNECTED || 
+                               state == PeerConnection.IceConnectionState.COMPLETED || 
+                               state == PeerConnection.IceConnectionState.CHECKING)) {
+                Log.d(TAG, "PeerConnection for $peerId is in progress/connected ($state), skipping duplicate offer")
+                return
+            }
+            if (!isRestart && existing.localDescription != null && existing.remoteDescription == null) {
+                Log.d(TAG, "PeerConnection for $peerId already has active pending offer, skipping duplicate offer")
                 return
             }
             if (state == PeerConnection.IceConnectionState.FAILED || state == PeerConnection.IceConnectionState.DISCONNECTED) {
@@ -599,11 +607,13 @@ class WebRTCManager(private val context: Context) {
             if (pc.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                 val myName = normKey(SupabaseRealtimeManager.socketUiState.value.username)
                 if (myName > key) {
-                    Log.d(TAG, "Signaling glare with $fromPeerId: I am polite peer, recreating PC to accept remote offer")
-                    try { pc.dispose() } catch (e: Exception) {}
-                    peerConnections.remove(key)
-                    peerIceStates.remove(key)
-                    pc = getOrCreatePeerConnection(key) ?: return@execute
+                    Log.d(TAG, "Signaling glare with $fromPeerId: I am polite peer, rolling back local offer to accept remote offer")
+                    val rollbackDesc = SessionDescription(SessionDescription.Type.ROLLBACK, "")
+                    pc.setLocalDescription(object : SimpleSdpObserver() {
+                        override fun onSetSuccess() {
+                            Log.d(TAG, "Rollback successful for $fromPeerId")
+                        }
+                    }, rollbackDesc)
                 } else {
                     Log.d(TAG, "Signaling glare with $fromPeerId: I am impolite peer, ignoring incoming offer")
                     return@execute
@@ -744,6 +754,8 @@ class WebRTCManager(private val context: Context) {
             }
             pendingIceCandidates.remove(key)
             peerIceStates.remove(key)
+            val aggState = computeAggregatedVoiceLinkState()
+            SupabaseRealtimeManager.updateVoiceLinkState(aggState)
             if (!isConnected()) {
                 mainHandler.post { onCallDisconnected?.invoke() }
             }
@@ -877,6 +889,7 @@ class WebRTCManager(private val context: Context) {
             peerConnections.clear()
             peerIceStates.clear()
             pendingIceCandidates.clear()
+            SupabaseRealtimeManager.updateVoiceLinkState("IDLE")
             
             try {
                 localAudioTrack?.dispose()

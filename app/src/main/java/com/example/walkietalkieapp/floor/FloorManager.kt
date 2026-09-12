@@ -26,6 +26,7 @@ object FloorManager {
     var onFloorTimeout: (() -> Unit)? = null
 
     private var transmitTimeoutRunnable: Runnable? = null
+    private var transmitWarningRunnable: Runnable? = null
     private var fallbackRunnable: Runnable? = null
     private var busyResetRunnable: Runnable? = null
 
@@ -99,14 +100,34 @@ object FloorManager {
             return@runOnMain
         }
 
-        Log.d(TAG, "Floor GRANTED (unlimited talk time)")
+        val actualExpiresAt = if (expiresAt > System.currentTimeMillis()) expiresAt else System.currentTimeMillis() + 20000L
+        Log.d(TAG, "Floor GRANTED (20s safety limit active)")
         _floorStatus.update {
             FloorStatus(
                 state = FloorState.TRANSMITTING,
                 isLocalUserSpeaking = true,
-                expiresAt = expiresAt
+                expiresAt = actualExpiresAt
             )
         }
+
+        // Schedule hard cutoff safety timer (20s limit)
+        cancelTransmitTimer()
+        val durationMs = (actualExpiresAt - System.currentTimeMillis()).coerceAtLeast(1000L)
+        if (durationMs > 3000L) {
+            transmitWarningRunnable = Runnable {
+                if (_floorStatus.value.state == FloorState.TRANSMITTING) {
+                    handleFloorWarning()
+                }
+            }
+            mainHandler.postDelayed(transmitWarningRunnable!!, durationMs - 3000L)
+        }
+        transmitTimeoutRunnable = Runnable {
+            if (_floorStatus.value.state == FloorState.TRANSMITTING) {
+                Log.d(TAG, "Floor 20s transmit limit reached — auto-unlocking")
+                handleFloorTimedOut()
+            }
+        }
+        mainHandler.postDelayed(transmitTimeoutRunnable!!, durationMs)
 
         onFloorGranted?.invoke()
     }
@@ -208,6 +229,8 @@ object FloorManager {
     private fun cancelTransmitTimer() {
         transmitTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         transmitTimeoutRunnable = null
+        transmitWarningRunnable?.let { mainHandler.removeCallbacks(it) }
+        transmitWarningRunnable = null
     }
 
     private fun cancelFallback() {

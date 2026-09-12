@@ -57,10 +57,10 @@ class WalkieTalkieService : Service(), SignalingListener {
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WalkieTalkieApp::VoiceServiceWakeLock")
-        acquireWakeLock(15 * 60 * 1000L) // Timed 15-min safety timeout to avoid Android battery drain warnings
+        acquireWakeLock(60 * 60 * 1000L) // 1-hour renewable WakeLock to prevent Android background suspension
     }
 
-    private fun acquireWakeLock(timeoutMs: Long = 10 * 60 * 1000L) {
+    private fun acquireWakeLock(timeoutMs: Long = 60 * 60 * 1000L) {
         try {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()
@@ -161,7 +161,7 @@ class WalkieTalkieService : Service(), SignalingListener {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -184,11 +184,22 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     fun startVoiceSession(roomId: String = "") {
-        acquireWakeLock(15 * 60 * 1000L)
+        acquireWakeLock(60 * 60 * 1000L)
         if (webRTCManager == null) {
             webRTCManager = WebRTCManager(this).apply {
                 init()
                 initialize()
+                onCallConnected = {
+                    val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
+                    val text = if (currentRoom.isNotEmpty()) "In Squad: $currentRoom" else "Voice Link Ready"
+                    updateNotification(text)
+                }
+                onCallDisconnected = {
+                    val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
+                    val text = if (currentRoom.isNotEmpty()) "In Squad: $currentRoom" else "Ready to talk"
+                    updateNotification(text)
+                    onOthersSpeakingStateChange?.invoke(false)
+                }
             }
         }
         webRTCManager?.prepareConnection()
@@ -230,11 +241,15 @@ class WalkieTalkieService : Service(), SignalingListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
-                "Walkie Talkie Service Channel",
+                "Walkie Talkie Voice Service",
                 NotificationManager.IMPORTANCE_LOW
-            )
+            ).apply {
+                description = "Active squad voice communication"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setShowBadge(true)
+            }
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(serviceChannel)
+            manager?.createNotificationChannel(serviceChannel)
         }
     }
 
