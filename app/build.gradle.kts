@@ -58,8 +58,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.1")
     
-    // Added WebRTC and Supabase Realtime dependencies
-    implementation("io.github.webrtc-sdk:android:144.7559.01")
+    // Supabase Realtime dependencies
     implementation(platform("io.github.jan-tennert.supabase:bom:3.0.0"))
     implementation("io.github.jan-tennert.supabase:realtime-kt")
     implementation("io.github.jan-tennert.supabase:postgrest-kt")

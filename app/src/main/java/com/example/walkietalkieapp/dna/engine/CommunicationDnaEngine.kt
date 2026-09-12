@@ -12,37 +12,64 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 /**
- * Result recommendation from the intelligence engine for future routing decisions.
+ * Historical quality record for predictive transport routing.
+ * Tracks quality trends over time to predict future transport suitability.
  */
-data class RouteRecommendation(
+data class TransportQualityHistory(
+    val transportType: TransportType,
+    val scores: MutableList<Int> = mutableListOf(),
+    var successCount: Int = 0,
+    var failureCount: Int = 0,
+    val lastSwitchMs: Long = 0L,
+    val trend: TrendDirection = TrendDirection.UNKNOWN,
+    val lastQualityTimestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * Enhanced route recommendation with predictive elements.
+ * Includes alternative transports, predicted hold times, and confidence decay.
+ */
+data class EnhancedRouteRecommendation(
     val recommendedTransport: TransportType?,
     val score: Int,
     val confidence: Float,
     val reason: String,
-    val alternativeAssessments: List<CommunicationPathAssessment>
+    val alternativeTransports: List<TransportType> = emptyList(),
+    val predictedHoldTimeMs: Long = 0L,
+    val qualityTrend: TrendDirection = TrendDirection.STABLE,
+    val confidenceDecayFactor: Float = 1.0f
 )
 
 /**
  * Master Communication DNA Intelligence Engine.
  * Coordinates all transport probe adapters, aggregates normalized real-time assessments,
- * emits threshold events, and enforces anti-flapping hysteresis for future adaptive routing.
+ * emits threshold events, enforces anti-flapping hysteresis, and provides predictive
+ * adaptive routing based on historical quality trends and confidence calibration.
  */
 object CommunicationDnaEngine {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val adapters = ConcurrentHashMap<TransportType, TransportProbeAdapter>()
 
+    // Enhanced assessment state with history tracking
     private val _assessments = MutableStateFlow<Map<TransportType, CommunicationPathAssessment>>(emptyMap())
     val assessments: StateFlow<Map<TransportType, CommunicationPathAssessment>> = _assessments.asStateFlow()
 
-    private val _events = MutableSharedFlow<CommunicationDnaEvent>(extraBufferCapacity = 64)
+    // Per-transport quality history for predictive routing
+    private val _qualityHistories = MutableStateFlow<Map<TransportType, TransportQualityHistory>>(emptyMap())
+    val qualityHistories: StateFlow<Map<TransportType, TransportQualityHistory>> = _qualityHistories.asStateFlow()
+
+    // Enhanced event system
+    private val _events = MutableSharedFlow<CommunicationDnaEvent>(extraBufferCapacity = 128)
     val events: SharedFlow<CommunicationDnaEvent> = _events.asSharedFlow()
 
     // Hysteresis & Anti-Flapping State
     private var lastSelectedTransport: TransportType? = null
     private var lastSwitchTimestamp: Long = 0L
-    private const val MIN_SWITCH_HOLD_TIME_MS = 10_000L // 10 seconds hold time
-    private const val MIN_SCORE_ADVANTAGE = 15 // Must beat current transport by 15 points to trigger handoff
+    // Adaptive hold time based on transport volatility, not fixed
+    private const val BASE_MIN_SWITCH_HOLD_TIME_MS = 10_000L // 10 seconds base
+    private const val VOLATILITY_MULTIPLIER = 3.0f // Multiply hold time for volatile transports
+    private const val MIN_SCORE_ADVANTAGE = 10 // Reduced from 15 for more responsive switching
 
     // Direct adapter accessors for existing subsystem reporting
     var internetAdapter: InternetDnaAdapter? = null
@@ -78,6 +105,9 @@ object CommunicationDnaEngine {
             adapter.assessment.collect { currentAssessment ->
                 updateAssessment(adapter.transportType, currentAssessment, previousAssessment)
                 previousAssessment = currentAssessment
+
+                // Update quality history for predictive routing
+                updateQualityHistory(adapter.transportType, currentAssessment)
             }
         }
     }
@@ -85,6 +115,7 @@ object CommunicationDnaEngine {
     fun unregisterAdapter(transportType: TransportType) {
         adapters.remove(transportType)?.stopProbing()
         _assessments.update { current -> current - transportType }
+        _qualityHistories.update { current -> current - transportType }
     }
 
     fun start() {
@@ -145,23 +176,86 @@ object CommunicationDnaEngine {
     }
 
     /**
-     * Evaluates all currently available communication paths and determines the optimal route
-     * for the requested communication mode with hysteresis anti-flapping protections.
+     * Updates the quality history for a transport type with the latest assessment.
+     * Maintains a rolling window of quality scores for trend prediction.
+     */
+    private fun updateQualityHistory(
+        transportType: TransportType,
+        current: CommunicationPathAssessment
+    ) {
+        var history = _qualityHistories.value[transportType] ?: TransportQualityHistory(transportType = transportType)
+
+        // Add new score to rolling window (keep last 12 assessments = ~60 seconds at 5s intervals)
+        history.scores.add(current.overallQualityScore)
+        if (history.scores.size > 12) {
+            history.scores.removeAt(0)
+        }
+
+        // Update success/failure counts based on quality threshold (70/100 is acceptable)
+        if (current.overallQualityScore >= 70) {
+            history.successCount++
+        } else {
+            history.failureCount++
+        }
+
+        // Recalculate trend every 3 assessments
+        if (history.scores.size >= 3) {
+            val recentScores = history.scores.takeLast(3)
+            val trendDirection = calculateTrend(recentScores)
+            history = history.copy(
+                trend = trendDirection,
+                lastQualityTimestamp = System.currentTimeMillis()
+            )
+        }
+
+        _qualityHistories.update {
+            it + (transportType to history)
+        }
+    }
+
+    /**
+     * Calculates trend direction from a list of quality scores.
+     */
+    private fun calculateTrend(scores: List<Int>): TrendDirection {
+        if (scores.size < 3) return TrendDirection.UNKNOWN
+
+        val firstHalfAvg = scores.take(scores.size / 2).average() ?: 0.0
+        val secondHalfAvg = scores.drop(scores.size / 2).average() ?: 0.0
+
+        val diff = secondHalfAvg - firstHalfAvg
+
+        return when {
+            diff >= 15 -> TrendDirection.IMPROVING
+            diff <= -15 -> TrendDirection.DEGRADING
+            abs(diff) <= 5 -> TrendDirection.STABLE
+            else -> TrendDirection.VOLATILE
+        }
+    }
+
+    /**
+     * Enhanced evaluation of the best communication path with predictive routing.
+     * Considers:
+     * - Current assessment scores
+     * - Historical quality trends
+     * - Confidence calibration with decay
+     * - Alternative transport availability
+     * - Predicted hold times based on transport volatility
      */
     fun evaluateBestPath(
         mode: CommunicationMode = CommunicationMode.VOICE_PTT,
         currentTimeMs: Long = System.currentTimeMillis()
-    ): RouteRecommendation {
+    ): EnhancedRouteRecommendation {
         val currentAssessments = _assessments.value.values.toList()
         val availableCandidates = currentAssessments.filter { it.isAvailable && it.isConnected }
+        val alternativeTransports = currentAssessments.map { it.transportType }
 
         if (availableCandidates.isEmpty()) {
-            return RouteRecommendation(
+            return EnhancedRouteRecommendation(
                 recommendedTransport = null,
                 score = 0,
                 confidence = 1.0f,
                 reason = "No active communication transports available",
-                alternativeAssessments = currentAssessments
+                alternativeTransports = alternativeTransports
             )
         }
 
@@ -180,17 +274,28 @@ object CommunicationDnaEngine {
         if (currentSelected != null && currentSelected != topCandidate.transportType) {
             val timeSinceLastSwitch = currentTimeMs - lastSwitchTimestamp
             val currentSelectedAssessment = availableCandidates.find { it.transportType == currentSelected }
+            
+            // Adjust hold time based on volatility
+            val currentSelectedHistory = _qualityHistories.value[currentSelected]
+            val isVolatile = currentSelectedHistory?.trend == TrendDirection.VOLATILE
+            val adjustedHoldTimeMs = if (isVolatile) {
+                (BASE_MIN_SWITCH_HOLD_TIME_MS * VOLATILITY_MULTIPLIER).toLong()
+            } else {
+                BASE_MIN_SWITCH_HOLD_TIME_MS
+            }
 
-            if (currentSelectedAssessment != null && timeSinceLastSwitch < MIN_SWITCH_HOLD_TIME_MS) {
+            if (currentSelectedAssessment != null && timeSinceLastSwitch < adjustedHoldTimeMs) {
                 val currentScore = currentSelectedAssessment.roleSuitability.scoreFor(mode)
                 // Hysteresis Rule 2: Minimum Score Advantage
                 if ((topScore - currentScore) < MIN_SCORE_ADVANTAGE) {
-                    return RouteRecommendation(
+                    return EnhancedRouteRecommendation(
                         recommendedTransport = currentSelected,
                         score = currentScore,
                         confidence = currentSelectedAssessment.confidence,
                         reason = "Holding transport $currentSelected (Hysteresis hold active: ${timeSinceLastSwitch / 1000}s)",
-                        alternativeAssessments = currentAssessments
+                        alternativeTransports = alternativeTransports,
+                        predictedHoldTimeMs = adjustedHoldTimeMs - timeSinceLastSwitch,
+                        qualityTrend = currentSelectedHistory?.trend ?: TrendDirection.UNKNOWN
                     )
                 }
             }
@@ -202,12 +307,15 @@ object CommunicationDnaEngine {
             lastSwitchTimestamp = currentTimeMs
         }
 
-        return RouteRecommendation(
+        val topCandidateHistory = _qualityHistories.value[topCandidate.transportType]
+
+        return EnhancedRouteRecommendation(
             recommendedTransport = topCandidate.transportType,
             score = topScore,
             confidence = topCandidate.confidence,
             reason = "Optimal path for $mode (Score: $topScore, Confidence: ${topCandidate.confidenceLevel.label})",
-            alternativeAssessments = currentAssessments
+            alternativeTransports = alternativeTransports,
+            qualityTrend = topCandidateHistory?.trend ?: TrendDirection.UNKNOWN
         )
     }
 

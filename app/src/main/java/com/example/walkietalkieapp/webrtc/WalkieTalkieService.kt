@@ -12,15 +12,17 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.walkietalkieapp.MainActivity
 import com.example.walkietalkieapp.R
+import com.example.walkietalkieapp.audio.AudioBurstManager
+import com.example.walkietalkieapp.socket.AudioBurstListener
 import com.example.walkietalkieapp.socket.SignalingListener
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 
 private const val TAG = "WalkieTalkieService"
 
-class WalkieTalkieService : Service(), SignalingListener {
+class WalkieTalkieService : Service(), SignalingListener, AudioBurstListener {
 
     private val binder = LocalBinder()
-    var webRTCManager: WebRTCManager? = null
+    var audioBurstManager: AudioBurstManager? = null
         private set
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -38,22 +40,24 @@ class WalkieTalkieService : Service(), SignalingListener {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        SupabaseRealtimeManager.setSignalingListener(this)
-        webRTCManager = WebRTCManager(this).apply {
-            init()
-            initialize()
-            onCallConnected = {
-                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
-                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Voice Link Ready"
-                updateNotification(text)
-            }
-            onCallDisconnected = {
-                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
-                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
-                updateNotification(text)
-                onOthersSpeakingStateChange?.invoke(false)
+
+        // Initialize AudioBurstManager for universal, CGNAT-immune tactical voice transmission
+        audioBurstManager = AudioBurstManager(this).apply {
+            onPlaybackStateChange = { isPlaying, speakerName ->
+                if (isPlaying) {
+                    val speaker = speakerName ?: "Squad Member"
+                    updateNotification("🔊 $speaker is transmitting...")
+                    onOthersSpeakingStateChange?.invoke(true)
+                } else {
+                    val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
+                    updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
+                    onOthersSpeakingStateChange?.invoke(false)
+                }
             }
         }
+
+        SupabaseRealtimeManager.setSignalingListener(this)
+        SupabaseRealtimeManager.setAudioBurstListener(this)
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WalkieTalkieApp::VoiceServiceWakeLock")
@@ -83,40 +87,7 @@ class WalkieTalkieService : Service(), SignalingListener {
         }
     }
 
-    override fun onOfferReceived(fromPeerId: String, sdp: String) {
-        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
-        Log.d(TAG, "onOfferReceived from $fromPeerId")
-        webRTCManager?.handleOffer(fromPeerId, sdp)
-        val speaker = SupabaseRealtimeManager.socketUiState.value.lastSpeakerName
-        val text = if (!speaker.isNullOrBlank() && speaker != SupabaseRealtimeManager.socketUiState.value.username) {
-            "$speaker is transmitting..."
-        } else {
-            "Incoming transmission..."
-        }
-        updateNotification(text)
-    }
-
-    override fun onAnswerReceived(fromPeerId: String, sdp: String) {
-        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
-        Log.d(TAG, "onAnswerReceived from $fromPeerId")
-        webRTCManager?.handleAnswer(fromPeerId, sdp)
-    }
-
-    override fun onIceCandidateReceived(fromPeerId: String, candidate: String) {
-        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
-        webRTCManager?.handleIceCandidate(fromPeerId, candidate)
-    }
-
-    override fun onPeersReceived(peers: List<String>) {
-        if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
-        Log.d(TAG, "onPeersReceived: connecting to ${peers.size} peer(s)")
-        webRTCManager?.connectToPeers(peers)
-    }
-
-    override fun onPeerLeft(peerId: String) {
-        Log.d(TAG, "onPeerLeft: removing peer $peerId")
-        webRTCManager?.removePeer(peerId)
-    }
+    override fun onPeerLeft(peerId: String) {}
 
     override fun onCallStarted() {
         acquireWakeLock(10 * 60 * 1000L) // Extend WakeLock during transmission
@@ -126,8 +97,6 @@ class WalkieTalkieService : Service(), SignalingListener {
         if (!speaker.isNullOrBlank() && !speaker.equals(username, ignoreCase = true)) {
             updateNotification("$speaker is speaking...")
             onOthersSpeakingStateChange?.invoke(true)
-            // Wake up audio routing and unmute speaker for incoming voice
-            webRTCManager?.prepareForIncomingVoice()
         } else {
             updateNotification("🔴 Transmitting...")
             onOthersSpeakingStateChange?.invoke(false)
@@ -139,7 +108,6 @@ class WalkieTalkieService : Service(), SignalingListener {
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
         onOthersSpeakingStateChange?.invoke(false)
-        webRTCManager?.abandonAudioFocus()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -170,8 +138,6 @@ class WalkieTalkieService : Service(), SignalingListener {
         Log.d(TAG, "onTaskRemoved: App closed, stopping audio session and leaving squad")
         SupabaseRealtimeManager.leaveRoom()
         SupabaseRealtimeManager.disconnect()
-        webRTCManager?.cleanup()
-        webRTCManager = null
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -185,21 +151,12 @@ class WalkieTalkieService : Service(), SignalingListener {
 
     fun startVoiceSession(roomId: String = "") {
         acquireWakeLock(15 * 60 * 1000L)
-        if (webRTCManager == null) {
-            webRTCManager = WebRTCManager(this).apply {
-                init()
-                initialize()
-            }
-        }
-        webRTCManager?.prepareConnection()
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
     }
 
     fun stopVoiceSession() {
         Log.d(TAG, "stopVoiceSession called")
-        webRTCManager?.cleanup()
-        webRTCManager = null
         releaseWakeLock()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -244,19 +201,45 @@ class WalkieTalkieService : Service(), SignalingListener {
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    fun replayLastTransmissions() {
-        webRTCManager?.replayLastTransmissions()
+    override fun onVoiceBurstReceived(sender: String, audioBase64: String, durationMs: Long) {
+        val myName = SupabaseRealtimeManager.socketUiState.value.username
+        if (sender.equals(myName, ignoreCase = true)) return
+        acquireWakeLock(10 * 60 * 1000L)
+        Log.d(TAG, "onVoiceBurstReceived from $sender (${durationMs}ms)")
+        audioBurstManager?.playIncomingBurst(sender, audioBase64, durationMs)
     }
 
-    fun restartIce() {
-        webRTCManager?.restartIce()
+    fun startRecordingBurst(): Boolean {
+        acquireWakeLock(10 * 60 * 1000L)
+        updateNotification("🔴 Transmitting...")
+        return audioBurstManager?.startRecording() ?: false
     }
+
+    fun stopRecordingAndBroadcastBurst() {
+        audioBurstManager?.stopRecordingAndBroadcast { audioBase64, durationMs ->
+            SupabaseRealtimeManager.sendVoiceBurst(audioBase64, durationMs)
+            SupabaseRealtimeManager.sendStopVoice()
+        }
+        val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
+        updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
+    }
+
+    fun replayLastBurst(): Boolean {
+        return audioBurstManager?.replayLastBurst() ?: false
+    }
+
+    fun replayLastTransmissions() {
+        replayLastBurst()
+    }
+
+    fun restartIce() {}
 
     override fun onDestroy() {
-        Log.d("WalkieTalkieService", "onDestroy: Cleaning up WebRTC manager")
+        Log.d(TAG, "onDestroy: Cleaning up AudioBurst manager")
         SupabaseRealtimeManager.setSignalingListener(null)
-        webRTCManager?.cleanup()
-        webRTCManager = null
+        SupabaseRealtimeManager.setAudioBurstListener(null)
+        audioBurstManager?.release()
+        audioBurstManager = null
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()
         }

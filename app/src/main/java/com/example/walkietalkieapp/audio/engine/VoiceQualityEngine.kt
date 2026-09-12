@@ -9,7 +9,6 @@ import com.example.walkietalkieapp.audio.intelligence.EnhancementDiagnostics
 import com.example.walkietalkieapp.audio.intelligence.EnhancementPolicyEngine
 import com.example.walkietalkieapp.audio.intelligence.EnvironmentAnalyzer
 import com.example.walkietalkieapp.dna.model.TransportType
-import com.example.walkietalkieapp.webrtc.WebRTCManager
 import java.util.concurrent.Executors
 
 /**
@@ -31,8 +30,6 @@ class VoiceQualityEngine private constructor() {
     private var audioPlayer: AudioPlayer? = null
     private val jitterBuffer = JitterBuffer()
     
-    // We keep a reference to WebRTCManager strictly to delegate Internet transport routing
-    private var webRtcManager: WebRTCManager? = null
 
     var currentState = VoiceQualityState.IDLE
         private set
@@ -57,13 +54,10 @@ class VoiceQualityEngine private constructor() {
         }
     }
 
-    fun initialize(context: Context, webRtcRef: WebRTCManager? = null, userId: String = "") {
+    fun initialize(context: Context, userId: String = "") {
         if (audioRecorder == null) {
             audioRecorder = AudioRecorder()
             audioPlayer = AudioPlayer(context)
-        }
-        if (webRtcRef != null) {
-            this.webRtcManager = webRtcRef
         }
         if (userId.isNotEmpty()) {
             this.myUserId = userId
@@ -83,14 +77,7 @@ class VoiceQualityEngine private constructor() {
         lastEnvironment = environment
         lastNoiseFloor = noiseFloor
         
-        // For Internet transport, dynamically manage Krisp based on environment
-        if (activeTransport == TransportType.Internet) {
-            val shouldEnableKrisp = environment != AcousticEnvironment.QUIET
-            if (webRtcManager?.isKrispAiEnabled != shouldEnableKrisp) {
-                webRtcManager?.setKrispEnabled(shouldEnableKrisp)
-                Log.d(TAG, "Intelligence: Krisp AI ${if (shouldEnableKrisp) "ENABLED" else "DISABLED"} (env=$environment)")
-            }
-        }
+        // WebRTC Krisp logic removed
     }
 
     private var lastEnvironment = AcousticEnvironment.UNKNOWN
@@ -104,7 +91,7 @@ class VoiceQualityEngine private constructor() {
             environment = lastEnvironment,
             activeProfile = com.example.walkietalkieapp.audio.intelligence.EnhancementProfile.BALANCED, // reported by AudioRecorder
             noiseFloorEstimate = lastNoiseFloor,
-            isKrispActive = webRtcManager?.isKrispAiEnabled ?: false,
+            isKrispActive = false,
             transportType = activeTransport.id
         )
     }
@@ -123,8 +110,7 @@ class VoiceQualityEngine private constructor() {
         Log.d(TAG, "Starting transmission. Active Transport: $activeTransport")
 
         if (activeTransport == TransportType.Internet) {
-            // Defer to WebRTC for Internet UDP voice
-            webRtcManager?.startTalking()
+            // Internet is handled by AudioBurstManager directly
             currentState = VoiceQualityState.TRANSMITTING
         } else {
             // Spin up the Local Mesh Pipeline (Bluetooth / Wi-Fi Direct)
@@ -162,7 +148,7 @@ class VoiceQualityEngine private constructor() {
         Log.d(TAG, "Stopping transmission.")
 
         if (activeTransport == TransportType.Internet) {
-            webRtcManager?.stopTalking()
+            // Internet is handled by AudioBurstManager directly
         } else {
             audioRecorder?.stop()
             // Send one final empty frame to signal the end of transmission to the receiver's jitter buffer

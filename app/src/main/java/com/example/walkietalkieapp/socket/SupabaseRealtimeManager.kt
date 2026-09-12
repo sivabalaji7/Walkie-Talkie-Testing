@@ -1,5 +1,6 @@
 package com.example.walkietalkieapp.socket
 
+import android.content.Context
 import android.util.Log
 import com.example.walkietalkieapp.floor.FloorManager
 import com.example.walkietalkieapp.floor.FloorState
@@ -31,15 +32,19 @@ data class SocketUiState(
     val lastSpeakerTimestamp: Long = 0
 )
 
+interface AudioBurstListener {
+    fun onVoiceBurstReceived(sender: String, audioBase64: String, durationMs: Long)
+}
+
 @Serializable
 data class SignalMessage(
-    val type: String = "", // "offer", "answer", "ice-candidate", "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave"
+    val type: String = "", // "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave", "voice-burst"
     val sender: String = "",
     val to: String? = null,
-    val sdp: String? = null,
-    val candidate: String? = null,
     val isPriority: Boolean? = null,
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val audioPayload: String? = null,
+    val durationMs: Long = 0L
 )
 
 @Serializable
@@ -59,9 +64,11 @@ object SupabaseRealtimeManager {
     private var signalingListener: SignalingListener? = null
     fun setSignalingListener(listener: SignalingListener?) {
         this.signalingListener = listener
-        if (listener != null) {
-            checkAndTriggerWebRtcOffers()
-        }
+    }
+
+    private var audioBurstListener: AudioBurstListener? = null
+    fun setAudioBurstListener(listener: AudioBurstListener?) {
+        this.audioBurstListener = listener
     }
 
     // Active squad peers map: username (lowercase) -> originalUsername
@@ -75,6 +82,9 @@ object SupabaseRealtimeManager {
     private val _events = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val events = _events.asSharedFlow()
 
+    // Reassembly buffer for incoming audio chunks: burstId -> StringBuilder
+    private val incomingBurstChunks = ConcurrentHashMap<String, StringBuilder>()
+
     init {
         scope.launch {
             SupabaseClientManager.client.realtime.status.collect { status ->
@@ -83,6 +93,14 @@ object SupabaseRealtimeManager {
                     Realtime.Status.CONNECTED -> {
                         _socketUiState.update { it.copy(isConnected = true, status = "ONLINE", detail = "Connected") }
                         addLog("Connected to Supabase Realtime")
+
+                        val currentRoom = _socketUiState.value.roomId
+                        val currentUser = _socketUiState.value.username
+                        val currentRoomName = _socketUiState.value.roomName
+                        if (currentRoom.isNotEmpty() && currentUser.isNotEmpty()) {
+                            Log.d(TAG, "Realtime reconnected: re-subscribing to squad room $currentRoom")
+                            rejoinRoom()
+                        }
                     }
                     Realtime.Status.CONNECTING -> {
                         _socketUiState.update { it.copy(isConnected = false, status = "CONNECTING", detail = "Connecting...") }
@@ -92,6 +110,49 @@ object SupabaseRealtimeManager {
                     }
                 }
             }
+        }
+    }
+
+    fun initializeNetworkMonitoring(context: Context) {
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            val request = android.net.NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+
+            cm?.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    Log.d(TAG, "Network interface available: $network")
+                    scope.launch {
+                        delay(600) // Debounce for network lease stabilization
+                        try {
+                            if (SupabaseClientManager.client.realtime.status.value != Realtime.Status.CONNECTED) {
+                                SupabaseClientManager.client.realtime.connect()
+                            }
+                            rejoinRoom()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Error reconnecting realtime on network available", e)
+                        }
+                    }
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    Log.d(TAG, "Network interface lost: $network")
+                    _socketUiState.update { it.copy(isConnected = false, status = "OFFLINE", detail = "Network Lost") }
+                }
+            })
+            Log.d(TAG, "Network monitoring initialized successfully")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register NetworkCallback", e)
+        }
+    }
+
+    fun rejoinRoom() {
+        val currentRoom = _socketUiState.value.roomId
+        val currentUser = _socketUiState.value.username
+        val currentRoomName = _socketUiState.value.roomName
+        if (currentRoom.isNotEmpty() && currentUser.isNotEmpty()) {
+            joinRoom(currentRoom, currentUser, currentRoomName)
         }
     }
 
@@ -173,7 +234,7 @@ object SupabaseRealtimeManager {
                 ch.subscribe(blockUntilSubscribed = true)
                 Log.d(TAG, "Subscribed to squad:$cleanId successfully. Status: ${ch.status.value}")
 
-                _socketUiState.update { it.copy(isConnected = true, status = "ONLINE", detail = "Connected to $cleanId") }
+                _socketUiState.update { it.copy(isConnected = true, status = "ONLINE", detail = "Connected to $cleanId", voiceLinkState = "CONNECTED") }
                 addLog("Joined Squad: $cleanId")
 
                 // Add self to active peers immediately
@@ -217,9 +278,6 @@ object SupabaseRealtimeManager {
                             if (changed) {
                                 updateMemberList()
                             }
-                            
-                            // Ensure offer is triggered for all known peers
-                            checkAndTriggerWebRtcOffers()
                         }
                     }
                 }
@@ -244,7 +302,6 @@ object SupabaseRealtimeManager {
             Log.d(TAG, "Discovered squad peer: $clean")
             addLog("Online: $clean")
             updateMemberList()
-            checkAndTriggerWebRtcOffers()
         }
     }
 
@@ -287,17 +344,7 @@ object SupabaseRealtimeManager {
         }
     }
 
-    private fun checkAndTriggerWebRtcOffers() {
-        val myName = _socketUiState.value.username.trim()
-        if (myName.isBlank()) return
-        val peersToOffer = activePeers.values
-            .filter { !it.equals(myName, ignoreCase = true) }
-            .filter { myName.compareTo(it, ignoreCase = true) > 0 }
-        if (peersToOffer.isNotEmpty()) {
-            Log.d(TAG, "Offer initiator ($myName) connecting to peers: $peersToOffer")
-            signalingListener?.onPeersReceived(peersToOffer)
-        }
-    }
+
 
     private fun handleSignalMessage(msg: SignalMessage) {
         val myName = _socketUiState.value.username.trim()
@@ -313,12 +360,10 @@ object SupabaseRealtimeManager {
                 handlePeerSeen(msg.sender)
                 // Acknowledge presence so the newly joined peer discovers us immediately
                 broadcastSignal(SignalMessage(type = "peer-ack", sender = myName, to = msg.sender))
-                checkAndTriggerWebRtcOffers()
             }
             "peer-ack" -> {
                 Log.d(TAG, "Received peer-ack from ${msg.sender}")
                 handlePeerSeen(msg.sender)
-                checkAndTriggerWebRtcOffers()
             }
             "peer-ping" -> {
                 handlePeerSeen(msg.sender)
@@ -326,17 +371,6 @@ object SupabaseRealtimeManager {
             "peer-leave" -> {
                 Log.d(TAG, "Received peer-leave from ${msg.sender}")
                 handlePeerLeft(msg.sender)
-            }
-            "offer" -> {
-                Log.d(TAG, "Received SDP offer from ${msg.sender}")
-                msg.sdp?.let { signalingListener?.onOfferReceived(msg.sender, it) }
-            }
-            "answer" -> {
-                Log.d(TAG, "Received SDP answer from ${msg.sender}")
-                msg.sdp?.let { signalingListener?.onAnswerReceived(msg.sender, it) }
-            }
-            "ice-candidate" -> {
-                msg.candidate?.let { signalingListener?.onIceCandidateReceived(msg.sender, it) }
             }
             "floor-grant" -> {
                 val speaker = msg.sender
@@ -353,6 +387,29 @@ object SupabaseRealtimeManager {
                 FloorManager.handleFloorIdle()
                 updateMemberList(newSpeaker = null)
                 signalingListener?.onCallEnded()
+            }
+            "voice-burst-chunk" -> {
+                val burstId = msg.to ?: return
+                val audio = msg.audioPayload ?: return
+                val builder = incomingBurstChunks.getOrPut(burstId) { java.lang.StringBuilder() }
+                builder.append(audio)
+            }
+            "voice-burst" -> {
+                val burstId = msg.to
+                val audio = msg.audioPayload ?: ""
+                
+                val completeAudio = if (burstId != null) {
+                    val builder = incomingBurstChunks.remove(burstId) ?: java.lang.StringBuilder()
+                    builder.append(audio)
+                    builder.toString()
+                } else {
+                    audio // Backwards compatibility for unchunked messages
+                }
+
+                if (completeAudio.isNotBlank()) {
+                    Log.d(TAG, "Received complete voice-burst from ${msg.sender} (${msg.durationMs}ms, payloadLen=${completeAudio.length})")
+                    audioBurstListener?.onVoiceBurstReceived(msg.sender, completeAudio, msg.durationMs)
+                }
             }
         }
     }
@@ -393,20 +450,7 @@ object SupabaseRealtimeManager {
         addLog("Left Squad")
     }
 
-    fun sendOffer(targetPeerId: String, sdp: String) {
-        val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, sdp = sdp))
-    }
 
-    fun sendAnswer(targetPeerId: String, sdp: String) {
-        val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, sdp = sdp))
-    }
-
-    fun sendIceCandidate(targetPeerId: String, candidate: String) {
-        val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, candidate = candidate))
-    }
 
     private fun broadcastSignal(msg: SignalMessage) {
         scope.launch {
@@ -414,6 +458,7 @@ object SupabaseRealtimeManager {
                 channel?.broadcast("webrtc", msg)
             } catch (e: Exception) { 
                 Log.e(TAG, "Broadcast error for message type ${msg.type}", e) 
+                addLog("Broadcast Error (${msg.type}): ${e.message ?: e.javaClass.simpleName}")
             }
         }
     }
@@ -444,6 +489,30 @@ object SupabaseRealtimeManager {
             ))
             updateMemberList(newSpeaker = null)
             signalingListener?.onCallEnded()
+        }
+    }
+
+    fun sendVoiceBurst(audioBase64: String, durationMs: Long) {
+        val myName = _socketUiState.value.username.trim()
+        val roomId = _socketUiState.value.roomId
+        if (myName.isNotEmpty() && roomId.isNotEmpty() && audioBase64.isNotEmpty()) {
+            val burstId = java.util.UUID.randomUUID().toString()
+            val chunks = audioBase64.chunked(32000) // 32KB chunks safely bypass Ktor/WebSocket frame limits
+            
+            scope.launch {
+                for ((index, chunk) in chunks.withIndex()) {
+                    broadcastSignal(SignalMessage(
+                        type = if (index == chunks.lastIndex) "voice-burst" else "voice-burst-chunk",
+                        sender = myName,
+                        to = burstId, // Repurpose `to` field for burstId
+                        audioPayload = chunk,
+                        durationMs = if (index == chunks.lastIndex) durationMs else 0L,
+                        timestamp = System.currentTimeMillis()
+                    ))
+                    delay(30) // 30ms backpressure delay to prevent flooding the WebSocket and causing buffer overflows
+                }
+                addLog("Sent voice burst in ${chunks.size} chunks (${durationMs / 1000f}s)")
+            }
         }
     }
 
