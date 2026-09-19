@@ -5,6 +5,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +27,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +64,7 @@ fun DisplayPanel(
     onCodeClick: (() -> Unit)? = null,
     isE2EActive: Boolean = false,
     e2eFingerprint: String = "",
+    onE2EClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(connectivityMode)
@@ -162,11 +167,31 @@ fun DisplayPanel(
                         val e2eBg = if (isE2EActive) Color(0xFF064E3B).copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.25f)
                         val e2eBorder = if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.15f)
 
+                        val e2eInteraction = remember { MutableInteractionSource() }
+                        val isE2EPressed by e2eInteraction.collectIsPressedAsState()
+                        val e2eScale by animateFloatAsState(
+                            targetValue = if (isE2EPressed) 0.88f else 1f,
+                            animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                            label = "e2eBtnScale"
+                        )
+                        val haptic = LocalHapticFeedback.current
+
                         Row(
                             modifier = Modifier
+                                .graphicsLayer {
+                                    scaleX = e2eScale
+                                    scaleY = e2eScale
+                                }
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(e2eBg)
                                 .border(0.5.dp, e2eBorder, RoundedCornerShape(8.dp))
+                                .clickable(
+                                    interactionSource = e2eInteraction,
+                                    indication = null
+                                ) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onE2EClick?.invoke()
+                                }
                                 .padding(horizontal = 6.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.5.dp)

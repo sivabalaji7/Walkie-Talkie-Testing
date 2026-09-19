@@ -577,6 +577,27 @@ object SupabaseRealtimeManager {
         sendStopVoice()
     }
 
+    fun rekeySession() {
+        try {
+            E2ECryptoManager.initSession()
+            val myPubKey = E2ECryptoManager.getMyPublicKeyBase64()
+            val myName = _socketUiState.value.username.trim()
+            val newFingerprint = E2ECryptoManager.getMyFingerprint()
+            _socketUiState.update { 
+                it.copy(
+                    e2eFingerprint = newFingerprint,
+                    isE2EActive = false
+                ) 
+            }
+            if (myPubKey != null && myName.isNotEmpty()) {
+                broadcastSignal(SignalMessage(type = "key-exchange", sender = myName, publicKey = myPubKey))
+                addLog("Re-keyed session (ECDH P-256). Fingerprint: $newFingerprint")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error re-keying session", e)
+        }
+    }
+
     fun updateVoiceLinkState(state: String) {
         _socketUiState.update { it.copy(voiceLinkState = state) }
     }

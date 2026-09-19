@@ -31,6 +31,7 @@ import com.example.walkietalkieapp.bluetooth.DiscoveredSquad
 import com.example.walkietalkieapp.floor.FloorState
 import com.example.walkietalkieapp.floor.FloorStatus
 import com.example.walkietalkieapp.socket.SocketUiState
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.TransportMode
 import com.example.walkietalkieapp.ui.auth.AuthMode
 import com.example.walkietalkieapp.ui.auth.WalkieAuthScreen
@@ -432,7 +433,8 @@ fun WalkieTalkieApp(
                                 },
                                 onQuickActions = onReplayAudio,
                                 isE2EActive = socketUiState.isE2EActive,
-                                e2eFingerprint = socketUiState.e2eFingerprint
+                                e2eFingerprint = socketUiState.e2eFingerprint,
+                                onRekeySession = { SupabaseRealtimeManager.rekeySession() }
                             )
                         } else {
                             SquadHub(

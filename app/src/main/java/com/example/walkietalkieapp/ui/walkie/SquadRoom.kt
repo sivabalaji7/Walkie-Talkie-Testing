@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -26,11 +28,14 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
@@ -54,10 +59,12 @@ fun SquadRoom(
     onDeclineRequest: (RoomMemberRequest) -> Unit = {},
     isE2EActive: Boolean = false,
     e2eFingerprint: String = "",
+    onRekeySession: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var memberIndex by remember { mutableIntStateOf(0) }
     var wheelActive by remember { mutableStateOf(false) }
+    var showE2ESecurityModal by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(wheelActive) {
@@ -115,7 +122,8 @@ fun SquadRoom(
                 pairedDevices = squad.members.map { DisplayDevice(it.name, it.avatar, it.online) },
                 onCodeClick = { onShareSquadCode(squad.id) },
                 isE2EActive = isE2EActive,
-                e2eFingerprint = e2eFingerprint
+                e2eFingerprint = e2eFingerprint,
+                onE2EClick = { showE2ESecurityModal = true }
             )
 
             // 3. Copyable Squad Code Chip & Online Status Header
@@ -348,6 +356,16 @@ fun SquadRoom(
                 .align(Alignment.CenterEnd)
                 .offset(x = 18.dp)
         )
+
+        // 9. Interactive E2E Security Modal
+        if (showE2ESecurityModal) {
+            E2ESecurityDialog(
+                isE2EActive = isE2EActive,
+                fingerprint = e2eFingerprint,
+                onRekey = onRekeySession,
+                onDismiss = { showE2ESecurityModal = false }
+            )
+        }
     }
 }
 
@@ -463,5 +481,216 @@ fun TacticalMemberBadge(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+@Composable
+fun E2ESecurityDialog(
+    isE2EActive: Boolean,
+    fingerprint: String,
+    onRekey: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val clipboardManager = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2000)
+            copied = false
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(WalkieCard)
+                .border(1.dp, if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.5f) else WalkieCardBorder, RoundedCornerShape(20.dp))
+                .padding(20.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header with Lock Icon
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = if (isE2EActive) Color(0xFF10B981) else WalkieAmber,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "ZERO-KNOWLEDGE E2EE",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WalkieTextPrimary,
+                        letterSpacing = 1.sp
+                    )
+                }
+
+                // Security Status Badge
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isE2EActive) Color(0xFF064E3B).copy(alpha = 0.5f) else WalkieAmber.copy(alpha = 0.15f))
+                        .border(0.5.dp, if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.6f) else WalkieAmber.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (isE2EActive) Color(0xFF10B981) else WalkieAmber)
+                    )
+                    Text(
+                        text = if (isE2EActive) "PEER KEYS SECURED & ACTIVE" else "AWAITING SQUAD PEERS",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isE2EActive) Color(0xFFD1FAE5) else WalkieAmberLight
+                    )
+                }
+
+                // Cryptographic Specs Card
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(WalkieDeviceBody)
+                        .border(1.dp, WalkieCardBorder, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "SESSION KEY FINGERPRINT (SHA-256)",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WalkieTextMuted,
+                        letterSpacing = 0.8.sp
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (fingerprint.isNotBlank()) fingerprint else "INITIALIZING...",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF34D399),
+                            letterSpacing = 0.8.sp
+                        )
+
+                        Surface(
+                            onClick = {
+                                if (fingerprint.isNotBlank()) {
+                                    clipboardManager.setText(AnnotatedString(fingerprint))
+                                    copied = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                            },
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (copied) Color(0xFF10B981).copy(alpha = 0.2f) else WalkieButton,
+                            border = BorderStroke(1.dp, if (copied) Color(0xFF10B981) else WalkieCardBorder)
+                        ) {
+                            Text(
+                                text = if (copied) "COPIED" else "COPY",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (copied) Color(0xFF10B981) else WalkieTextPrimary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "• Cipher: AES-256-GCM (128-bit Tag)\n• Key Agreement: NIST P-256 (ECDH)\n• KDF: SHA-256 Key Derivation\n• Server: Zero-Knowledge Relay",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 10.sp,
+                        color = WalkieTextSecondary,
+                        lineHeight = 15.sp
+                    )
+                }
+
+                // Interactive Re-Key Action Button
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onRekey()
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = WalkieButton,
+                    border = BorderStroke(1.dp, WalkieAmber.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 11.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Re-Key",
+                            tint = WalkieAmber,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "FORCE RE-KEY SESSION",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WalkieAmber,
+                            letterSpacing = 0.8.sp
+                        )
+                    }
+                }
+
+                // Close Button
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onDismiss()
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = WalkieDeviceBody,
+                    border = BorderStroke(1.dp, WalkieCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "DISMISS",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WalkieTextMuted
+                        )
+                    }
+                }
+            }
+        }
     }
 }
