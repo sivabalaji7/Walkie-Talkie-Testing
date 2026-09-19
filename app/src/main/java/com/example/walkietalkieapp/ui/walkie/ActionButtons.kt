@@ -41,6 +41,7 @@ fun ActionButtons(
     speakerOn: Boolean = true,
     inSquad: Boolean = false,
     mode: ConnectivityMode = ConnectivityMode.INTERNET,
+    replayCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -88,7 +89,7 @@ fun ActionButtons(
             )
         }
 
-        // Bottom Row: 2 wider buttons (Speaker, Quick)
+        // Bottom Row: 2 wider buttons (Speaker, Replay Reel)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -104,12 +105,13 @@ fun ActionButtons(
                 modifier = Modifier.weight(1f)
             )
             TacticalButton(
-                icon = Icons.Default.FlashOn,
-                label = "Quick",
-                isActive = false,
+                icon = Icons.Default.Replay,
+                label = "Replay",
+                isActive = inSquad && replayCount > 0,
                 accent = false,
                 activeBrush = currentTheme.gradient,
-                indicatorColor = currentTheme.primaryColor,
+                indicatorColor = if (replayCount > 0) StatusReady else currentTheme.primaryColor,
+                badgeCount = if (inSquad) replayCount else 0,
                 onClick = onQuickActions,
                 modifier = Modifier.weight(1f)
             )
@@ -126,6 +128,7 @@ fun TacticalButton(
     activeBrush: Brush,
     indicatorColor: Color,
     onClick: () -> Unit,
+    badgeCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -178,6 +181,26 @@ fun TacticalButton(
                     .clip(CircleShape)
                     .background(indicatorColor)
             )
+        }
+
+        // Tactical Counter Badge (e.g. unplayed voice reel transmissions)
+        if (badgeCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-5).dp, y = 4.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFFEF4444))
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            ) {
+                Text(
+                    text = if (badgeCount > 99) "99+" else "$badgeCount",
+                    color = Color.White,
+                    fontSize = 7.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.sp
+                )
+            }
         }
 
         Column(

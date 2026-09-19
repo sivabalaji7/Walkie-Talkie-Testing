@@ -43,6 +43,8 @@ class VoiceQualityEngine private constructor() {
 
     private var packetSequence: Long = 0
     private var myUserId: String = ""
+    private val localOfflineRecording = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+    private var localOfflineStartTime: Long = 0L
 
     // Transport-specific callbacks for local mesh routing
     var onTransmitBluetoothPacket: ((VoicePacket) -> Unit)? = null
@@ -129,10 +131,14 @@ class VoiceQualityEngine private constructor() {
         } else {
             // Spin up the Local Mesh Pipeline (Bluetooth / Wi-Fi Direct)
             packetSequence = 0
+            localOfflineRecording.clear()
+            localOfflineStartTime = System.currentTimeMillis()
             audioRecorder?.start { processedPcm ->
                 // The AudioRecorder internally applies the AudioDspProcessor.
                 // We must check if the DSP suppressed this frame (VAD).
                 if (processedPcm.isEmpty()) return@start // Silence suppressed by VAD
+
+                localOfflineRecording.add(processedPcm.copyOf())
 
                 // 1. Encode via G.711
                 val encodedPayload = G711Codec.encode(processedPcm)
@@ -174,9 +180,63 @@ class VoiceQualityEngine private constructor() {
                 isFinalFrame = true
             )
             routeLocalPacket(finalPacket)
+            commitLocalOfflineTransmission()
         }
         
         currentState = VoiceQualityState.IDLE
+    }
+
+    private fun commitLocalOfflineTransmission() {
+        try {
+            val bufferCopy = synchronized(localOfflineRecording) {
+                val list = localOfflineRecording.toList()
+                localOfflineRecording.clear()
+                list
+            }
+            if (bufferCopy.isNotEmpty()) {
+                val totalBytes = bufferCopy.sumOf { it.size }
+                val pcmData = ByteArray(totalBytes)
+                var destPos = 0
+                for (chunk in bufferCopy) {
+                    System.arraycopy(chunk, 0, pcmData, destPos, chunk.size)
+                    destPos += chunk.size
+                }
+                val duration = (System.currentTimeMillis() - localOfflineStartTime).coerceAtLeast(300L)
+                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                    speakerName = myUserId.ifBlank { "You" },
+                    pcmData = pcmData,
+                    sampleRate = 16000,
+                    durationMs = duration,
+                    isSelf = true
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error committing local offline voice transmission: ${e.message}")
+        }
+    }
+
+    private fun commitRemoteOfflineTransmission(senderId: String, chunks: List<ByteArray>, startTime: Long) {
+        try {
+            if (chunks.isNotEmpty()) {
+                val totalBytes = chunks.sumOf { it.size }
+                val pcmData = ByteArray(totalBytes)
+                var destPos = 0
+                for (chunk in chunks) {
+                    System.arraycopy(chunk, 0, pcmData, destPos, chunk.size)
+                    destPos += chunk.size
+                }
+                val duration = (System.currentTimeMillis() - startTime).coerceAtLeast(300L)
+                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                    speakerName = senderId,
+                    pcmData = pcmData,
+                    sampleRate = 16000,
+                    durationMs = duration,
+                    isSelf = false
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error committing remote offline transmission: ${e.message}")
+        }
     }
 
     // =========================================================================
@@ -206,20 +266,26 @@ class VoiceQualityEngine private constructor() {
         playbackExecutor.execute {
             Log.d(TAG, "Jitter buffer drainer started.")
             var consecutiveEmptyFrames = 0
+            val rxBuffer = mutableListOf<ByteArray>()
+            val rxStartTime = System.currentTimeMillis()
+            var currentSenderId = "Remote"
             while (isPlaying && currentState == VoiceQualityState.RECEIVING) {
                 val packet = jitterBuffer.poll()
                 
                 if (packet != null) {
                     consecutiveEmptyFrames = 0
+                    if (packet.senderId.isNotBlank()) currentSenderId = packet.senderId
                     if (packet.payload.isNotEmpty()) {
                         // 1. Decode G.711 to PCM
                         val pcm = G711Codec.decode(packet.payload)
+                        rxBuffer.add(pcm)
                         // 2. Play
                         audioPlayer?.play(pcm)
                     }
                     if (packet.isFinalFrame) {
                         Log.d(TAG, "Final frame drained from jitter buffer. Transmission cleanly completed.")
                         currentState = VoiceQualityState.IDLE
+                        commitRemoteOfflineTransmission(currentSenderId, rxBuffer, rxStartTime)
                         break
                     }
                 } else {
@@ -227,6 +293,7 @@ class VoiceQualityEngine private constructor() {
                     if (consecutiveEmptyFrames > 15) { // 600ms of sustained silence / empty buffer
                         Log.d(TAG, "Drainer timeout (600ms silence). Returning to IDLE.")
                         currentState = VoiceQualityState.IDLE
+                        commitRemoteOfflineTransmission(currentSenderId, rxBuffer, rxStartTime)
                         break
                     }
                     val silence = ByteArray(1280) // 40ms of 16kHz silence

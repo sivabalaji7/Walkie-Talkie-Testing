@@ -47,10 +47,20 @@ class WebRTCManager(private val context: Context) {
     private var localAudioTrack: AudioTrack? = null
     private var audioDeviceModule: JavaAudioDeviceModule? = null
     
-    // Voice Buffer for Replay
+    // Voice Buffer for Replay & Blackbox Reel
     private val voiceBuffer = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
     private val MAX_BUFFER_FRAMES = 500 // ~10 seconds at 20ms frames
     
+    // Blackbox Audio Recording Buffers
+    private val remoteAudioRecording = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+    @Volatile private var activeRemoteSpeaker: String? = null
+    private var activeRemoteStartTime: Long = 0L
+    private var activeRemoteSampleRate: Int = 48000
+
+    private val localAudioRecording = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+    private var localAudioStartTime: Long = 0L
+    private var localAudioSampleRate: Int = 48000
+
     private var isInitialized = false
     private var isSessionActive = false
     private var isTalking = false
@@ -59,8 +69,21 @@ class WebRTCManager(private val context: Context) {
 
     fun setAuthorizedSpeaker(speaker: String?) {
         val clean = speaker?.trim()?.lowercase()
+        val previousSpeaker = authorizedSpeaker
         authorizedSpeaker = clean
         Log.d(TAG, "Audio gating: setting authorized speaker to $clean across ${peerConnections.size} peer(s)")
+        
+        if (clean == null && previousSpeaker != null && remoteAudioRecording.isNotEmpty()) {
+            commitRemoteAudioTransmission(previousSpeaker)
+        } else if (clean != null && !clean.equals(previousSpeaker, ignoreCase = true)) {
+            if (previousSpeaker != null && remoteAudioRecording.isNotEmpty()) {
+                commitRemoteAudioTransmission(previousSpeaker)
+            }
+            activeRemoteSpeaker = clean
+            activeRemoteStartTime = System.currentTimeMillis()
+            remoteAudioRecording.clear()
+        }
+
         audioExecutor.execute {
             peerConnections.forEach { (peerKey, pc) ->
                 val isAllowed = clean != null && peerKey.equals(clean, ignoreCase = true)
@@ -72,6 +95,37 @@ class WebRTCManager(private val context: Context) {
                     }
                 }
             }
+        }
+    }
+
+    private fun commitRemoteAudioTransmission(speaker: String) {
+        try {
+            val bufferCopy = synchronized(remoteAudioRecording) {
+                val list = remoteAudioRecording.toList()
+                remoteAudioRecording.clear()
+                list
+            }
+            if (bufferCopy.isNotEmpty()) {
+                val totalBytes = bufferCopy.sumOf { it.size }
+                val pcmData = ByteArray(totalBytes)
+                var destPos = 0
+                for (chunk in bufferCopy) {
+                    System.arraycopy(chunk, 0, pcmData, destPos, chunk.size)
+                    destPos += chunk.size
+                }
+                val duration = (System.currentTimeMillis() - activeRemoteStartTime).coerceAtLeast(300L)
+                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                    speakerName = speaker,
+                    pcmData = pcmData,
+                    sampleRate = activeRemoteSampleRate,
+                    durationMs = duration,
+                    isSelf = false
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error committing remote voice transmission: ${e.message}")
+        } finally {
+            activeRemoteSpeaker = null
         }
     }
     
@@ -255,7 +309,9 @@ class WebRTCManager(private val context: Context) {
                     val audioConstraints = createAudioConstraints(enabled)
                     val oldSource = audioSource
                     val newSource = peerConnectionFactory?.createAudioSource(audioConstraints)
-                    val newTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", newSource)
+                    val newTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", newSource)?.also {
+                        attachLocalAudioSink(it)
+                    }
                     newTrack?.setEnabled(isTalking)
                     
                     peerConnections.values.forEach { pc ->
@@ -269,6 +325,18 @@ class WebRTCManager(private val context: Context) {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error updating Krisp track: ${e.message}")
+            }
+        }
+    }
+
+    private fun attachLocalAudioSink(track: AudioTrack) {
+        track.addSink { buffer, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames, timestamp ->
+            if (isTalking) {
+                localAudioSampleRate = sampleRate
+                val dup = buffer.duplicate()
+                val data = ByteArray(dup.remaining())
+                dup.get(data)
+                localAudioRecording.add(data)
             }
         }
     }
@@ -295,7 +363,9 @@ class WebRTCManager(private val context: Context) {
             if (localAudioTrack == null) {
                 val audioConstraints = createAudioConstraints(isKrispAiEnabled)
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
-                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)?.also {
+                    attachLocalAudioSink(it)
+                }
             }
             // Initially disable outgoing audio track until user holds PTT
             localAudioTrack?.setEnabled(false)
@@ -530,6 +600,10 @@ class WebRTCManager(private val context: Context) {
                                     if (voiceBuffer.size > MAX_BUFFER_FRAMES) {
                                         voiceBuffer.removeAt(0)
                                     }
+                                }
+                                if (authorizedSpeaker != null) {
+                                    activeRemoteSampleRate = sampleRate
+                                    remoteAudioRecording.add(data)
                                 }
                             }
                             SupabaseRealtimeManager.addLog("Active stream from $peerId")
@@ -795,6 +869,8 @@ class WebRTCManager(private val context: Context) {
                 // Intelligence Engine: Active Voice
                 com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.onAudioSessionActive(true)
                 
+                localAudioStartTime = System.currentTimeMillis()
+                localAudioRecording.clear()
                 isTalking = true
                 if (!isSessionActive) {
                     isSessionActive = true
@@ -832,10 +908,41 @@ class WebRTCManager(private val context: Context) {
                 
                 isTalking = false
                 localAudioTrack?.setEnabled(false)
+                commitLocalAudioTransmission()
                 Log.d(TAG, "PTT released — mic muted, audio focus retained for incoming transmission")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disabling audio: ${e.message}")
             }
+        }
+    }
+
+    private fun commitLocalAudioTransmission() {
+        try {
+            val bufferCopy = synchronized(localAudioRecording) {
+                val list = localAudioRecording.toList()
+                localAudioRecording.clear()
+                list
+            }
+            if (bufferCopy.isNotEmpty()) {
+                val totalBytes = bufferCopy.sumOf { it.size }
+                val pcmData = ByteArray(totalBytes)
+                var destPos = 0
+                for (chunk in bufferCopy) {
+                    System.arraycopy(chunk, 0, pcmData, destPos, chunk.size)
+                    destPos += chunk.size
+                }
+                val duration = (System.currentTimeMillis() - localAudioStartTime).coerceAtLeast(300L)
+                val myName = SupabaseRealtimeManager.socketUiState.value.username.ifBlank { "You" }
+                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                    speakerName = myName,
+                    pcmData = pcmData,
+                    sampleRate = localAudioSampleRate,
+                    durationMs = duration,
+                    isSelf = true
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error committing local voice transmission: ${e.message}")
         }
     }
 
@@ -860,42 +967,7 @@ class WebRTCManager(private val context: Context) {
     }
 
     fun replayLastTransmissions() {
-        if (voiceBuffer.isEmpty()) {
-            SupabaseRealtimeManager.addLog("No voice data to replay")
-            return
-        }
-        
-        val bufferCopy = synchronized(voiceBuffer) { voiceBuffer.toList() }
-        SupabaseRealtimeManager.addLog("Replaying last 10s...")
-        
-        Thread {
-            try {
-                val sampleRate = 48000
-                val minBufferSize = android.media.AudioTrack.getMinBufferSize(
-                    sampleRate,
-                    android.media.AudioFormat.CHANNEL_OUT_MONO,
-                    android.media.AudioFormat.ENCODING_PCM_16BIT
-                )
-                
-                val audioTrack = android.media.AudioTrack(
-                    AudioManager.STREAM_MUSIC,
-                    sampleRate,
-                    android.media.AudioFormat.CHANNEL_OUT_MONO,
-                    android.media.AudioFormat.ENCODING_PCM_16BIT,
-                    minBufferSize.coerceAtLeast(bufferCopy.sumOf { it.size }),
-                    android.media.AudioTrack.MODE_STREAM
-                )
-                
-                audioTrack.play()
-                for (data in bufferCopy) {
-                    audioTrack.write(data, 0, data.size)
-                }
-                audioTrack.stop()
-                audioTrack.release()
-            } catch (e: Exception) {
-                Log.e(TAG, "Replay failed: ${e.message}")
-            }
-        }.start()
+        com.example.walkietalkieapp.audio.VoiceHistoryManager.playLatest()
     }
 
     fun cleanup() {

@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -14,8 +15,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MicNone
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -32,13 +38,19 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.walkietalkieapp.audio.VoiceHistoryManager
+import com.example.walkietalkieapp.audio.VoiceTransmission
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SquadRoom(
@@ -65,6 +77,9 @@ fun SquadRoom(
     var memberIndex by remember { mutableIntStateOf(0) }
     var wheelActive by remember { mutableStateOf(false) }
     var showE2ESecurityModal by remember { mutableStateOf(false) }
+    var showVoiceReelModal by remember { mutableStateOf(false) }
+    val transmissions by VoiceHistoryManager.transmissions.collectAsState()
+    val currentlyPlayingId by VoiceHistoryManager.currentlyPlayingId.collectAsState()
     val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(wheelActive) {
@@ -320,17 +335,20 @@ fun SquadRoom(
                 }
             }
 
-            // 6. Action Buttons (Exit, Channel, Members, Speaker, Quick)
+            // 6. Action Buttons (Exit, Channel, Members, Speaker, Replay Reel)
             ActionButtons(
                 isPowered = true,
                 onPowerToggle = onExit,
                 onCreateChannel = { onShareSquadCode(squad.id) },
                 onPairedDevices = { wheelActive = true },
                 onSpeaker = onSpeakerToggle,
-                onQuickActions = onQuickActions,
+                onQuickActions = {
+                    showVoiceReelModal = true
+                },
                 speakerOn = speakerOn,
                 inSquad = true,
-                mode = mode
+                mode = mode,
+                replayCount = transmissions.size
             )
 
             // 7. Push To Talk Button
@@ -364,6 +382,36 @@ fun SquadRoom(
                 fingerprint = e2eFingerprint,
                 onRekey = onRekeySession,
                 onDismiss = { showE2ESecurityModal = false }
+            )
+        }
+
+        // 10. Interactive Voice Reel (Tactical Blackbox Replay Modal)
+        if (showVoiceReelModal) {
+            VoiceReelDialog(
+                transmissions = transmissions,
+                currentlyPlayingId = currentlyPlayingId,
+                mode = mode,
+                onPlayTransmission = { id ->
+                    if (currentlyPlayingId == id) {
+                        VoiceHistoryManager.stopPlayback()
+                    } else {
+                        VoiceHistoryManager.playTransmission(id)
+                    }
+                },
+                onPlayLatest = {
+                    if (currentlyPlayingId != null) {
+                        VoiceHistoryManager.stopPlayback()
+                    } else {
+                        VoiceHistoryManager.playLatest()
+                    }
+                },
+                onClear = {
+                    VoiceHistoryManager.clearHistory()
+                },
+                onDismiss = {
+                    VoiceHistoryManager.stopPlayback()
+                    showVoiceReelModal = false
+                }
             )
         }
     }
@@ -692,5 +740,456 @@ fun E2ESecurityDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun VoiceReelDialog(
+    transmissions: List<VoiceTransmission>,
+    currentlyPlayingId: String?,
+    mode: ConnectivityMode,
+    onPlayTransmission: (String) -> Unit,
+    onPlayLatest: () -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val currentTheme = ModeThemes.get(mode)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .wrapContentHeight(),
+            shape = RoundedCornerShape(26.dp),
+            color = WalkieCard,
+            border = BorderStroke(1.2.dp, WalkieCardBorder),
+            shadowElevation = 24.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Top Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(currentTheme.primaryColor.copy(alpha = 0.15f))
+                                .border(1.dp, currentTheme.primaryColor.copy(alpha = 0.4f), RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.GraphicEq,
+                                contentDescription = "Audio Reel",
+                                tint = currentTheme.primaryColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "TACTICAL AUDIO REEL",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = WalkieTextPrimary,
+                                letterSpacing = 0.8.sp
+                            )
+                            Text(
+                                text = "BLACKBOX ROLLING BUFFER • 20 SLOTS",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 9.sp,
+                                color = WalkieTextSecondary,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                    }
+
+                    // Count Badge
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (transmissions.isNotEmpty()) StatusReady.copy(alpha = 0.15f) else WalkieButton,
+                        border = BorderStroke(1.dp, if (transmissions.isNotEmpty()) StatusReady.copy(alpha = 0.5f) else WalkieCardBorder)
+                    ) {
+                        Text(
+                            text = if (transmissions.isNotEmpty()) "${transmissions.size} SAVED" else "EMPTY",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (transmissions.isNotEmpty()) StatusReady else WalkieTextMuted,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                // Quick Play / Stop Action Button
+                if (transmissions.isNotEmpty()) {
+                    val isAnyPlaying = currentlyPlayingId != null
+                    val quickBtnScale by animateFloatAsState(
+                        targetValue = if (isAnyPlaying) 1.02f else 1f,
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 550f),
+                        label = "quickReplayScale"
+                    )
+
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onPlayLatest()
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isAnyPlaying) WalkieAmber.copy(alpha = 0.18f) else WalkieButton,
+                        border = BorderStroke(1.2.dp, if (isAnyPlaying) WalkieAmber else currentTheme.primaryColor.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                scaleX = quickBtnScale
+                                scaleY = quickBtnScale
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 11.dp, horizontal = 14.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isAnyPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                contentDescription = if (isAnyPlaying) "Stop" else "Quick Replay",
+                                tint = if (isAnyPlaying) WalkieAmber else currentTheme.primaryColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isAnyPlaying) "STOP ACTIVE PLAYBACK" else "⚡ QUICK REPLAY LAST TRANSMISSION",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isAnyPlaying) WalkieAmber else currentTheme.primaryColor,
+                                letterSpacing = 0.6.sp
+                            )
+                        }
+                    }
+                }
+
+                // Main Transmissions List or Empty State
+                if (transmissions.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(130.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(WalkieDeviceBody)
+                            .border(1.dp, WalkieCardBorder, RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MicNone,
+                                contentDescription = "Empty",
+                                tint = WalkieTextMuted,
+                                modifier = Modifier.size(26.dp)
+                            )
+                            Text(
+                                text = "NO RECORDED TRANSMISSIONS",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = WalkieTextSecondary
+                            )
+                            Text(
+                                text = "Squad voice audio sent or received will automatically buffer here for instant replay.",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 10.sp,
+                                color = WalkieTextMuted,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 14.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(transmissions, key = { it.id }) { item ->
+                            val isItemPlaying = currentlyPlayingId == item.id
+                            ReelItemCard(
+                                item = item,
+                                isPlaying = isItemPlaying,
+                                themeColor = currentTheme.primaryColor,
+                                onTogglePlay = { onPlayTransmission(item.id) }
+                            )
+                        }
+                    }
+                }
+
+                // Footer Row: Clear & Dismiss Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (transmissions.isNotEmpty()) {
+                        Surface(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onClear()
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = WalkieButton,
+                            border = BorderStroke(1.dp, StatusOff.copy(alpha = 0.5f)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Clear",
+                                        tint = StatusOff,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "CLEAR REEL",
+                                        fontFamily = SpaceGrotesk,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = StatusOff
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onDismiss()
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = WalkieDeviceBody,
+                        border = BorderStroke(1.dp, WalkieCardBorder),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "DISMISS",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = WalkieTextMuted
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReelItemCard(
+    item: VoiceTransmission,
+    isPlaying: Boolean,
+    themeColor: Color,
+    onTogglePlay: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val timeFormatted = remember(item.timestamp) {
+        SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(item.timestamp))
+    }
+    val durationFormatted = remember(item.durationMs) {
+        String.format(Locale.US, "%.1fs", item.durationMs / 1000f)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (isPlaying) themeColor.copy(alpha = 0.12f) else WalkieButton,
+        border = BorderStroke(1.dp, if (isPlaying) themeColor else WalkieCardBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left: Avatar + Info
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(if (item.isSelf) themeColor.copy(alpha = 0.2f) else WalkieDeviceBodyLight)
+                        .border(1.dp, if (item.isSelf) themeColor else WalkieCardBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = item.speakerName.take(1).uppercase(),
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (item.isSelf) themeColor else WalkieTextPrimary
+                    )
+                }
+
+                Column {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = item.speakerName,
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WalkieTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (item.isSelf) {
+                            Text(
+                                text = "(You)",
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 10.sp,
+                                color = WalkieTextSecondary
+                            )
+                        }
+                    }
+                    Text(
+                        text = timeFormatted,
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 9.sp,
+                        color = WalkieTextMuted
+                    )
+                }
+            }
+
+            // Right: Duration + Waveform + Play/Stop Button
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Duration Pill
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = WalkieDeviceBody,
+                    border = BorderStroke(1.dp, WalkieCardBorder)
+                ) {
+                    Text(
+                        text = durationFormatted,
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WalkieTextSecondary,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                // Mini Waveform Equalizer
+                MiniWaveformBars(isPlaying = isPlaying, activeColor = themeColor)
+
+                // Play / Stop Button
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onTogglePlay()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isPlaying) WalkieAmber.copy(alpha = 0.2f) else themeColor.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, if (isPlaying) WalkieAmber else themeColor.copy(alpha = 0.5f)),
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Stop" else "Play",
+                            tint = if (isPlaying) WalkieAmber else themeColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MiniWaveformBars(
+    isPlaying: Boolean,
+    activeColor: Color
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "waveform")
+    val h1 by infiniteTransition.animateFloat(
+        initialValue = 4f,
+        targetValue = if (isPlaying) 16f else 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(260, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "w1"
+    )
+    val h2 by infiniteTransition.animateFloat(
+        initialValue = 8f,
+        targetValue = if (isPlaying) 20f else 8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(340, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "w2"
+    )
+    val h3 by infiniteTransition.animateFloat(
+        initialValue = 6f,
+        targetValue = if (isPlaying) 18f else 6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(220, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "w3"
+    )
+
+    Row(
+        modifier = Modifier.width(20.dp).height(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val barColor = if (isPlaying) activeColor else WalkieTextMuted.copy(alpha = 0.4f)
+        Box(modifier = Modifier.width(3.dp).height(h1.dp).clip(RoundedCornerShape(1.dp)).background(barColor))
+        Box(modifier = Modifier.width(3.dp).height(h2.dp).clip(RoundedCornerShape(1.dp)).background(barColor))
+        Box(modifier = Modifier.width(3.dp).height(h3.dp).clip(RoundedCornerShape(1.dp)).background(barColor))
     }
 }

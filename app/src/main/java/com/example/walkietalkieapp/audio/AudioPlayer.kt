@@ -97,39 +97,7 @@ class AudioPlayer(private val context: Context? = null) {
     }
 
     fun replayLastTransmissions() {
-        val bufferCopy = synchronized(replayBuffer) { replayBuffer.toList() }
-        if (bufferCopy.isEmpty()) return
-
-        Thread {
-            try {
-                val tempFormat = AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-
-                val tempAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-
-                val replayTrack = AudioTrack.Builder()
-                    .setAudioAttributes(tempAttributes)
-                    .setAudioFormat(tempFormat)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(bufferSize)
-                    .build()
-
-                replayTrack.play()
-                for (chunk in bufferCopy) {
-                    replayTrack.write(chunk, 0, chunk.size)
-                }
-                replayTrack.stop()
-                replayTrack.release()
-            } catch (e: Exception) {
-                Log.e(TAG, "Replay failed", e)
-            }
-        }.start()
+        VoiceHistoryManager.playLatest()
     }
 
     fun setMuted(value: Boolean) {
