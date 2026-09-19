@@ -1,0 +1,361 @@
+package com.example.walkietalkieapp.ui.walkie
+
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.walkietalkieapp.ui.theme.*
+import kotlin.math.PI
+import kotlin.math.sin
+
+enum class ConnectionStatus {
+    OFF, SEARCHING, READY, CONNECTED
+}
+
+enum class TalkingState {
+    IDLE, YOU_TALKING, OTHER_TALKING, LISTENING
+}
+
+data class DisplayDevice(
+    val name: String,
+    val avatar: String,
+    val online: Boolean
+)
+
+@Composable
+fun DisplayPanel(
+    status: ConnectionStatus,
+    talkingState: TalkingState,
+    channelName: String,
+    connectivityMode: ConnectivityMode,
+    pairedDevice: String = "",
+    otherUser: String = "",
+    isWheelActive: Boolean = false,
+    wheelDeviceIndex: Int = 0,
+    pairedDevices: List<DisplayDevice> = emptyList(),
+    onCodeClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val currentTheme = ModeThemes.get(connectivityMode)
+    val isTalking = talkingState == TalkingState.YOU_TALKING || talkingState == TalkingState.OTHER_TALKING
+
+    // Pulsing animation for scanning status dot (isolated to draw phase)
+    val infiniteTransition = rememberInfiniteTransition(label = "displayInfinite")
+    val scanningAlpha = infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scanningAlpha"
+    )
+
+    // Mic glow pulse when talking (isolated to draw phase)
+    val micPulseAlpha = infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(750, easing = EaseInOut),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "micPulseAlpha"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .shadow(
+                elevation = 6.dp,
+                shape = RoundedCornerShape(18.dp),
+                ambientColor = currentTheme.primaryColor,
+                spotColor = currentTheme.primaryColor
+            )
+            .clip(RoundedCornerShape(18.dp))
+            .background(currentTheme.gradient)
+            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(18.dp))
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .height(126.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Top Row: Status Dot + Label & Connectivity Badge
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Status Indicator
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val dotColor = when (status) {
+                        ConnectionStatus.OFF -> StatusOff
+                        ConnectionStatus.SEARCHING -> StatusSearching
+                        ConnectionStatus.READY -> StatusReady
+                        ConnectionStatus.CONNECTED -> StatusReady
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                alpha = if (status == ConnectionStatus.SEARCHING) scanningAlpha.value else 1f
+                            }
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(dotColor)
+                    )
+
+                    val statusText = when (status) {
+                        ConnectionStatus.OFF -> "OFF"
+                        ConnectionStatus.SEARCHING -> "SCANNING..."
+                        ConnectionStatus.READY -> "READY"
+                        ConnectionStatus.CONNECTED -> "CONNECTED"
+                    }
+
+                    Text(
+                        text = statusText,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        letterSpacing = 1.sp
+                    )
+                }
+
+                // Mode Badge
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.25f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val (modeIcon, modeLabel) = when (connectivityMode) {
+                        ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
+                        ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
+                        ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                    }
+
+                    Icon(
+                        imageVector = modeIcon,
+                        contentDescription = modeLabel,
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = modeLabel,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+
+            // Center: Channel / Squad Title OR Device Carousel
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                AnimatedContent(
+                    targetState = isWheelActive,
+                    transitionSpec = {
+                        (slideInVertically { it / 3 } + fadeIn())
+                            .togetherWith(slideOutVertically { -it / 3 } + fadeOut())
+                    },
+                    label = "centerContent"
+                ) { wheelActive ->
+                    if (wheelActive && pairedDevices.isNotEmpty()) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "SELECT DEVICE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White.copy(alpha = 0.6f),
+                                letterSpacing = 1.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val activeDevice = pairedDevices.getOrNull(wheelDeviceIndex) ?: pairedDevices.first()
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.Black.copy(alpha = 0.3f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = activeDevice.avatar,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Text(
+                                    text = activeDevice.name,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (activeDevice.online) StatusReady else StatusOff)
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = channelName,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White,
+                                letterSpacing = (-0.5).sp
+                            )
+                            if (status != ConnectionStatus.OFF && pairedDevice.isNotEmpty()) {
+                                Row(
+                                    modifier = Modifier.clickable(enabled = onCodeClick != null) {
+                                        onCodeClick?.invoke()
+                                    },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(if (pairedDevices.any { it.online }) StatusReady else StatusOff)
+                                    )
+                                    Text(
+                                        text = pairedDevice,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White.copy(alpha = 0.9f),
+                                        letterSpacing = 0.3.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bottom Row: Audio Equalizer Mic Bars & Speaking Status Text
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (isTalking) {
+                        AnimatedMicBars()
+                    }
+
+                    val talkingLabel = when (talkingState) {
+                        TalkingState.IDLE -> "No one talking"
+                        TalkingState.YOU_TALKING -> "You're talking"
+                        TalkingState.OTHER_TALKING -> if (otherUser.isNotEmpty()) "$otherUser is talking" else "Someone is talking"
+                        TalkingState.LISTENING -> "Listening..."
+                    }
+
+                    Text(
+                        text = talkingLabel,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White.copy(alpha = 0.85f)
+                    )
+                }
+
+                if (isTalking) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Microphone Active",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                alpha = micPulseAlpha.value
+                            }
+                            .size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AnimatedMicBars(modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "micBars")
+    val phase = infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2 * PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "micWavePhase"
+    )
+
+    androidx.compose.foundation.Canvas(modifier = modifier.size(width = 23.dp, height = 16.dp)) {
+        val currentPhase = phase.value
+        val barWidth = 3.dp.toPx()
+        val gap = 2.dp.toPx()
+        val maxHeight = size.height
+        val cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx())
+        val color = Color.White.copy(alpha = 0.85f)
+
+        for (i in 0 until 5) {
+            val scaleY = (0.35f + 0.65f * (sin(currentPhase + i * 0.8f) * 0.5f + 0.5f)).coerceIn(0.2f, 1f)
+            val barHeight = maxHeight * scaleY
+            val left = i * (barWidth + gap)
+            val top = maxHeight - barHeight
+            drawRoundRect(
+                color = color,
+                topLeft = androidx.compose.ui.geometry.Offset(left, top),
+                size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                cornerRadius = cornerRadius
+            )
+        }
+    }
+}

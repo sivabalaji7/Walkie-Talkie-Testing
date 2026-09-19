@@ -140,6 +140,7 @@ object SupabaseRealtimeManager {
         if (roomId.isEmpty()) return
         val cleanId = roomId.trim().uppercase()
         val cleanUsername = username.trim()
+        FloorManager.myUsername = cleanUsername
         leaveRoom()
 
         _socketUiState.update { 
@@ -272,7 +273,14 @@ object SupabaseRealtimeManager {
         if (activePeers.remove(key) != null) {
             Log.d(TAG, "Squad peer left: $clean")
             addLog("$clean left squad")
-            updateMemberList()
+            if (clean.equals(_socketUiState.value.lastSpeakerName, ignoreCase = true)) {
+                Log.d(TAG, "Active floor holder $clean left — resetting floor to IDLE")
+                FloorManager.handleFloorIdle()
+                updateMemberList(newSpeaker = null)
+                signalingListener?.onCallEnded()
+            } else {
+                updateMemberList()
+            }
             signalingListener?.onPeerLeft(clean)
         }
     }
@@ -356,19 +364,27 @@ object SupabaseRealtimeManager {
             }
             "floor-grant" -> {
                 val speaker = msg.sender
-                Log.d(TAG, "Floor locked by $speaker (isPriority=${msg.isPriority})")
-                if (msg.isPriority == true && FloorManager.floorStatus.value.state == FloorState.TRANSMITTING) {
-                    FloorManager.handleFloorRevoked()
-                }
-                FloorManager.handleFloorLocked(speaker, speaker, System.currentTimeMillis() + 60000)
+                Log.d(TAG, "Floor claim received from $speaker (isPriority=${msg.isPriority}, timestamp=${msg.timestamp})")
+                val expiresAt = if (msg.timestamp > 0) msg.timestamp + 20000L else System.currentTimeMillis() + 20000L
+                FloorManager.handleFloorClaimReceived(
+                    remoteSpeaker = speaker,
+                    remoteTimestamp = msg.timestamp,
+                    remoteIsPriority = msg.isPriority == true,
+                    expiresAt = expiresAt
+                )
                 updateMemberList(newSpeaker = speaker)
                 signalingListener?.onCallStarted()
             }
             "floor-release" -> {
-                Log.d(TAG, "Floor released by ${msg.sender}")
-                FloorManager.handleFloorIdle()
-                updateMemberList(newSpeaker = null)
-                signalingListener?.onCallEnded()
+                val currentSpeaker = _socketUiState.value.lastSpeakerName ?: FloorManager.floorStatus.value.currentSpeakerName
+                Log.d(TAG, "Floor release received from ${msg.sender} (currentSpeaker=$currentSpeaker)")
+                if (currentSpeaker == null || msg.sender.equals(currentSpeaker, ignoreCase = true) || msg.isPriority == true) {
+                    FloorManager.handleFloorIdle()
+                    updateMemberList(newSpeaker = null)
+                    signalingListener?.onCallEnded()
+                } else {
+                    Log.d(TAG, "Ignoring floor-release from ${msg.sender} because active speaker is $currentSpeaker")
+                }
             }
         }
     }
@@ -434,7 +450,7 @@ object SupabaseRealtimeManager {
         }
     }
 
-    fun sendStartVoice(isPriority: Boolean = false) {
+    fun sendStartVoice(isPriority: Boolean = false, timestamp: Long = System.currentTimeMillis()) {
         val myName = _socketUiState.value.username.trim()
         val roomId = _socketUiState.value.roomId
         if (myName.isNotEmpty() && roomId.isNotEmpty()) {
@@ -442,7 +458,7 @@ object SupabaseRealtimeManager {
                 type = "floor-grant",
                 sender = myName,
                 isPriority = isPriority,
-                timestamp = System.currentTimeMillis()
+                timestamp = timestamp
             ))
             updateMemberList(newSpeaker = myName)
             signalingListener?.onCallStarted()
@@ -464,7 +480,7 @@ object SupabaseRealtimeManager {
     }
 
     fun emitRequestFloor(isPriority: Boolean = false) {
-        FloorManager.handleFloorGranted(System.currentTimeMillis() + 60000)
+        FloorManager.requestFloor(isPriority)
     }
 
     fun emitReleaseFloor() {

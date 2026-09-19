@@ -2,6 +2,7 @@ package com.example.walkietalkieapp.ui
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -68,7 +70,7 @@ fun InternetSquadScreen(
     val isUserSpeaking = floorStatus.state == FloorState.TRANSMITTING
     var showSettings by remember { mutableStateOf(false) }
     var isOwner by remember { mutableStateOf(false) }
-    
+
     var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
     var approvedMembers by remember { mutableStateOf<List<String>>(emptyList()) }
     val coroutineScope = rememberCoroutineScope()
@@ -114,49 +116,65 @@ fun InternetSquadScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Section: Squad Name & Status
+            // Top Section: Squad Info & Navigation Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Settings Icon Button (Machined Pod)
                 IconButton(
                     onClick = { showSettings = true },
-                    modifier = Modifier.background(Color.White.copy(alpha = 0.05f), CircleShape)
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = "Squad Settings",
+                        tint = TactileColors.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
-                
+
+                // Center Squad Name & Channel Status Pills
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .background(Color(0xFF6366F1).copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        Surface(
+                            color = TactileColors.primaryContainer.copy(alpha = 0.15f),
+                            shape = TactileShapes.small
                         ) {
                             Text(
                                 text = "INTERNET",
+                                fontFamily = SpaceGrotesk,
                                 fontSize = 10.sp,
-                                fontWeight = FontWeight.Black,
-                                color = Color(0xFF818CF8)
+                                fontWeight = FontWeight.Bold,
+                                color = TactileColors.primary,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (socketUiState.roomName.isNotEmpty()) socketUiState.roomName.uppercase() else "SQUAD: ${socketUiState.roomId}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White,
-                            letterSpacing = 1.sp
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = TactileColors.onSurface,
+                            letterSpacing = 0.5.sp
                         )
                         if (isOwner) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
-                                color = Color(0xFFFFA000).copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(6.dp)
+                                color = TactileColors.primaryContainer.copy(alpha = 0.2f),
+                                shape = TactileShapes.small
                             ) {
                                 Text(
                                     text = "👑",
@@ -166,9 +184,11 @@ fun InternetSquadScreen(
                             }
                         }
                     }
+
+                    // Status Indicator Row (Valour Link + Krisp AI + Voice Mesh Link)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 6.dp)
                     ) {
                         val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsStateWithLifecycle()
                         val internetLinkState = allLinks[com.example.walkietalkieapp.dna.model.TransportType.Internet]
@@ -193,32 +213,43 @@ fun InternetSquadScreen(
                         if (isKrispAiEnabled) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
-                                color = Color(0xFF00E676).copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.4f))
+                                color = TactileColors.statusActive.copy(alpha = 0.15f),
+                                shape = TactileShapes.pill,
+                                modifier = Modifier.border(1.dp, TactileColors.statusActive.copy(alpha = 0.3f), TactileShapes.pill)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                 ) {
-                                    Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(10.dp))
+                                    Icon(
+                                        Icons.Default.GraphicEq,
+                                        contentDescription = null,
+                                        tint = TactileColors.statusActive,
+                                        modifier = Modifier.size(10.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    Text("KRISP AI", color = Color(0xFF00E676), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = "KRISP AI",
+                                        color = TactileColors.statusActive,
+                                        fontFamily = SpaceGrotesk,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
 
-                        // WebRTC Cross-Network Voice Link Live Status
+                        // WebRTC Voice Link Live Status
                         val voiceLink = socketUiState.voiceLinkState
                         val isMeshUp = voiceLink == "CONNECTED"
                         val isMeshLinking = voiceLink == "LINKING"
                         val isMeshFailed = voiceLink == "FAILED"
-                        
+
                         val linkColor = when {
-                            isMeshUp -> Color(0xFF00E676)
-                            isMeshLinking -> Color(0xFFFFB300)
-                            isMeshFailed -> Color(0xFFFF5252)
-                            else -> Color.White.copy(alpha = 0.5f)
+                            isMeshUp -> TactileColors.statusActive
+                            isMeshLinking -> TactileColors.primaryContainer
+                            isMeshFailed -> TactileColors.error
+                            else -> TactileColors.onSecondaryContainer
                         }
                         val linkText = when {
                             isMeshUp -> "VOICE READY"
@@ -230,18 +261,19 @@ fun InternetSquadScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             color = linkColor.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, linkColor.copy(alpha = 0.4f)),
-                            modifier = Modifier.clickable {
-                                if (isMeshFailed || !isMeshUp) {
-                                    vibrate()
-                                    onRestartIce()
+                            shape = TactileShapes.pill,
+                            modifier = Modifier
+                                .border(1.dp, linkColor.copy(alpha = 0.35f), TactileShapes.pill)
+                                .clickable {
+                                    if (isMeshFailed || !isMeshUp) {
+                                        vibrate()
+                                        onRestartIce()
+                                    }
                                 }
-                            }
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                             ) {
                                 Icon(
                                     imageVector = if (isMeshUp) Icons.Default.CheckCircle else if (isMeshFailed) Icons.Default.Refresh else Icons.Default.Sync,
@@ -250,49 +282,103 @@ fun InternetSquadScreen(
                                     modifier = Modifier.size(10.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
-                                Text(linkText, color = linkColor, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = linkText,
+                                    color = linkColor,
+                                    fontFamily = SpaceGrotesk,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
                 }
 
+                // Share Button (Machined Pod)
                 IconButton(
                     onClick = { onShare(socketUiState.roomId) },
-                    modifier = Modifier.background(Color.White.copy(alpha = 0.05f), CircleShape)
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
-                    Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Share Squad Code",
+                        tint = TactileColors.onSurface,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 
-            // Floor Status Banner
-            Spacer(modifier = Modifier.height(12.dp))
+            // Active Transmission Floor Banner
+            Spacer(modifier = Modifier.height(14.dp))
             ActiveTransmissionBanner(floorStatus = floorStatus)
 
+            // Pending Join Requests for Owner
             if (pendingRequests.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFA000).copy(alpha = 0.2f)).border(1.dp, Color(0xFFFFA000), RoundedCornerShape(12.dp)).padding(12.dp)) {
-                    Text("${pendingRequests.size} Pending Request(s)", color = Color(0xFFFFA000), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    pendingRequests.forEach { req ->
-                        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(req.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                IconButton(onClick = { 
-                                    coroutineScope.launch { 
-                                        com.example.walkietalkieapp.auth.SupabaseRoomManager.approveRequest(req.roomId, req.userId)
-                                        fetchPending()
-                                        fetchApprovedMembers()
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    color = TactileColors.surfaceContainerLow,
+                    shape = TactileShapes.tile,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, TactileColors.primaryContainer.copy(alpha = 0.5f), TactileShapes.tile)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "${pendingRequests.size} PENDING REQUEST(S)",
+                            fontFamily = SpaceGrotesk,
+                            color = TactileColors.primary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                        pendingRequests.forEach { req ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = req.username,
+                                    fontFamily = SpaceGrotesk,
+                                    color = TactileColors.onSurface,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    IconButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                com.example.walkietalkieapp.auth.SupabaseRoomManager.approveRequest(req.roomId, req.userId)
+                                                fetchPending()
+                                                fetchApprovedMembers()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .background(TactileColors.statusActive.copy(alpha = 0.2f), CircleShape)
+                                    ) {
+                                        Icon(Icons.Default.Check, contentDescription = "Accept", tint = TactileColors.statusActive, modifier = Modifier.size(16.dp))
                                     }
-                                }, modifier = Modifier.size(28.dp).background(Color(0xFF4CAF50), CircleShape)) {
-                                    Icon(Icons.Default.Check, contentDescription = "Accept", tint = Color.White, modifier = Modifier.size(16.dp))
-                                }
-                                IconButton(onClick = { 
-                                    coroutineScope.launch { 
-                                        com.example.walkietalkieapp.auth.SupabaseRoomManager.declineRequest(req.roomId, req.userId)
-                                        fetchPending()
-                                        fetchApprovedMembers()
+                                    IconButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                com.example.walkietalkieapp.auth.SupabaseRoomManager.declineRequest(req.roomId, req.userId)
+                                                fetchPending()
+                                                fetchApprovedMembers()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .background(TactileColors.error.copy(alpha = 0.2f), CircleShape)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Decline", tint = TactileColors.error, modifier = Modifier.size(16.dp))
                                     }
-                                }, modifier = Modifier.size(28.dp).background(Color(0xFFF44336), CircleShape)) {
-                                    Icon(Icons.Default.Close, contentDescription = "Decline", tint = Color.White, modifier = Modifier.size(16.dp))
                                 }
                             }
                         }
@@ -302,9 +388,9 @@ fun InternetSquadScreen(
 
             TimerView()
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            // Member List: Combined approved squad members with online/offline status
+            // Squad Member Avatars (LazyRow with speaking halo)
             val onlineUsernames = socketUiState.roomMembers.map { it.username.trim().lowercase() }.toSet()
             val allUsernames = (approvedMembers + socketUiState.roomMembers.map { it.username })
                 .filter { it.isNotBlank() }
@@ -318,10 +404,10 @@ fun InternetSquadScreen(
                 if (allUsernames.isEmpty()) {
                     item {
                         Text(
-                            "Waiting for squad members...",
-                            color = Color.White.copy(alpha = 0.2f),
-                            fontSize = 12.sp,
-                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            text = "Waiting for squad members to join...",
+                            fontFamily = Manrope,
+                            color = TactileColors.onSecondaryContainer.copy(alpha = 0.5f),
+                            fontSize = 12.sp
                         )
                     }
                 } else {
@@ -350,11 +436,15 @@ fun InternetSquadScreen(
             Spacer(modifier = Modifier.weight(1f))
 
             // Center Speaker Indicator
-            InternetSpeakingIndicator(floorStatus = floorStatus, isOthersSpeaking = isOthersSpeaking, socketUiState = socketUiState)
+            InternetSpeakingIndicator(
+                floorStatus = floorStatus,
+                isOthersSpeaking = isOthersSpeaking,
+                socketUiState = socketUiState
+            )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // PTT Button with Floor Control State
+            // Signature Tactile PTT Button
             InternetPushToTalkButton(
                 floorStatus = floorStatus,
                 isConnected = socketUiState.isConnected,
@@ -377,23 +467,35 @@ fun InternetSquadScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.weight(1.2f))
+            Spacer(modifier = Modifier.weight(1f))
 
-            // Bottom Controls
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+            // Leave Squad Action Button
+            Surface(
+                onClick = onLeave,
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.pill,
+                modifier = Modifier
+                    .border(1.dp, TactileColors.error.copy(alpha = 0.35f), TactileShapes.pill)
             ) {
-                Button(
-                    onClick = onLeave,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252).copy(alpha = 0.1f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.height(48.dp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                    Icon(
+                        Icons.AutoMirrored.Filled.ExitToApp,
+                        contentDescription = null,
+                        tint = TactileColors.error,
+                        modifier = Modifier.size(16.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("LEAVE SQUAD", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        text = "LEAVE SQUAD",
+                        color = TactileColors.error,
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.5.sp
+                    )
                 }
             }
         }
@@ -402,80 +504,89 @@ fun InternetSquadScreen(
         if (showSettings) {
             ModalBottomSheet(
                 onDismissRequest = { showSettings = false },
-                containerColor = Color(0xFF1E2124),
-                dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Gray) }
+                containerColor = TactileColors.surfaceContainerLow,
+                dragHandle = { BottomSheetDefaults.DragHandle(color = TactileColors.outlineVariant) }
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 36.dp)
                 ) {
-                    Text("Squad Settings", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(24.dp))
-                    
+                    Text(
+                        text = "Squad Controls",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 20.sp,
+                        color = TactileColors.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+
                     SettingsItem(
                         icon = Icons.Default.Bolt,
                         title = "Whisper Mode",
-                        subtitle = "Send a quick 2-second voice burst",
-                        color = Color(0xFF9C27B0), // Purple
-                        onClick = { 
+                        subtitle = "Transmit a quick 2-second voice burst",
+                        color = TactileColors.primaryContainer,
+                        onClick = {
                             onWhisper()
                             showSettings = false
                         }
                     )
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     SettingsItem(
                         icon = Icons.Default.Refresh,
                         title = "Replay Last 10s",
-                        subtitle = "Play back the most recent incoming voice audio",
-                        color = Color(0xFFFFA000),
-                        onClick = { 
+                        subtitle = "Play back the most recent incoming voice transmission",
+                        color = TactileColors.primary,
+                        onClick = {
                             onReplay()
                             showSettings = false
                         }
                     )
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     SettingsItem(
                         icon = Icons.Default.GraphicEq,
-                        title = "✨ Krisp AI Denoising",
-                        subtitle = if (isKrispAiEnabled) "Active: Neural background & transient noise filter" else "Standard audio filtering",
-                        color = if (isKrispAiEnabled) Color(0xFF00E676) else Color.Gray,
+                        title = "Krisp AI Denoising",
+                        subtitle = if (isKrispAiEnabled) "Active neural transient & background noise filter" else "Standard audio filter",
+                        color = if (isKrispAiEnabled) TactileColors.statusActive else TactileColors.onSecondaryContainer,
                         onClick = { onKrispAiToggle(!isKrispAiEnabled) }
                     )
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     SettingsItem(
                         icon = Icons.Default.BatterySaver,
                         title = "Battery Saver",
-                        subtitle = if (isBatterySaverEnabled) "Auto-idle disconnect enabled" else "Always stay connected",
-                        color = if (isBatterySaverEnabled) Color(0xFF4CAF50) else Color.Gray,
+                        subtitle = if (isBatterySaverEnabled) "Auto-idle disconnect enabled" else "Always stay connected in foreground",
+                        color = if (isBatterySaverEnabled) TactileColors.statusActive else TactileColors.onSecondaryContainer,
                         onClick = { onBatterySaverToggle(!isBatterySaverEnabled) }
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     SettingsItem(
                         icon = Icons.Default.Share,
-                        title = "Invite Friends",
-                        subtitle = "Share squad code: ${socketUiState.roomId}",
-                        color = Color(0xFF2196F3),
-                        onClick = { 
+                        title = "Share Squad Code",
+                        subtitle = "Invite team with code: ${socketUiState.roomId}",
+                        color = TactileColors.statusConnecting,
+                        onClick = {
                             onShare(socketUiState.roomId)
                             showSettings = false
                         }
                     )
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     SettingsItem(
-                        icon = Icons.Default.Settings,
-                        title = "⚡ Fix Audio Issue",
-                        subtitle = "Manually refresh connection if audio drops",
-                        color = Color.Gray,
-                        onClick = { 
+                        icon = Icons.Default.Sync,
+                        title = "Refresh Audio Link",
+                        subtitle = "Restart ICE signaling if remote audio drops",
+                        color = TactileColors.onSecondaryContainer,
+                        onClick = {
                             onRestartIce()
                             showSettings = false
                         }
@@ -484,31 +595,14 @@ fun InternetSquadScreen(
             }
         }
 
-        // Animated Notification Overlay
-        AnimatedVisibility(
-            visible = notificationMessage != null,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 90.dp)
-        ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2124)),
-                shape = RoundedCornerShape(24.dp),
-                elevation = CardDefaults.cardElevation(8.dp)
+        // Notification Chip
+        if (notificationMessage != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 80.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(modifier = Modifier.size(8.dp).background(Color(0xFF4CAF50), CircleShape))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = notificationMessage ?: "",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                NotificationBanner(message = notificationMessage)
             }
         }
     }
@@ -526,60 +620,58 @@ fun ActiveTransmissionBanner(floorStatus: FloorStatus) {
 
     val (bgColor, borderColor, text, textColor, iconColor) = when (floorStatus.state) {
         FloorState.IDLE -> FloorBannerConfig(
-            Color(0xFF1E2126),
-            Color.White.copy(alpha = 0.08f),
-            "📻 CHANNEL OPEN • HOLD TO TALK",
-            Color.White.copy(alpha = 0.7f),
-            Color(0xFF4CAF50)
+            TactileColors.surfaceContainerLow,
+            TactileColors.ghostBorder,
+            "CHANNEL OPEN • READY",
+            TactileColors.onSurfaceVariant,
+            TactileColors.primaryContainer
         )
         FloorState.REQUESTING -> FloorBannerConfig(
-            Color(0xFFFFA000).copy(alpha = 0.15f),
-            Color(0xFFFFA000).copy(alpha = 0.6f),
-            "⏳ ACQUIRING CHANNEL...",
-            Color(0xFFFFA000),
-            Color(0xFFFFA000)
+            TactileColors.primaryContainer.copy(alpha = 0.15f),
+            TactileColors.primaryContainer.copy(alpha = 0.6f),
+            "ACQUIRING CHANNEL...",
+            TactileColors.primary,
+            TactileColors.primaryContainer
         )
-        FloorState.TRANSMITTING -> {
-            FloorBannerConfig(
-                Color(0xFF4CAF50).copy(alpha = 0.2f),
-                Color(0xFF4CAF50),
-                "🔴 TRANSMITTING • LIVE",
-                Color(0xFF4CAF50),
-                Color(0xFF4CAF50)
-            )
-        }
+        FloorState.TRANSMITTING -> FloorBannerConfig(
+            TactileColors.primaryContainer.copy(alpha = 0.2f),
+            TactileColors.primaryContainer,
+            "TRANSMITTING • LIVE",
+            TactileColors.primary,
+            TactileColors.primaryContainer
+        )
         FloorState.RECEIVING -> {
             val name = floorStatus.currentSpeakerName ?: "MEMBER"
             FloorBannerConfig(
-                Color(0xFF2196F3).copy(alpha = 0.15f),
-                Color(0xFF2196F3).copy(alpha = 0.6f),
-                "🟢 $name IS TRANSMITTING",
-                Color(0xFF2196F3),
-                Color(0xFF2196F3)
+                TactileColors.statusConnecting.copy(alpha = 0.15f),
+                TactileColors.statusConnecting.copy(alpha = 0.5f),
+                "$name IS TRANSMITTING",
+                TactileColors.statusConnecting,
+                TactileColors.statusConnecting
             )
         }
         FloorState.BUSY_BLOCKED -> {
             val name = floorStatus.currentSpeakerName ?: "SOMEONE"
             FloorBannerConfig(
-                Color(0xFFE53935).copy(alpha = 0.15f),
-                Color(0xFFE53935).copy(alpha = 0.6f),
-                "🔒 CHANNEL BUSY • $name IS SPEAKING",
-                Color(0xFFFF5252),
-                Color(0xFFFF5252)
+                TactileColors.error.copy(alpha = 0.15f),
+                TactileColors.error.copy(alpha = 0.5f),
+                "CHANNEL BUSY • $name IS SPEAKING",
+                TactileColors.error,
+                TactileColors.error
             )
         }
     }
 
     Surface(
         color = bgColor,
-        shape = RoundedCornerShape(14.dp),
+        shape = TactileShapes.pill,
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+            .border(1.dp, borderColor, TactileShapes.pill)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -593,6 +685,7 @@ fun ActiveTransmissionBanner(floorStatus: FloorStatus) {
             Text(
                 text = text,
                 color = textColor,
+                fontFamily = SpaceGrotesk,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.5.sp
@@ -654,71 +747,61 @@ fun InternetPushToTalkButton(
     }
 
     val scale by animateFloatAsState(
-        targetValue = if (isTransmitting || isLocked) 0.95f else 1f,
+        targetValue = if (isTransmitting || isLocked) 0.96f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
         ),
         label = "scale"
     )
-    
+
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    
+
     val pulse1Scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 2.2f,
+        initialValue = 1f, targetValue = 2.1f,
         animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing), RepeatMode.Restart),
         label = "pulse1Scale"
     )
     val pulse1Alpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f, targetValue = 0f,
+        initialValue = 0.35f, targetValue = 0f,
         animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing), RepeatMode.Restart),
         label = "pulse1Alpha"
     )
 
     val pulse2Scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.8f,
-        animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing, delayMillis = 1000), RepeatMode.Restart),
+        initialValue = 1f, targetValue = 1.7f,
+        animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing, delayMillis = 900), RepeatMode.Restart),
         label = "pulse2Scale"
     )
     val pulse2Alpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing, delayMillis = 1000), RepeatMode.Restart),
+        initialValue = 0.35f, targetValue = 0f,
+        animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing, delayMillis = 900), RepeatMode.Restart),
         label = "pulse2Alpha"
-    )
-    
-    val breathingTransition = rememberInfiniteTransition(label = "breathing")
-    val breathingAlpha by breathingTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "breathingAlpha"
     )
 
     val ringColor = when {
-        isLocked -> Color(0xFF00E676)
-        isTransmitting -> Color(0xFF4CAF50)
-        isRequesting -> Color(0xFFFFA000)
-        isBusy -> Color(0xFFE53935)
-        else -> Color.White.copy(alpha = 0.1f)
+        isLocked -> TactileColors.statusActive
+        isTransmitting -> TactileColors.primaryContainer
+        isRequesting -> TactileColors.primary
+        isBusy -> TactileColors.error
+        else -> TactileColors.ghostBorder
     }
 
     val buttonGradient = when {
-        isLocked -> listOf(Color(0xFF00E676), Color(0xFF2E7D32))
-        isTransmitting -> listOf(Color(0xFF66BB6A), Color(0xFF43A047))
-        isRequesting -> listOf(Color(0xFFFFA000), Color(0xFFFF8F00))
-        isBusy -> listOf(Color(0xFF263238), Color(0xFF1E2124))
-        else -> listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
+        isLocked -> listOf(TactileColors.statusActive, Color(0xFF2E7D32))
+        isTransmitting -> listOf(TactileColors.primary, TactileColors.primaryContainer)
+        isRequesting -> listOf(TactileColors.primaryContainer, TactileColors.primaryGradientEnd)
+        isBusy -> listOf(TactileColors.surfaceContainerHigh, TactileColors.surfaceContainerLow)
+        else -> listOf(TactileColors.surfaceContainerHighest, TactileColors.surfaceContainerLow)
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(260.dp),
+            .height(250.dp),
         contentAlignment = Alignment.Center
     ) {
+        // Lock instruction overlay
         AnimatedVisibility(
             visible = (isTransmitting || isRequesting) && !isLocked,
             enter = fadeIn() + slideInVertically { it / 2 },
@@ -727,10 +810,11 @@ fun InternetPushToTalkButton(
         ) {
             val visualDragOffset = (dragOffsetY.coerceIn(-lockThresholdPx, 0f) * 0.5f).toInt()
             Surface(
-                color = Color(0xFF1E2124).copy(alpha = 0.95f),
-                shape = RoundedCornerShape(20.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.5f)),
-                modifier = Modifier.offset { IntOffset(0, visualDragOffset) }
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.pill,
+                modifier = Modifier
+                    .offset { IntOffset(0, visualDragOffset) }
+                    .border(1.dp, TactileColors.primaryContainer.copy(alpha = 0.5f), TactileShapes.pill)
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -739,13 +823,14 @@ fun InternetPushToTalkButton(
                     Icon(
                         imageVector = Icons.Default.Lock,
                         contentDescription = null,
-                        tint = Color(0xFF4CAF50),
-                        modifier = Modifier.size(16.dp)
+                        tint = TactileColors.primaryContainer,
+                        modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "SWIPE UP TO LOCK",
-                        color = Color.White,
+                        color = TactileColors.onSurface,
+                        fontFamily = SpaceGrotesk,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.8.sp
@@ -758,39 +843,60 @@ fun InternetPushToTalkButton(
             modifier = Modifier.align(Alignment.Center),
             contentAlignment = Alignment.Center
         ) {
+            // Expanding concentric transmission rings
             if (isTransmitting || isLocked) {
-                Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
-                Box(modifier = Modifier.size(170.dp).scale(pulse2Scale).background(Color(0xFF4CAF50).copy(alpha = pulse2Alpha), CircleShape))
+                Box(
+                    modifier = Modifier
+                        .size(175.dp)
+                        .scale(pulse1Scale)
+                        .background(TactileColors.primaryContainer.copy(alpha = pulse1Alpha), CircleShape)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(175.dp)
+                        .scale(pulse2Scale)
+                        .background(TactileColors.primaryContainer.copy(alpha = pulse2Alpha), CircleShape)
+                )
             } else if (isRequesting) {
-                Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFFFFA000).copy(alpha = pulse1Alpha), CircleShape))
+                Box(
+                    modifier = Modifier
+                        .size(175.dp)
+                        .scale(pulse1Scale)
+                        .background(TactileColors.primary.copy(alpha = pulse1Alpha), CircleShape)
+                )
             }
 
-            if (isTransmitting || isLocked) {
-                androidx.compose.foundation.Canvas(modifier = Modifier.size(186.dp)) {
-                    drawCircle(
-                        color = if (isLocked) Color(0xFF00E676) else Color(0xFF4CAF50),
-                        style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
+            // Machined outer ring chassis (Vintage hardware aesthetic)
+            Canvas(modifier = Modifier.size(200.dp)) {
+                drawCircle(
+                    color = Color(0xFF1E1D21),
+                    radius = size.minDimension / 2f
+                )
+                drawCircle(
+                    color = Color(0xFF353437).copy(alpha = 0.4f),
+                    radius = size.minDimension / 2f,
+                    style = Stroke(width = 1.dp.toPx())
+                )
+                drawCircle(
+                    color = Color(0xFF2A2A2D).copy(alpha = 0.3f),
+                    radius = (size.minDimension / 2f) - 10.dp.toPx(),
+                    style = Stroke(width = 1.dp.toPx())
+                )
             }
 
+            // Core PTT Button
             Box(
                 modifier = Modifier
-                    .size(170.dp)
+                    .size(165.dp)
                     .scale(scale)
                     .clip(CircleShape)
                     .background(brush = Brush.verticalGradient(colors = buttonGradient))
-                    .then(
-                        if (!isTransmitting && !isBusy && !isLocked) {
-                            Modifier.graphicsLayer(alpha = breathingAlpha)
-                        } else Modifier
-                    )
                     .border(
-                        width = if (isTransmitting || isLocked) 4.dp else 2.dp,
+                        width = if (isTransmitting || isLocked) 3.dp else 1.5.dp,
                         color = ringColor,
                         shape = CircleShape
                     )
-                    .pointerInput(isConnected, isLocked) {
+                    .pointerInput(isConnected, isLocked, isBusy) {
                         if (!isConnected) return@pointerInput
                         if (isLocked) {
                             detectTapGestures(
@@ -803,6 +909,14 @@ fun InternetPushToTalkButton(
                         } else {
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
+                                if (isBusy && !isOwner) {
+                                    onPress(false)
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        if (event.changes.all { !it.pressed }) break
+                                    }
+                                    return@awaitEachGesture
+                                }
                                 dragOffsetY = 0f
                                 onPress(false)
                                 var isReleased = false
@@ -839,14 +953,16 @@ fun InternetPushToTalkButton(
                             isBusy -> Icons.Default.Close
                             isRequesting -> Icons.Default.Bolt
                             else -> Icons.Default.Mic
-                        }, 
-                        contentDescription = null, 
-                        tint = if (isBusy) Color.Gray else Color.White, 
-                        modifier = Modifier
-                            .size(54.dp)
-                            .graphicsLayer(alpha = if (isTransmitting || isLocked) 1f else 0.85f)
+                        },
+                        contentDescription = null,
+                        tint = when {
+                            isTransmitting || isLocked -> Color(0xFF131315)
+                            isBusy -> TactileColors.onSecondaryContainer
+                            else -> TactileColors.onSurface
+                        },
+                        modifier = Modifier.size(48.dp)
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     val buttonText = when {
                         isLocked -> "LOCKED • ${lockSecondsRemaining}s"
                         isTransmitting -> {
@@ -858,16 +974,22 @@ fun InternetPushToTalkButton(
                         else -> "HOLD TO TALK"
                     }
                     Text(
-                        text = buttonText, 
-                        color = if (isBusy) Color.Gray else Color.White, 
-                        fontSize = 12.sp, 
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.2.sp
+                        text = buttonText,
+                        color = when {
+                            isTransmitting || isLocked -> Color(0xFF131315)
+                            isBusy -> TactileColors.onSecondaryContainer
+                            else -> TactileColors.onSurface
+                        },
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
                     )
                 }
             }
         }
 
+        // Tap to stop banner when locked
         AnimatedVisibility(
             visible = isLocked,
             enter = fadeIn() + scaleIn(),
@@ -880,13 +1002,19 @@ fun InternetPushToTalkButton(
                     dragOffsetY = 0f
                     onRelease()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.height(44.dp)
+                colors = ButtonDefaults.buttonColors(containerColor = TactileColors.error),
+                shape = TactileShapes.pill,
+                modifier = Modifier.height(42.dp)
             ) {
-                Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("TAP TO STOP (${lockSecondsRemaining}s)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(
+                    text = "TAP TO STOP (${lockSecondsRemaining}s)",
+                    color = Color.White,
+                    fontFamily = SpaceGrotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
             }
         }
     }
@@ -900,9 +1028,9 @@ fun InternetMemberItem(
     onReplay: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    
+
     val speakingScale by animateFloatAsState(
-        targetValue = if (isSpeaking) 1.15f else 1f,
+        targetValue = if (isSpeaking) 1.12f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -911,14 +1039,14 @@ fun InternetMemberItem(
     )
 
     val borderAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f, targetValue = 1f,
+        initialValue = 0.4f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "alpha"
     )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .padding(horizontal = 10.dp)
+            .padding(horizontal = 8.dp)
             .scale(speakingScale)
             .pointerInput(username) {
                 detectTapGestures(
@@ -929,82 +1057,89 @@ fun InternetMemberItem(
         Box(contentAlignment = Alignment.BottomEnd) {
             Box(
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(60.dp)
                     .border(
-                        width = if (isSpeaking) 3.dp else 1.dp,
+                        width = if (isSpeaking) 2.5.dp else 1.dp,
                         color = when {
-                            isSpeaking -> Color(0xFF4CAF50).copy(alpha = borderAlpha)
-                            isOnline -> Color.White.copy(alpha = 0.15f)
-                            else -> Color.White.copy(alpha = 0.05f)
+                            isSpeaking -> TactileColors.primaryContainer.copy(alpha = borderAlpha)
+                            isOnline -> TactileColors.outlineVariant.copy(alpha = 0.4f)
+                            else -> TactileColors.ghostBorder
                         },
                         shape = CircleShape
                     )
-                    .padding(4.dp)
+                    .padding(3.dp)
                     .clip(CircleShape)
                     .background(
                         brush = Brush.verticalGradient(
                             colors = if (isOnline) {
-                                listOf(Color(0xFF2C2F33), Color(0xFF1E2124))
+                                listOf(TactileColors.surfaceContainerHighest, TactileColors.surfaceContainerLow)
                             } else {
-                                listOf(Color(0xFF1A1C1E), Color(0xFF121315))
+                                listOf(TactileColors.surfaceContainerLow, TactileColors.surfaceContainerLowest)
                             }
                         )
                     ),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = username.take(1).uppercase(), 
+                    text = username.take(1).uppercase(),
                     color = when {
-                        isSpeaking -> Color.White
-                        isOnline -> Color.White.copy(alpha = 0.85f)
-                        else -> Color.White.copy(alpha = 0.3f)
-                    }, 
-                    fontWeight = FontWeight.ExtraBold, 
-                    fontSize = 22.sp
+                        isSpeaking -> TactileColors.primaryContainer
+                        isOnline -> TactileColors.onSurface
+                        else -> TactileColors.onSecondaryContainer.copy(alpha = 0.4f)
+                    },
+                    fontFamily = SpaceGrotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
                 )
-                
+
                 if (isSpeaking) {
                     WaveformSmall()
                 }
             }
-            
+
+            // Online / Offline status dot
             Box(
                 modifier = Modifier
-                    .size(14.dp)
-                    .background(Color(0xFF0F1115), CircleShape)
+                    .size(13.dp)
+                    .background(TactileColors.surfaceContainerLowest, CircleShape)
                     .padding(2.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(
-                            if (isOnline) Color(0xFF4CAF50) else Color(0xFFE53935),
+                            if (isOnline) TactileColors.statusActive else TactileColors.onSecondaryContainer,
                             CircleShape
                         )
                 )
             }
         }
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
+
+        Spacer(modifier = Modifier.height(6.dp))
+
         Text(
-            text = username, 
+            text = username,
             color = when {
-                isSpeaking -> Color.White
-                isOnline -> Color.White.copy(alpha = 0.85f)
-                else -> Color.White.copy(alpha = 0.35f)
-            }, 
-            fontSize = 12.sp, 
+                isSpeaking -> TactileColors.primary
+                isOnline -> TactileColors.onSurface
+                else -> TactileColors.onSecondaryContainer.copy(alpha = 0.5f)
+            },
+            fontFamily = Manrope,
+            fontSize = 11.sp,
             fontWeight = if (isSpeaking || isOnline) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
 
 @Composable
-fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolean, socketUiState: SocketUiState) {
+fun InternetSpeakingIndicator(
+    floorStatus: FloorStatus,
+    isOthersSpeaking: Boolean,
+    socketUiState: SocketUiState
+) {
     var currentTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
-        while(true) {
+        while (true) {
             delay(1000)
             currentTime = System.currentTimeMillis()
         }
@@ -1012,7 +1147,7 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
 
     Box(
         modifier = Modifier
-            .height(100.dp)
+            .height(84.dp)
             .fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
@@ -1036,12 +1171,13 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
             when (state) {
                 "YOU" -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingDot(Color(0xFF4CAF50))
+                        PulsingDot(TactileColors.primaryContainer)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "YOU ARE TRANSMITTING",
-                            color = Color(0xFF4CAF50),
-                            fontWeight = FontWeight.ExtraBold,
+                            text = "YOU ARE TRANSMITTING",
+                            color = TactileColors.primary,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
@@ -1049,12 +1185,13 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
                 }
                 "REQUESTING" -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingDot(Color(0xFFFFA000))
+                        PulsingDot(TactileColors.primaryContainer)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "ACQUIRING CHANNEL...",
-                            color = Color(0xFFFFA000),
-                            fontWeight = FontWeight.ExtraBold,
+                            text = "ACQUIRING CHANNEL...",
+                            color = TactileColors.primaryContainer,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
@@ -1068,15 +1205,16 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
                     val displayText = if (!speakerName.isNullOrBlank() && speakerName != socketUiState.username.uppercase()) {
                         "$speakerName IS SPEAKING"
                     } else {
-                        "SQUAD MEMBER SPEAKING"
+                        "SQUAD MEMBER TRANSMITTING"
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingDot(Color(0xFFF44336))
+                        PulsingDot(TactileColors.statusConnecting)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            displayText,
-                            color = Color(0xFFF44336),
-                            fontWeight = FontWeight.ExtraBold,
+                            text = displayText,
+                            color = TactileColors.statusConnecting,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
@@ -1085,20 +1223,21 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
                 else -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            "No one is talking...",
-                            color = Color.White.copy(alpha = 0.5f),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            letterSpacing = 0.5.sp
+                            text = "No one is talking...",
+                            color = TactileColors.onSurfaceVariant.copy(alpha = 0.6f),
+                            fontFamily = Manrope,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
                         )
-                        
+
                         val lastSpeaker = socketUiState.lastSpeakerName
                         if (lastSpeaker != null) {
                             val timeAgo = (currentTime - socketUiState.lastSpeakerTimestamp) / 1000
                             if (timeAgo < 60) {
                                 Text(
-                                    "Last: $lastSpeaker (${timeAgo}s ago)",
-                                    color = Color.White.copy(alpha = 0.3f),
+                                    text = "Last: $lastSpeaker (${timeAgo}s ago)",
+                                    color = TactileColors.onSecondaryContainer,
+                                    fontFamily = SpaceGrotesk,
                                     fontSize = 11.sp,
                                     modifier = Modifier.padding(top = 2.dp)
                                 )
@@ -1106,11 +1245,11 @@ fun InternetSpeakingIndicator(floorStatus: FloorStatus, isOthersSpeaking: Boolea
                         }
 
                         Text(
-                            "Hold the button to start the conversation 🎤",
-                            color = Color.White.copy(alpha = 0.3f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Normal,
-                            modifier = Modifier.padding(top = 12.dp)
+                            text = "Hold PTT button to transmit",
+                            color = TactileColors.onSecondaryContainer.copy(alpha = 0.6f),
+                            fontFamily = Manrope,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 8.dp)
                         )
                     }
                 }

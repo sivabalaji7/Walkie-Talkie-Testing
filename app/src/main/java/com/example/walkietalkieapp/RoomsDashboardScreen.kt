@@ -3,6 +3,7 @@ package com.example.walkietalkieapp
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,30 +14,37 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.RadioButtonChecked
-import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.window.Dialog
 import com.example.walkietalkieapp.auth.Room
 import com.example.walkietalkieapp.auth.RoomMember
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.auth.RoomResult
 import com.example.walkietalkieapp.auth.SupabaseRoomManager
+import com.example.walkietalkieapp.ui.Manrope
+import com.example.walkietalkieapp.ui.SpaceGrotesk
+import com.example.walkietalkieapp.ui.TactileColors
+import com.example.walkietalkieapp.ui.TactileShapes
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -97,78 +105,209 @@ fun RoomsDashboardScreen(
     }
 
     Scaffold(
-        containerColor = Color(0xFF0A0A0B),
+        containerColor = Color.Transparent,
         topBar = {
             if (showTopBar) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(Color(0xFF14161B))
-                            .border(1.dp, Color(0xFF262B35), RoundedCornerShape(20.dp))
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    Surface(
+                        color = TactileColors.surfaceContainerLow,
+                        shape = TactileShapes.pill,
+                        modifier = Modifier.border(1.dp, TactileColors.ghostBorder, TactileShapes.pill)
                     ) {
-                        Icon(Icons.Default.AccountCircle, contentDescription = null, tint = Color(0xFF00FF66), modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(text = currentUsername, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .background(TactileColors.primary, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = currentUsername,
+                                color = TactileColors.onSurface,
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         IconButton(
                             onClick = { refreshData() },
-                            modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF1E2126)).border(1.dp, Color(0xFF2E333D), CircleShape)
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(TactileColors.surfaceContainerLow)
+                                .border(1.dp, TactileColors.ghostBorder, CircleShape)
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Refresh",
+                                tint = TactileColors.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                         IconButton(
                             onClick = onLogout,
-                            modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF1E2126)).border(1.dp, Color(0xFF2E333D), CircleShape)
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(TactileColors.surfaceContainerLow)
+                                .border(1.dp, TactileColors.ghostBorder, CircleShape)
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Log Out", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.AutoMirrored.Filled.Logout,
+                                contentDescription = "Log Out",
+                                tint = TactileColors.error,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
             }
         },
         floatingActionButton = {
-            Column {
-                FloatingActionButton(
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(bottom = 8.dp)
+            ) {
+                // Secondary FAB: Join Room
+                SmallFloatingActionButton(
                     onClick = { showJoinDialog = true },
-                    containerColor = Color(0xFF1E2126),
-                    contentColor = Color.White,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    containerColor = TactileColors.surfaceContainerHighest,
+                    contentColor = TactileColors.onSurface,
+                    shape = TactileShapes.tile,
+                    modifier = Modifier.border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
                 ) {
-                    Icon(Icons.Default.LockOpen, contentDescription = "Join Room")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.LockOpen, contentDescription = "Join Squad", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "JOIN",
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
+
+                // Primary FAB: Create Room
                 FloatingActionButton(
                     onClick = { showCreateDialog = true },
-                    containerColor = Color(0xFF00FF66),
-                    contentColor = Color.Black
+                    containerColor = TactileColors.primaryContainer,
+                    contentColor = Color(0xFF131315),
+                    shape = TactileShapes.pill
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Create Room")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Create Squad", modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "CREATE SQUAD",
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
                 }
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp)) {
-            Text("Dashboard", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = Color.White)
-            Spacer(modifier = Modifier.height(24.dp))
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(horizontal = 20.dp)
+        ) {
+            // Screen Section Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "INTERNET SQUADS",
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        letterSpacing = 0.5.sp,
+                        color = TactileColors.onSurface
+                    )
+                    Text(
+                        text = "Cloud audio channels • Unlimited range",
+                        fontFamily = Manrope,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 11.sp,
+                        color = TactileColors.onSurfaceVariant
+                    )
+                }
+
+                IconButton(
+                    onClick = { refreshData() },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh",
+                        tint = TactileColors.onSecondaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
 
             if (isLoading) {
-                CircularProgressIndicator(color = Color(0xFF00FF66), modifier = Modifier.align(Alignment.CenterHorizontally))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = TactileColors.primaryContainer,
+                        modifier = Modifier.size(36.dp),
+                        strokeWidth = 3.dp
+                    )
+                }
             } else {
-                if (pendingRequests.isNotEmpty()) {
-                    Text("Pending Join Requests", color = Color.Gray, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyColumn {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp)
+                ) {
+                    // 1. Pending Join Requests Section
+                    if (pendingRequests.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "PENDING REQUESTS (${pendingRequests.size})",
+                                fontFamily = SpaceGrotesk,
+                                color = TactileColors.primary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                            )
+                        }
+
                         items(pendingRequests) { req ->
                             PendingRequestItem(
                                 req = req,
@@ -187,20 +326,71 @@ fun RoomsDashboardScreen(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(24.dp))
-                }
 
-                Text("My Squads", color = Color.Gray, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(8.dp))
-                if (myRooms.isEmpty()) {
-                    Text("You aren`t in any squads yet. Create or join one!", color = Color.Gray, fontSize = 14.sp)
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // 2. My Squads Section
+                    item {
+                        Text(
+                            text = "ACTIVE SQUADS (${myRooms.size})",
+                            fontFamily = SpaceGrotesk,
+                            color = TactileColors.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                        )
+                    }
+
+                    if (myRooms.isEmpty()) {
+                        item {
+                            Surface(
+                                color = TactileColors.surfaceContainerLow,
+                                shape = TactileShapes.tile,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(TactileColors.surfaceContainerHighest, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Group,
+                                            contentDescription = null,
+                                            tint = TactileColors.primary,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "No Squads Yet",
+                                        fontFamily = SpaceGrotesk,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp,
+                                        color = TactileColors.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Create a squad to talk with your team, or join using a room code.",
+                                        fontFamily = Manrope,
+                                        fontSize = 12.sp,
+                                        color = TactileColors.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    } else {
                         items(myRooms) { room ->
                             val isOwner = room.ownerId == currentUserId
                             val roomPendingCount = pendingRequests.count { it.roomId == room.id || it.roomCode == room.code }
                             RoomItem(
-                                room = room, 
+                                room = room,
                                 isOwner = isOwner,
                                 pendingCount = roomPendingCount,
                                 onClick = { onJoinRoom(room.code, room.name) },
@@ -223,146 +413,246 @@ fun RoomsDashboardScreen(
     // ── Dialog 1: Owner Options (Leave & Assign Owner vs Destroy Squad) ──
     if (showOwnerActionDialog && selectedRoomForAction != null) {
         val targetRoom = selectedRoomForAction!!
-        AlertDialog(
-            onDismissRequest = { if (!isActionInProgress) showOwnerActionDialog = false },
-            containerColor = Color(0xFF1E2126),
-            title = {
-                Column {
-                    Text("Squad Actions", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(targetRoom.name, color = Color(0xFF00FF66), fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
-                    // Option 1: Leave & Assign New Owner
-                    Surface(
-                        onClick = {
-                            showOwnerActionDialog = false
-                            showTransferDialog = true
-                            isLoadingMembers = true
-                            selectedNewOwner = null
-                            coroutineScope.launch {
-                                val membersRes = SupabaseRoomManager.getApprovedMembers(targetRoom.id)
-                                if (membersRes is RoomResult.Success) {
-                                    candidatesForNewOwner = membersRes.data.filter { it.userId != currentUserId }
+        Dialog(onDismissRequest = { if (!isActionInProgress) showOwnerActionDialog = false }) {
+            Surface(
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Squad Actions",
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        color = TactileColors.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = targetRoom.name,
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TactileColors.primary
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Option 1: Leave & Assign New Owner
+                        Surface(
+                            onClick = {
+                                showOwnerActionDialog = false
+                                showTransferDialog = true
+                                isLoadingMembers = true
+                                selectedNewOwner = null
+                                coroutineScope.launch {
+                                    val membersRes = SupabaseRoomManager.getApprovedMembers(targetRoom.id)
+                                    if (membersRes is RoomResult.Success) {
+                                        candidatesForNewOwner = membersRes.data.filter { it.userId != currentUserId }
+                                    }
+                                    isLoadingMembers = false
                                 }
-                                isLoadingMembers = false
-                            }
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF262B33),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            },
+                            shape = TactileShapes.tile,
+                            color = TactileColors.surfaceContainerHighest,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
                         ) {
-                            Box(
-                                modifier = Modifier.size(40.dp).background(Color(0xFF2196F3).copy(alpha = 0.2f), CircleShape),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF2196F3))
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(TactileColors.statusConnecting.copy(alpha = 0.15f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = TactileColors.statusConnecting,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Leave & Assign Owner",
+                                        fontFamily = SpaceGrotesk,
+                                        color = TactileColors.onSurface,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Transfer ownership to another member",
+                                        fontFamily = Manrope,
+                                        color = TactileColors.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Leave & Assign Owner", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("Transfer ownership to another member", color = Color.Gray, fontSize = 11.sp)
+                        }
+
+                        // Option 2: Destroy Squad
+                        Surface(
+                            onClick = {
+                                showOwnerActionDialog = false
+                                showDestroyDialog = true
+                            },
+                            shape = TactileShapes.tile,
+                            color = TactileColors.surfaceContainerHighest,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(TactileColors.error.copy(alpha = 0.15f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = TactileColors.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Destroy Squad",
+                                        fontFamily = SpaceGrotesk,
+                                        color = TactileColors.error,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Permanently delete and remove members",
+                                        fontFamily = Manrope,
+                                        color = TactileColors.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                         }
                     }
 
-                    // Option 2: Destroy Squad
-                    Surface(
-                        onClick = {
-                            showOwnerActionDialog = false
-                            showDestroyDialog = true
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF262B33),
-                        modifier = Modifier.fillMaxWidth()
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    TextButton(
+                        onClick = { showOwnerActionDialog = false },
+                        colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier.size(40.dp).background(Color(0xFFFF5252).copy(alpha = 0.2f), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5252))
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Destroy Squad", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                Text("Permanently delete and remove members", color = Color.Gray, fontSize = 11.sp)
-                            }
-                        }
+                        Text(text = "CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                 }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showOwnerActionDialog = false }) {
-                    Text("Cancel", color = Color.Gray)
-                }
             }
-        )
+        }
     }
 
     // ── Dialog 2: Transfer Ownership & Leave Dialog ──
     if (showTransferDialog && selectedRoomForAction != null) {
         val targetRoom = selectedRoomForAction!!
-        AlertDialog(
-            onDismissRequest = { if (!isActionInProgress) showTransferDialog = false },
-            containerColor = Color(0xFF1E2126),
-            title = {
-                Text("Transfer Ownership & Leave", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
-            text = {
-                Column {
+        Dialog(onDismissRequest = { if (!isActionInProgress) showTransferDialog = false }) {
+            Surface(
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Transfer Ownership & Leave",
+                        fontFamily = SpaceGrotesk,
+                        color = TactileColors.onSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     Text(
                         text = "Select an approved member to become the new owner of \"${targetRoom.name}\":",
-                        color = Color.White.copy(alpha = 0.8f),
+                        fontFamily = Manrope,
+                        color = TactileColors.onSurfaceVariant,
                         fontSize = 13.sp
                     )
+
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (isLoadingMembers) {
-                        Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = Color(0xFF00FF66))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(100.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = TactileColors.primaryContainer,
+                                modifier = Modifier.size(32.dp)
+                            )
                         }
                     } else if (candidatesForNewOwner.isEmpty()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(Color(0xFF262B33), RoundedCornerShape(12.dp))
+                                .background(TactileColors.surfaceContainerHighest, TactileShapes.tile)
+                                .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
                                 .padding(16.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFA000), modifier = Modifier.size(32.dp))
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = TactileColors.primaryContainer,
+                                modifier = Modifier.size(32.dp)
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("No Other Members", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(
+                                text = "No Other Members",
+                                fontFamily = SpaceGrotesk,
+                                color = TactileColors.onSurface,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "There are no other members in this squad. You can destroy the squad or wait for members to join.",
-                                color = Color.Gray,
+                                text = "There are no other members in this squad. You can destroy the squad instead.",
+                                fontFamily = Manrope,
+                                color = TactileColors.onSurfaceVariant,
                                 fontSize = 12.sp,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                textAlign = TextAlign.Center
                             )
                         }
                     } else {
                         LazyColumn(
-                            modifier = Modifier.heightIn(max = 240.dp),
+                            modifier = Modifier.heightIn(max = 220.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(candidatesForNewOwner) { member ->
                                 val isSelected = selectedNewOwner?.userId == member.userId
                                 Surface(
                                     onClick = { selectedNewOwner = member },
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSelected) Color(0xFF00FF66).copy(alpha = 0.15f) else Color(0xFF262B33),
-                                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00FF66)) else null,
+                                    shape = TactileShapes.tile,
+                                    color = if (isSelected) TactileColors.primaryContainer.copy(alpha = 0.15f) else TactileColors.surfaceContainerHighest,
+                                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, TactileColors.primaryContainer) else androidx.compose.foundation.BorderStroke(1.dp, TactileColors.ghostBorder),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
@@ -372,176 +662,321 @@ fun RoomsDashboardScreen(
                                         Icon(
                                             if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
                                             contentDescription = null,
-                                            tint = if (isSelected) Color(0xFF00FF66) else Color.Gray,
+                                            tint = if (isSelected) TactileColors.primaryContainer else TactileColors.onSecondaryContainer,
                                             modifier = Modifier.size(20.dp)
                                         )
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column {
-                                            Text(member.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                            Text("Approved Member", color = Color.Gray, fontSize = 11.sp)
+                                            Text(
+                                                text = member.username,
+                                                fontFamily = SpaceGrotesk,
+                                                color = TactileColors.onSurface,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Text(
+                                                text = "Approved Member",
+                                                fontFamily = Manrope,
+                                                color = TactileColors.onSurfaceVariant,
+                                                fontSize = 11.sp
+                                            )
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            },
-            confirmButton = {
-                if (candidatesForNewOwner.isNotEmpty()) {
-                    Button(
-                        onClick = {
-                            val newOwner = selectedNewOwner ?: return@Button
-                            isActionInProgress = true
-                            coroutineScope.launch {
-                                SupabaseRoomManager.transferOwnershipAndLeave(
-                                    roomId = targetRoom.id,
-                                    currentOwnerId = currentUserId,
-                                    newOwnerId = newOwner.userId
-                                )
-                                showTransferDialog = false
-                                isActionInProgress = false
-                                refreshData()
-                            }
-                        },
-                        enabled = selectedNewOwner != null && !isActionInProgress,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66), contentColor = Color.Black),
-                        shape = RoundedCornerShape(12.dp)
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isActionInProgress) {
-                            CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        TextButton(
+                            onClick = { showTransferDialog = false },
+                            enabled = !isActionInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
+                        ) {
+                            Text("CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        if (candidatesForNewOwner.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(TactileShapes.pill)
+                                    .background(
+                                        if (selectedNewOwner != null && !isActionInProgress) TactileColors.buttonGradient
+                                        else SolidColor(TactileColors.surfaceContainerHighest)
+                                    )
+                                    .clickable(enabled = selectedNewOwner != null && !isActionInProgress) {
+                                        val newOwner = selectedNewOwner ?: return@clickable
+                                        isActionInProgress = true
+                                        coroutineScope.launch {
+                                            SupabaseRoomManager.transferOwnershipAndLeave(
+                                                roomId = targetRoom.id,
+                                                currentOwnerId = currentUserId,
+                                                newOwnerId = newOwner.userId
+                                            )
+                                            showTransferDialog = false
+                                            isActionInProgress = false
+                                            refreshData()
+                                        }
+                                    }
+                                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isActionInProgress) {
+                                    CircularProgressIndicator(
+                                        color = Color(0xFF131315),
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Text(
+                                        text = "TRANSFER & LEAVE",
+                                        color = if (selectedNewOwner != null) Color(0xFF131315) else TactileColors.onSecondaryContainer,
+                                        fontFamily = SpaceGrotesk,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                }
+                            }
                         } else {
-                            Text("Transfer & Leave", fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = {
+                                    showTransferDialog = false
+                                    showDestroyDialog = true
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = TactileColors.error),
+                                shape = TactileShapes.pill
+                            ) {
+                                Text(
+                                    text = "DESTROY SQUAD",
+                                    color = Color.White,
+                                    fontFamily = SpaceGrotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
                         }
                     }
-                } else {
-                    Button(
-                        onClick = {
-                            showTransferDialog = false
-                            showDestroyDialog = true
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Destroy Squad Instead", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showTransferDialog = false },
-                    enabled = !isActionInProgress
-                ) {
-                    Text("Cancel", color = Color.Gray)
                 }
             }
-        )
+        }
     }
 
     // ── Dialog 3: Destroy Squad Confirmation Dialog ──
     if (showDestroyDialog && selectedRoomForAction != null) {
         val targetRoom = selectedRoomForAction!!
-        AlertDialog(
-            onDismissRequest = { if (!isActionInProgress) showDestroyDialog = false },
-            containerColor = Color(0xFF1E2126),
-            icon = {
-                Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(32.dp))
-            },
-            title = {
-                Text("Destroy Squad?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
-            text = {
-                Text(
-                    text = "Are you sure you want to permanently delete \"${targetRoom.name}\" (${targetRoom.code})?\n\nThis will remove all members and delete this squad for everyone. This cannot be undone.",
-                    color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 14.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        isActionInProgress = true
-                        coroutineScope.launch {
-                            SupabaseRoomManager.destroyRoom(targetRoom.id)
-                            showDestroyDialog = false
-                            isActionInProgress = false
-                            refreshData()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                    shape = RoundedCornerShape(12.dp),
-                    enabled = !isActionInProgress
+        Dialog(onDismissRequest = { if (!isActionInProgress) showDestroyDialog = false }) {
+            Surface(
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("Destroy Squad", color = Color.White, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .background(TactileColors.error.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = TactileColors.error,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Destroy Squad?",
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        color = TactileColors.onSurface
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Are you sure you want to permanently delete \"${targetRoom.name}\" (${targetRoom.code})?\n\nThis will remove all members and delete this squad for everyone. This cannot be undone.",
+                        fontFamily = Manrope,
+                        color = TactileColors.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = { showDestroyDialog = false },
+                            enabled = !isActionInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
+                        ) {
+                            Text("CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Button(
+                            onClick = {
+                                isActionInProgress = true
+                                coroutineScope.launch {
+                                    SupabaseRoomManager.destroyRoom(targetRoom.id)
+                                    showDestroyDialog = false
+                                    isActionInProgress = false
+                                    refreshData()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = TactileColors.error),
+                            shape = TactileShapes.pill,
+                            enabled = !isActionInProgress
+                        ) {
+                            if (isActionInProgress) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = "DESTROY SQUAD",
+                                    color = Color.White,
+                                    fontFamily = SpaceGrotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
                     }
                 }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showDestroyDialog = false },
-                    enabled = !isActionInProgress
-                ) {
-                    Text("Cancel", color = Color.Gray)
-                }
             }
-        )
+        }
     }
 
     // ── Dialog 4: Regular Member Exit Squad Confirmation Dialog ──
     if (showMemberLeaveDialog && selectedRoomForAction != null) {
         val targetRoom = selectedRoomForAction!!
-        AlertDialog(
-            onDismissRequest = { if (!isActionInProgress) showMemberLeaveDialog = false },
-            containerColor = Color(0xFF1E2126),
-            icon = {
-                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(28.dp))
-            },
-            title = {
-                Text("Exit Squad?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            },
-            text = {
-                Text(
-                    text = "Are you sure you want to exit \"${targetRoom.name}\" (${targetRoom.code})?\n\nYou will need an invite or owner approval to rejoin.",
-                    color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 14.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        isActionInProgress = true
-                        coroutineScope.launch {
-                            SupabaseRoomManager.leaveRoom(targetRoom.id, currentUserId)
-                            showMemberLeaveDialog = false
-                            isActionInProgress = false
-                            refreshData()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
-                    shape = RoundedCornerShape(12.dp),
-                    enabled = !isActionInProgress
+        Dialog(onDismissRequest = { if (!isActionInProgress) showMemberLeaveDialog = false }) {
+            Surface(
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("Exit Squad", color = Color.White, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .background(TactileColors.error.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Logout,
+                            contentDescription = null,
+                            tint = TactileColors.error,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Exit Squad?",
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        color = TactileColors.onSurface
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Are you sure you want to exit \"${targetRoom.name}\" (${targetRoom.code})?\n\nYou will need an invite or owner approval to rejoin.",
+                        fontFamily = Manrope,
+                        color = TactileColors.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = { showMemberLeaveDialog = false },
+                            enabled = !isActionInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
+                        ) {
+                            Text("CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Button(
+                            onClick = {
+                                isActionInProgress = true
+                                coroutineScope.launch {
+                                    SupabaseRoomManager.leaveRoom(targetRoom.id, currentUserId)
+                                    showMemberLeaveDialog = false
+                                    isActionInProgress = false
+                                    refreshData()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = TactileColors.error),
+                            shape = TactileShapes.pill,
+                            enabled = !isActionInProgress
+                        ) {
+                            if (isActionInProgress) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = "EXIT SQUAD",
+                                    color = Color.White,
+                                    fontFamily = SpaceGrotesk,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
                     }
                 }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showMemberLeaveDialog = false },
-                    enabled = !isActionInProgress
-                ) {
-                    Text("Cancel", color = Color.Gray)
-                }
             }
-        )
+        }
     }
 
+    // ── Dialog 5: Create Squad Dialog ──
     if (showCreateDialog) {
         CreateRoomDialog(
             currentUserId = currentUserId,
@@ -554,12 +989,13 @@ fun RoomsDashboardScreen(
         )
     }
 
+    // ── Dialog 6: Join Squad Dialog ──
     if (showJoinDialog) {
         JoinRoomDialog(
             currentUserId = currentUserId,
             currentUsername = currentUsername,
             onDismiss = { showJoinDialog = false },
-            onSuccess = { 
+            onSuccess = {
                 showJoinDialog = false
                 refreshData()
             }
@@ -570,95 +1006,170 @@ fun RoomsDashboardScreen(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RoomItem(
-    room: Room, 
-    isOwner: Boolean = false, 
+    room: Room,
+    isOwner: Boolean = false,
     pendingCount: Int = 0,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    Row(
+    Surface(
+        color = TactileColors.surfaceContainerLow,
+        shape = TactileShapes.tile,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF1E2126))
+            .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier.size(48.dp).background(Color(0xFF2C2F33), CircleShape),
-            contentAlignment = Alignment.Center
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Group, contentDescription = null, tint = Color.White)
-        }
-        Spacer(modifier = Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(room.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                if (isOwner) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        color = Color(0xFFFFA000).copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = "👑 OWNER",
-                            color = Color(0xFFFFA000),
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .background(TactileColors.surfaceContainerHighest, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Group,
+                    contentDescription = null,
+                    tint = TactileColors.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = room.name,
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = TactileColors.onSurface
+                    )
+                    if (isOwner) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = TactileColors.primaryContainer.copy(alpha = 0.15f),
+                            shape = TactileShapes.small
+                        ) {
+                            Text(
+                                text = "👑 OWNER",
+                                color = TactileColors.primary,
+                                fontFamily = SpaceGrotesk,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "CODE: ${room.code}",
+                        fontFamily = SpaceGrotesk,
+                        color = TactileColors.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "• Hold for options",
+                        fontFamily = Manrope,
+                        color = TactileColors.onSecondaryContainer.copy(alpha = 0.6f),
+                        fontSize = 10.sp
+                    )
+                }
             }
-            Spacer(modifier = Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Code: ${room.code}", color = Color.Gray, fontSize = 12.sp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("• Hold to exit", color = Color.Gray.copy(alpha = 0.5f), fontSize = 10.sp)
-            }
-        }
-        if (pendingCount > 0) {
-            Surface(
-                color = Color(0xFF00FF66).copy(alpha = 0.2f),
-                shape = CircleShape
-            ) {
-                Text(
-                    text = "$pendingCount",
-                    color = Color(0xFF00FF66),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
+
+            if (pendingCount > 0) {
+                Surface(
+                    color = TactileColors.primaryContainer,
+                    shape = TactileShapes.pill
+                ) {
+                    Text(
+                        text = "$pendingCount",
+                        color = Color(0xFF131315),
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun PendingRequestItem(req: RoomMemberRequest, onApprove: () -> Unit, onDecline: () -> Unit) {
-    Row(
+fun PendingRequestItem(
+    req: RoomMemberRequest,
+    onApprove: () -> Unit,
+    onDecline: () -> Unit
+) {
+    Surface(
+        color = TactileColors.surfaceContainerLow,
+        shape = TactileShapes.tile,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF1E2126))
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(req.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text("wants to join ${req.roomName ?: req.roomId}", color = Color.Gray, fontSize = 12.sp)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            IconButton(onClick = onApprove, modifier = Modifier.size(32.dp).background(Color(0xFF00FF66).copy(alpha = 0.2f), CircleShape)) {
-                Icon(Icons.Default.Check, contentDescription = "Approve", tint = Color(0xFF00FF66), modifier = Modifier.size(18.dp))
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = req.username,
+                    fontFamily = SpaceGrotesk,
+                    color = TactileColors.onSurface,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = "Requesting to join ${req.roomName ?: req.roomId}",
+                    fontFamily = Manrope,
+                    color = TactileColors.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
             }
-            IconButton(onClick = onDecline, modifier = Modifier.size(32.dp).background(Color(0xFFFF5252).copy(alpha = 0.2f), CircleShape)) {
-                Icon(Icons.Default.Close, contentDescription = "Decline", tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(
+                    onClick = onApprove,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(TactileColors.statusActive.copy(alpha = 0.2f), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "Approve",
+                        tint = TactileColors.statusActive,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onDecline,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(TactileColors.error.copy(alpha = 0.2f), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Decline",
+                        tint = TactileColors.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -676,53 +1187,142 @@ fun CreateRoomDialog(
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1E2126),
-        title = { Text("Create Squad", color = Color.White) },
-        text = {
-            Column {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = TactileColors.surfaceContainerLow,
+            shape = TactileShapes.card,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .background(TactileColors.surfaceContainerHighest, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = null,
+                        tint = TactileColors.primary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Create Squad",
+                    fontFamily = SpaceGrotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = TactileColors.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Create a new private voice squad channel for you and your team.",
+                    fontFamily = Manrope,
+                    fontSize = 13.sp,
+                    color = TactileColors.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Squad Name") },
+                    label = { Text("Squad Name", fontFamily = Manrope) },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF00FF66)
+                        focusedTextColor = TactileColors.onSurface,
+                        unfocusedTextColor = TactileColors.onSurface,
+                        focusedBorderColor = TactileColors.primaryContainer,
+                        unfocusedBorderColor = TactileColors.outlineVariant,
+                        focusedLabelColor = TactileColors.primaryContainer,
+                        unfocusedLabelColor = TactileColors.onSecondaryContainer,
+                        focusedContainerColor = TactileColors.surfaceContainerLowest,
+                        unfocusedContainerColor = TactileColors.surfaceContainerLowest
                     ),
-                    singleLine = true
+                    shape = TactileShapes.tile,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
+
                 if (error != null) {
-                    Text(error!!, color = Color.Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text(
+                        text = error!!,
+                        color = TactileColors.error,
+                        fontFamily = Manrope,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        isSubmitting = true
-                        scope.launch {
-                            val res = SupabaseRoomManager.createRoom(name, currentUserId, currentUsername)
-                            if (res is RoomResult.Success) {
-                                onSuccess(res.data.code, res.data.name)
-                            } else if (res is RoomResult.Error) {
-                                error = res.message
-                                isSubmitting = false
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
+                    ) {
+                        Text("CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .clip(TactileShapes.pill)
+                            .background(
+                                if (name.isNotBlank() && !isSubmitting) TactileColors.buttonGradient
+                                else SolidColor(TactileColors.surfaceContainerHighest)
+                            )
+                            .clickable(enabled = name.isNotBlank() && !isSubmitting) {
+                                isSubmitting = true
+                                scope.launch {
+                                    val res = SupabaseRoomManager.createRoom(name.trim(), currentUserId, currentUsername)
+                                    if (res is RoomResult.Success) {
+                                        onSuccess(res.data.code, res.data.name)
+                                    } else if (res is RoomResult.Error) {
+                                        error = res.message
+                                        isSubmitting = false
+                                    }
+                                }
                             }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF131315),
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                text = "CREATE",
+                                color = if (name.isNotBlank()) Color(0xFF131315) else TactileColors.onSecondaryContainer,
+                                fontFamily = SpaceGrotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                letterSpacing = 0.5.sp
+                            )
                         }
                     }
-                },
-                enabled = !isSubmitting
-            ) {
-                Text("Create", color = Color(0xFF00FF66))
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.Gray) }
         }
-    )
+    }
 }
 
 @Composable
@@ -738,60 +1338,156 @@ fun JoinRoomDialog(
     var successMsg by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1E2126),
-        title = { Text("Join Squad", color = Color.White) },
-        text = {
-            Column {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = TactileColors.surfaceContainerLow,
+            shape = TactileShapes.card,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, TactileColors.ghostBorder, TactileShapes.card)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .background(TactileColors.surfaceContainerHighest, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.LockOpen,
+                        contentDescription = null,
+                        tint = TactileColors.primary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Join Squad",
+                    fontFamily = SpaceGrotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = TactileColors.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Enter the squad invite code to request access.",
+                    fontFamily = Manrope,
+                    fontSize = 13.sp,
+                    color = TactileColors.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it.uppercase() },
-                    label = { Text("Squad Code (e.g. WT-A1B2)") },
+                    label = { Text("Squad Code (e.g. WT-A1B2)", fontFamily = Manrope) },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF00FF66)
+                        focusedTextColor = TactileColors.onSurface,
+                        unfocusedTextColor = TactileColors.onSurface,
+                        focusedBorderColor = TactileColors.primaryContainer,
+                        unfocusedBorderColor = TactileColors.outlineVariant,
+                        focusedLabelColor = TactileColors.primaryContainer,
+                        unfocusedLabelColor = TactileColors.onSecondaryContainer,
+                        focusedContainerColor = TactileColors.surfaceContainerLowest,
+                        unfocusedContainerColor = TactileColors.surfaceContainerLowest
                     ),
-                    singleLine = true
+                    shape = TactileShapes.tile,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
+
                 if (error != null) {
-                    Text(error!!, color = Color.Red, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text(
+                        text = error!!,
+                        color = TactileColors.error,
+                        fontFamily = Manrope,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
                 if (successMsg != null) {
-                    Text(successMsg!!, color = Color(0xFF00FF66), fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text(
+                        text = successMsg!!,
+                        color = TactileColors.statusActive,
+                        fontFamily = Manrope,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (successMsg != null) {
-                        onSuccess()
-                    } else if (code.isNotBlank()) {
-                        isSubmitting = true
-                        scope.launch {
-                            val res = SupabaseRoomManager.requestJoin(code, currentUserId, currentUsername)
-                            if (res is RoomResult.Success) {
-                                successMsg = "Join request sent! Waiting for owner to approve."
-                                error = null
-                            } else if (res is RoomResult.Error) {
-                                error = res.message
-                                successMsg = null
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (successMsg == null) {
+                        TextButton(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.textButtonColors(contentColor = TactileColors.onSecondaryContainer)
+                        ) {
+                            Text("CANCEL", fontFamily = Manrope, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(TactileShapes.pill)
+                            .background(
+                                if (code.isNotBlank() && !isSubmitting) TactileColors.buttonGradient
+                                else SolidColor(TactileColors.surfaceContainerHighest)
+                            )
+                            .clickable(enabled = (successMsg != null || code.isNotBlank()) && !isSubmitting) {
+                                if (successMsg != null) {
+                                    onSuccess()
+                                } else if (code.isNotBlank()) {
+                                    isSubmitting = true
+                                    scope.launch {
+                                        val res = SupabaseRoomManager.requestJoin(code.trim(), currentUserId, currentUsername)
+                                        if (res is RoomResult.Success) {
+                                            successMsg = "Join request sent! Waiting for squad owner to approve."
+                                            error = null
+                                        } else if (res is RoomResult.Error) {
+                                            error = res.message
+                                            successMsg = null
+                                        }
+                                        isSubmitting = false
+                                    }
+                                }
                             }
-                            isSubmitting = false
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF131315),
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                text = if (successMsg != null) "DONE" else "REQUEST JOIN",
+                                color = if (code.isNotBlank()) Color(0xFF131315) else TactileColors.onSecondaryContainer,
+                                fontFamily = SpaceGrotesk,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                letterSpacing = 0.5.sp
+                            )
                         }
                     }
-                },
-                enabled = !isSubmitting
-            ) {
-                Text(if (successMsg != null) "Done" else "Request Join", color = Color(0xFF00FF66))
-            }
-        },
-        dismissButton = {
-            if (successMsg == null) {
-                TextButton(onClick = onDismiss) { Text("Cancel", color = Color.Gray) }
+                }
             }
         }
-    )
+    }
 }

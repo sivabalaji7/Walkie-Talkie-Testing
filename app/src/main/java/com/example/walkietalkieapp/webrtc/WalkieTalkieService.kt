@@ -127,7 +127,8 @@ class WalkieTalkieService : Service(), SignalingListener {
             updateNotification("$speaker is speaking...")
             onOthersSpeakingStateChange?.invoke(true)
             // Wake up audio routing and unmute speaker for incoming voice
-            webRTCManager?.prepareForIncomingVoice()
+            webRTCManager?.setAuthorizedSpeaker(speaker)
+            webRTCManager?.prepareForIncomingVoice(speaker)
         } else {
             updateNotification("🔴 Transmitting...")
             onOthersSpeakingStateChange?.invoke(false)
@@ -139,6 +140,7 @@ class WalkieTalkieService : Service(), SignalingListener {
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
         onOthersSpeakingStateChange?.invoke(false)
+        webRTCManager?.setAuthorizedSpeaker(null)
         webRTCManager?.abandonAudioFocus()
     }
 
@@ -161,7 +163,7 @@ class WalkieTalkieService : Service(), SignalingListener {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -173,6 +175,8 @@ class WalkieTalkieService : Service(), SignalingListener {
         webRTCManager?.cleanup()
         webRTCManager = null
         releaseWakeLock()
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -274,6 +278,14 @@ class WalkieTalkieService : Service(), SignalingListener {
         webRTCManager = null
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()
+        }
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
         }
         super.onDestroy()
     }

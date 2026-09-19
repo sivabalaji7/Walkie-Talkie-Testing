@@ -2,6 +2,7 @@ package com.example.walkietalkieapp.ui
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,6 +23,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -83,49 +86,67 @@ fun OfflineSquadScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 32.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Header: Settings, Squad Title, Replay
+            // Top Section: Header Controls & Channel Info
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Settings Pod
                 IconButton(
                     onClick = { showSettings = true },
-                    modifier = Modifier.background(Color.White.copy(alpha = 0.05f), CircleShape)
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = "Squad Settings",
+                        tint = TactileColors.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
+                // Center Title & Mode
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .background(if (mode == TransportMode.BLUETOOTH) Color(0xFF00E5FF).copy(alpha = 0.2f) else Color(0xFF4CAF50).copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        val modeColor = if (mode == TransportMode.BLUETOOTH) TactileColors.statusConnecting else TactileColors.statusActive
+                        Surface(
+                            color = modeColor.copy(alpha = 0.15f),
+                            shape = TactileShapes.small
                         ) {
                             Text(
                                 text = if (mode == TransportMode.BLUETOOTH) "BLUETOOTH" else "WI-FI DIRECT",
+                                fontFamily = SpaceGrotesk,
                                 fontSize = 10.sp,
-                                fontWeight = FontWeight.Black,
-                                color = if (mode == TransportMode.BLUETOOTH) Color(0xFF00E5FF) else Color(0xFF4CAF50)
+                                fontWeight = FontWeight.Bold,
+                                color = modeColor,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (isHost) "HOST: $squadName" else "SQUAD: $squadName",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White,
-                            letterSpacing = 1.sp
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = TactileColors.onSurface,
+                            letterSpacing = 0.5.sp
                         )
                     }
 
+                    // Valour Connection Status Pill
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.padding(top = 6.dp)
                     ) {
                         val transportType = if (mode == TransportMode.BLUETOOTH) com.example.walkietalkieapp.dna.model.TransportType.Bluetooth else com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
                         val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
@@ -150,11 +171,21 @@ fun OfflineSquadScreen(
                     }
                 }
 
+                // Replay Pod
                 IconButton(
                     onClick = onReplay,
-                    modifier = Modifier.background(Color.White.copy(alpha = 0.05f), CircleShape)
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Replay", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Replay",
+                        tint = TactileColors.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
@@ -168,46 +199,68 @@ fun OfflineSquadScreen(
                         showRetry = false
                         onRetry()
                     },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFA000)),
-                    modifier = Modifier.fillMaxWidth().height(42.dp)
+                    shape = TactileShapes.pill,
+                    colors = ButtonDefaults.buttonColors(containerColor = TactileColors.primaryContainer),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFF131315), modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("RETRY CONNECTION", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text(
+                        text = "RETRY CONNECTION",
+                        color = Color(0xFF131315),
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.5.sp
+                    )
                 }
             }
 
             // "GO VISIBLE" BUTTON (HOST ONLY - BLUETOOTH MODE)
             if (isHost && mode == TransportMode.BLUETOOTH) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Button(
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
                     onClick = onGoVisible,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isBeaconActive) Color(0xFF00E5FF) else Color(0xFF00E5FF).copy(alpha = 0.15f)
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(42.dp)
+                    shape = TactileShapes.pill,
+                    color = if (isBeaconActive) TactileColors.statusConnecting else TactileColors.surfaceContainerLow,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                        .border(
+                            1.dp,
+                            if (isBeaconActive) TactileColors.statusConnecting else TactileColors.statusConnecting.copy(alpha = 0.4f),
+                            TactileShapes.pill
+                        )
                 ) {
-                    Icon(
-                        Icons.Default.Podcasts,
-                        contentDescription = null,
-                        tint = if (isBeaconActive) Color.Black else Color(0xFF00E5FF),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isBeaconActive) "BROADCASTING SIGNAL (${beaconCountdownSeconds}s)..." else "GO VISIBLE (5s BEACON)",
-                        color = if (isBeaconActive) Color.Black else Color(0xFF00E5FF),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Podcasts,
+                            contentDescription = null,
+                            tint = if (isBeaconActive) Color(0xFF131315) else TactileColors.statusConnecting,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isBeaconActive) "BROADCASTING BEACON (${beaconCountdownSeconds}s)..." else "GO VISIBLE (5s BEACON)",
+                            color = if (isBeaconActive) Color(0xFF131315) else TactileColors.statusConnecting,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            // Squad Member Avatars (Live Waveforms)
+            // Squad Member Avatars (Live Audio Halos)
             LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center,
@@ -216,11 +269,11 @@ fun OfflineSquadScreen(
                 if (members.isEmpty()) {
                     item {
                         Text(
-                            if (mode == TransportMode.BLUETOOTH) "Tap 'GO VISIBLE' to let nearby friends discover and join..."
+                            text = if (mode == TransportMode.BLUETOOTH) "Tap 'GO VISIBLE' to let nearby friends discover and join..."
                             else "Wi-Fi Direct Group active. Waiting for squad members...",
-                            color = Color.White.copy(alpha = 0.3f),
-                            fontSize = 12.sp,
-                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            fontFamily = Manrope,
+                            color = TactileColors.onSecondaryContainer.copy(alpha = 0.5f),
+                            fontSize = 12.sp
                         )
                     }
                 } else {
@@ -241,9 +294,9 @@ fun OfflineSquadScreen(
                 lastSpeakerTimestamp = lastSpeakerTimestamp
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // Push-To-Talk Button (Half-Duplex Channel Lock)
+            // Push-To-Talk Button (Half-Duplex Hardware Button)
             OfflinePushToTalkButton(
                 isSpeaking = isUserSpeaking,
                 isChannelBusy = isOthersSpeaking,
@@ -271,23 +324,35 @@ fun OfflineSquadScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.weight(1.2f))
+            Spacer(modifier = Modifier.weight(1f))
 
-            // Bottom Controls
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+            // Leave Squad Action Button
+            Surface(
+                onClick = onLeave,
+                color = TactileColors.surfaceContainerLow,
+                shape = TactileShapes.pill,
+                modifier = Modifier
+                    .border(1.dp, TactileColors.error.copy(alpha = 0.35f), TactileShapes.pill)
             ) {
-                Button(
-                    onClick = onLeave,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252).copy(alpha = 0.1f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.height(48.dp)
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, tint = Color(0xFFFF5252), modifier = Modifier.size(18.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                        contentDescription = null,
+                        tint = TactileColors.error,
+                        modifier = Modifier.size(16.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("LEAVE SQUAD", color = Color(0xFFFF5252), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        text = "LEAVE SQUAD",
+                        color = TactileColors.error,
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.5.sp
+                    )
                 }
             }
         }
@@ -296,77 +361,69 @@ fun OfflineSquadScreen(
         if (showSettings) {
             ModalBottomSheet(
                 onDismissRequest = { showSettings = false },
-                containerColor = Color(0xFF1E2124),
-                dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Gray) }
+                containerColor = TactileColors.surfaceContainerLow,
+                dragHandle = { BottomSheetDefaults.DragHandle(color = TactileColors.outlineVariant) }
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 36.dp)
                 ) {
-                    Text("Squad Room Settings", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Text(
+                        text = "Squad Room Settings",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 20.sp,
+                        color = TactileColors.onSurface,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     SettingsItem(
                         icon = Icons.Default.Bolt,
                         title = "Whisper Burst",
                         subtitle = "Send a quick 2-second voice broadcast",
-                        color = Color(0xFF9C27B0),
+                        color = TactileColors.primaryContainer,
                         onClick = {
                             onWhisper()
                             showSettings = false
                         }
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     SettingsItem(
                         icon = Icons.Default.Refresh,
                         title = "Replay Last Transmission",
                         subtitle = "Play back the most recent 10s of squad audio",
-                        color = Color(0xFFFFA000),
+                        color = TactileColors.primary,
                         onClick = {
                             onReplay()
                             showSettings = false
                         }
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     SettingsItem(
                         icon = Icons.Default.BatterySaver,
                         title = "Battery Saver",
-                        subtitle = if (isBatterySaverEnabled) "Auto-idle disconnect enabled" else "Always stay connected",
-                        color = if (isBatterySaverEnabled) Color(0xFF4CAF50) else Color.Gray,
+                        subtitle = if (isBatterySaverEnabled) "Auto-idle disconnect enabled" else "Always stay connected in foreground",
+                        color = if (isBatterySaverEnabled) TactileColors.statusActive else TactileColors.onSecondaryContainer,
                         onClick = { onBatterySaverToggle(!isBatterySaverEnabled) }
                     )
                 }
             }
         }
 
-        // Animated Notification Banner
-        AnimatedVisibility(
-            visible = notificationMessage != null,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
-        ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2124)),
-                shape = RoundedCornerShape(24.dp),
-                elevation = CardDefaults.cardElevation(8.dp)
+        // Notification Banner Overlay
+        if (notificationMessage != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 80.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(modifier = Modifier.size(8.dp).background(Color(0xFF4CAF50), CircleShape))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = notificationMessage ?: "",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+                NotificationBanner(message = notificationMessage)
             }
         }
     }
@@ -377,7 +434,7 @@ fun OfflineMemberItem(member: SquadMember, onReplay: () -> Unit) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
 
     val speakingScale by animateFloatAsState(
-        targetValue = if (member.isSpeaking) 1.15f else 1f,
+        targetValue = if (member.isSpeaking) 1.12f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -386,40 +443,41 @@ fun OfflineMemberItem(member: SquadMember, onReplay: () -> Unit) {
     )
 
     val borderAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f, targetValue = 1f,
+        initialValue = 0.4f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "alpha"
     )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .padding(horizontal = 10.dp)
+            .padding(horizontal = 8.dp)
             .scale(speakingScale)
             .clickable { onReplay() }
     ) {
         Box(contentAlignment = Alignment.BottomEnd) {
             Box(
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(60.dp)
                     .border(
-                        width = if (member.isSpeaking) 3.dp else 1.dp,
-                        color = if (member.isSpeaking) Color(0xFF4CAF50).copy(alpha = borderAlpha) else Color.White.copy(alpha = 0.1f),
+                        width = if (member.isSpeaking) 2.5.dp else 1.dp,
+                        color = if (member.isSpeaking) TactileColors.primaryContainer.copy(alpha = borderAlpha) else TactileColors.ghostBorder,
                         shape = CircleShape
                     )
-                    .padding(4.dp)
+                    .padding(3.dp)
                     .clip(CircleShape)
                     .background(
                         brush = Brush.verticalGradient(
-                            colors = listOf(Color(0xFF2C2F33), Color(0xFF1E2124))
+                            colors = listOf(TactileColors.surfaceContainerHighest, TactileColors.surfaceContainerLow)
                         )
                     ),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = member.username.take(1).uppercase(),
-                    color = if (member.isSpeaking) Color.White else Color.White.copy(alpha = 0.5f),
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 22.sp
+                    color = if (member.isSpeaking) TactileColors.primaryContainer else TactileColors.onSurface,
+                    fontFamily = SpaceGrotesk,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
                 )
 
                 if (member.isSpeaking) {
@@ -430,21 +488,26 @@ fun OfflineMemberItem(member: SquadMember, onReplay: () -> Unit) {
             // Status indicator dot
             Box(
                 modifier = Modifier
-                    .size(14.dp)
-                    .background(Color(0xFF0F1115), CircleShape)
+                    .size(13.dp)
+                    .background(TactileColors.surfaceContainerLowest, CircleShape)
                     .padding(2.dp)
             ) {
-                Box(modifier = Modifier.fillMaxSize().background(Color(0xFF4CAF50), CircleShape))
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(TactileColors.statusActive, CircleShape)
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         Text(
             text = member.username,
-            color = if (member.isSpeaking) Color.White else Color.White.copy(alpha = 0.5f),
-            fontSize = 12.sp,
-            fontWeight = if (member.isSpeaking) FontWeight.Bold else FontWeight.Medium
+            color = if (member.isSpeaking) TactileColors.primary else TactileColors.onSurface,
+            fontFamily = Manrope,
+            fontSize = 11.sp,
+            fontWeight = if (member.isSpeaking) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
@@ -459,7 +522,7 @@ fun OfflinePushToTalkButton(
     onWhisper: () -> Unit
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (isSpeaking) 0.9f else 1f,
+        targetValue = if (isSpeaking) 0.96f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
@@ -470,12 +533,12 @@ fun OfflinePushToTalkButton(
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
 
     val pulse1Scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 2.2f,
+        initialValue = 1f, targetValue = 2.1f,
         animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing), RepeatMode.Restart),
         label = "pulse1Scale"
     )
     val pulse1Alpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f, targetValue = 0f,
+        initialValue = 0.35f, targetValue = 0f,
         animationSpec = infiniteRepeatable(tween(2000, easing = LinearOutSlowInEasing), RepeatMode.Restart),
         label = "pulse1Alpha"
     )
@@ -491,22 +554,51 @@ fun OfflinePushToTalkButton(
         label = "breathingAlpha"
     )
 
-    Box(contentAlignment = Alignment.Center) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(250.dp),
+        contentAlignment = Alignment.Center
+    ) {
         if (isSpeaking) {
-            Box(modifier = Modifier.size(170.dp).scale(pulse1Scale).background(Color(0xFF4CAF50).copy(alpha = pulse1Alpha), CircleShape))
+            Box(
+                modifier = Modifier
+                    .size(175.dp)
+                    .scale(pulse1Scale)
+                    .background(TactileColors.primaryContainer.copy(alpha = pulse1Alpha), CircleShape)
+            )
         }
 
+        // Machined outer ring chassis (Vintage radio ridges)
+        Canvas(modifier = Modifier.size(200.dp)) {
+            drawCircle(
+                color = Color(0xFF1E1D21),
+                radius = size.minDimension / 2f
+            )
+            drawCircle(
+                color = Color(0xFF353437).copy(alpha = 0.4f),
+                radius = size.minDimension / 2f,
+                style = Stroke(width = 1.dp.toPx())
+            )
+            drawCircle(
+                color = Color(0xFF2A2A2D).copy(alpha = 0.3f),
+                radius = (size.minDimension / 2f) - 10.dp.toPx(),
+                style = Stroke(width = 1.dp.toPx())
+            )
+        }
+
+        // Core PTT Button
         Box(
             modifier = Modifier
-                .size(170.dp)
+                .size(165.dp)
                 .scale(scale)
                 .clip(CircleShape)
                 .background(
                     brush = Brush.verticalGradient(
                         colors = when {
-                            isSpeaking -> listOf(Color(0xFF66BB6A), Color(0xFF43A047))
-                            isChannelBusy -> listOf(Color(0xFFE53935), Color(0xFFC62828))
-                            else -> listOf(Color(0xFF2C2F33), Color(0xFF1E2126))
+                            isSpeaking -> listOf(TactileColors.primary, TactileColors.primaryContainer)
+                            isChannelBusy -> listOf(TactileColors.surfaceContainerHigh, TactileColors.surfaceContainerLow)
+                            else -> listOf(TactileColors.surfaceContainerHighest, TactileColors.surfaceContainerLow)
                         }
                     )
                 )
@@ -516,11 +608,11 @@ fun OfflinePushToTalkButton(
                     } else Modifier
                 )
                 .border(
-                    width = if (isSpeaking) 4.dp else 2.dp,
+                    width = if (isSpeaking) 3.dp else 1.5.dp,
                     color = when {
-                        isSpeaking -> Color(0xFF81C784)
-                        isChannelBusy -> Color(0xFFFF8A80)
-                        else -> Color.White.copy(alpha = 0.1f)
+                        isSpeaking -> TactileColors.primaryContainer
+                        isChannelBusy -> TactileColors.error
+                        else -> TactileColors.ghostBorder
                     },
                     shape = CircleShape
                 )
@@ -541,22 +633,34 @@ fun OfflinePushToTalkButton(
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    Icons.Default.Mic,
+                    imageVector = when {
+                        isChannelBusy -> Icons.Default.Close
+                        else -> Icons.Default.Mic
+                    },
                     contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(54.dp)
+                    tint = when {
+                        isSpeaking -> Color(0xFF131315)
+                        isChannelBusy -> TactileColors.onSecondaryContainer
+                        else -> TactileColors.onSurface
+                    },
+                    modifier = Modifier.size(48.dp)
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = when {
                         isSpeaking -> "TRANSMITTING"
                         isChannelBusy -> "CHANNEL BUSY"
                         else -> "HOLD TO TALK"
                     },
-                    color = Color.White,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 1.5.sp
+                    color = when {
+                        isSpeaking -> Color(0xFF131315)
+                        isChannelBusy -> TactileColors.onSecondaryContainer
+                        else -> TactileColors.onSurface
+                    },
+                    fontFamily = SpaceGrotesk,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
                 )
             }
         }
@@ -572,7 +676,9 @@ fun OfflineSpeakingIndicator(
     lastSpeakerTimestamp: Long
 ) {
     Box(
-        modifier = Modifier.height(80.dp).fillMaxWidth(),
+        modifier = Modifier
+            .height(80.dp)
+            .fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
         AnimatedContent(
@@ -589,12 +695,13 @@ fun OfflineSpeakingIndicator(
             when (state) {
                 "YOU" -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingDot(Color(0xFF4CAF50))
+                        PulsingDot(TactileColors.primaryContainer)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "YOU ARE BROADCASTING",
-                            color = Color(0xFF4CAF50),
-                            fontWeight = FontWeight.ExtraBold,
+                            text = "YOU ARE BROADCASTING",
+                            color = TactileColors.primary,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
@@ -602,12 +709,13 @@ fun OfflineSpeakingIndicator(
                 }
                 "OTHERS" -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PulsingDot(Color(0xFFF44336))
+                        PulsingDot(TactileColors.statusConnecting)
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "${currentSpeakerName?.uppercase() ?: "MEMBER"} IS TRANSMITTING",
-                            color = Color(0xFFF44336),
-                            fontWeight = FontWeight.ExtraBold,
+                            text = "${currentSpeakerName?.uppercase() ?: "MEMBER"} IS TRANSMITTING",
+                            color = TactileColors.statusConnecting,
+                            fontFamily = SpaceGrotesk,
+                            fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             letterSpacing = 1.sp
                         )
@@ -616,15 +724,17 @@ fun OfflineSpeakingIndicator(
                 else -> {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            "Channel is Idle",
-                            color = Color.White.copy(alpha = 0.5f),
-                            fontSize = 14.sp,
+                            text = "Channel is Idle",
+                            color = TactileColors.onSurfaceVariant.copy(alpha = 0.6f),
+                            fontFamily = Manrope,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                         if (lastSpeakerName != null) {
                             Text(
-                                "Last: $lastSpeakerName",
-                                color = Color.White.copy(alpha = 0.3f),
+                                text = "Last: $lastSpeakerName",
+                                color = TactileColors.onSecondaryContainer,
+                                fontFamily = SpaceGrotesk,
                                 fontSize = 11.sp,
                                 modifier = Modifier.padding(top = 2.dp)
                             )

@@ -36,6 +36,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.walkietalkieapp.auth.Room
 import com.example.walkietalkieapp.auth.RoomResult
 import com.example.walkietalkieapp.auth.SessionManager
 import com.example.walkietalkieapp.auth.SupabaseAuthManager
@@ -47,6 +48,8 @@ import com.example.walkietalkieapp.floor.FloorState
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.*
 import com.example.walkietalkieapp.ui.theme.WalkieTalkieAppTheme
+import com.example.walkietalkieapp.ui.walkie.SquadMember
+import com.example.walkietalkieapp.ui.walkie.WalkieTalkieApp
 import com.example.walkietalkieapp.webrtc.WalkieTalkieService
 import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
 import com.example.walkietalkieapp.wifidirect.WifiSquadUiState
@@ -55,6 +58,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "MainActivity"
 
@@ -228,6 +232,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
 
+        // Request maximum available refresh rate (e.g. 120Hz / 90Hz) for fluid responsiveness
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val modes = display?.supportedModes ?: emptyArray()
+                val maxMode = modes.maxByOrNull { it.refreshRate }
+                if (maxMode != null && maxMode.refreshRate > 60f) {
+                    window.attributes = window.attributes.apply {
+                        preferredDisplayModeId = maxMode.modeId
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "High refresh rate request skipped", e)
+            }
+        }
+
         sessionManager = SessionManager.getInstance(this)
         isLoggedIn = sessionManager.isLoggedIn()
         currentUserId = sessionManager.getUserId()
@@ -279,7 +298,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 playTone(ToneGenerator.TONE_CDMA_PIP)
                 vibrate()
-                SupabaseRealtimeManager.sendStartVoice()
                 if (webRtcService?.webRTCManager != null) {
                     webRtcService?.webRTCManager?.startTalking()
                 } else {
@@ -303,10 +321,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 pendingTalkStart = false
                 webRtcService?.webRTCManager?.stopTalking()
-                SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
-                notificationQueue.add("⚠️ Priority Override: Mic Revoked")
+                val speaker = FloorManager.floorStatus.value.currentSpeakerName ?: "Squad Member"
+                notificationQueue.add("⚠️ Mic Yielded: $speaker is speaking")
                 val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
                 webRtcService?.updateNotification(if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk")
             }
@@ -343,7 +361,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         setContent {
             WalkieTalkieAppTheme(darkTheme = true) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0B)) {
+                Surface(modifier = Modifier.fillMaxSize(), color = TactileColors.background) {
                     val socketUiState by SupabaseRealtimeManager.socketUiState.collectAsState()
                     val floorStatus by FloorManager.floorStatus.collectAsState()
 
@@ -379,289 +397,421 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val activeSpeakingOffline = isUserSpeakingLocalOffline || btUiState.isChannelBusy || wifiUiState.isChannelBusy
                     val activeSpeaking = activeSpeakingOnline || activeSpeakingOffline
 
-                    // Ambient Gyro Parallax Background
-                    BackgroundComposable(activeSpeaking, gyroOffset)
+                    // Load and sync myRooms, member rosters, and pending join requests for Internet mode
+                    var myRooms by remember { mutableStateOf<List<Room>>(emptyList()) }
+                    var roomMembersMap by remember { mutableStateOf<Map<String, List<SquadMember>>>(emptyMap()) }
+                    var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
+                    val scope = rememberCoroutineScope()
 
-                    if (!isLoggedIn) {
-                        // 1. AUTH SCREEN (LOGIN / SIGN UP VIA SUPABASE)
-                        AuthScreen(
-                            onAuthSuccess = { userId, username ->
-                                sessionManager.saveSession(userId, username)
-                                currentUserId = userId
-                                currentUsername = username
-                                persistentCallSign = username
-                                isLoggedIn = true
-                            }
-                        )
-                    } else if (isInternetActiveRoom) {
-                        // 2. ACTIVE INTERNET SQUAD ROOM (WebRTC + FLOOR CONTROL)
-                        InternetSquadScreen(
-                            currentUserId = currentUserId,
-                            socketUiState = socketUiState,
-                            isOthersSpeaking = isOthersSpeakingOnline,
-                            hasAudioPermission = hasAudioPermission,
-                            onRequestPermission = { checkAndRequestPermissions() },
-                            onStartTalk = { isPriority ->
-                                startPushToTalkOnline(isPriority)
-                            },
-                            onStopTalk = {
-                                stopPushToTalkOnline()
-                            },
-                            onLeave = {
-                                webRtcService?.webRTCManager?.cleanup()
-                                SupabaseRealtimeManager.leaveRoom()
-                                webRtcService?.updateNotification("Ready to talk")
-                            },
-                            onShare = { shareRoom(it) },
-                            vibrate = ::vibrate,
-                            onReplay = { webRtcService?.replayLastTransmissions() },
-                            onRestartIce = { webRtcService?.restartIce() },
-                            onWhisper = {
-                                vibrate()
-                                startPushToTalkOnline(false)
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    delay(2000)
-                                    stopPushToTalkOnline()
-                                }
-                            },
-                            isBatterySaverEnabled = isBatterySaverEnabled,
-                            onBatterySaverToggle = { isBatterySaverEnabled = it },
-                            isKrispAiEnabled = isKrispAiEnabled,
-                            onKrispAiToggle = { enabled ->
-                                isKrispAiEnabled = enabled
-                                webRtcService?.webRTCManager?.setKrispEnabled(enabled)
-                                notificationQueue.add(if (enabled) "✨ Krisp AI Voice Denoising Active" else "Krisp AI Voice Denoising Disabled")
-                            },
-                            notificationMessage = notificationMessage
-                        )
-                    } else if (isBtActiveRoom) {
-                        // 3. ACTIVE BLUETOOTH SQUAD ROOM
-                        OfflineSquadScreen(
-                            mode = TransportMode.BLUETOOTH,
-                            isHost = btUiState.isHost,
-                            squadName = btUiState.squadName,
-                            members = btUiState.members,
-                            connectionState = btUiState.connectionState,
-                            isChannelBusy = btUiState.isChannelBusy,
-                            currentSpeakerId = btUiState.currentSpeakerId,
-                            currentSpeakerName = btUiState.currentSpeakerName,
-                            lastSpeakerName = btUiState.lastSpeakerName,
-                            lastSpeakerTimestamp = btUiState.lastSpeakerTimestamp,
-                            isBeaconActive = btUiState.isBeaconActive,
-                            beaconCountdownSeconds = btUiState.beaconCountdownSeconds,
-                            myId = btUiState.myId,
-                            onGoVisible = {
-                                vibrate()
-                                btManager?.triggerGoVisible(5)
-                            },
-                            onStartTalk = {
-                                isUserSpeakingLocalOffline = true
-                                vibrate()
-                                playTone(ToneGenerator.TONE_CDMA_PIP)
-                                btManager?.startTalking()
-                                offlineService?.updateNotification("Transmitting...")
-                            },
-                            onStopTalk = {
-                                isUserSpeakingLocalOffline = false
-                                btManager?.stopTalking()
-                                offlineService?.updateNotification("Ready to talk")
-                            },
-                            onLeave = {
-                                btManager?.leaveSquad()
-                                offlineService?.updateNotification("Squad Talk Ready")
-                            },
-                            vibrate = ::vibrate,
-                            onReplay = { btManager?.audioPlayer?.replayLastTransmissions() },
-                            onWhisper = {
-                                vibrate()
-                                isUserSpeakingLocalOffline = true
-                                playTone(ToneGenerator.TONE_CDMA_PIP)
-                                btManager?.startTalking()
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    delay(2000)
-                                    isUserSpeakingLocalOffline = false
-                                    btManager?.stopTalking()
-                                }
-                            },
-                            isBatterySaverEnabled = isBatterySaverEnabled,
-                            onBatterySaverToggle = { isBatterySaverEnabled = it },
-                            notificationMessage = notificationMessage
-                        )
-                    } else if (isWifiActiveRoom) {
-                        // 4. ACTIVE WI-FI DIRECT SQUAD ROOM
-                        OfflineSquadScreen(
-                            mode = TransportMode.WIFI_DIRECT,
-                            isHost = wifiUiState.isHost,
-                            squadName = wifiUiState.squadName,
-                            members = wifiUiState.members,
-                            connectionState = wifiUiState.connectionState,
-                            isChannelBusy = wifiUiState.isChannelBusy,
-                            currentSpeakerId = wifiUiState.currentSpeakerId,
-                            currentSpeakerName = wifiUiState.currentSpeakerName,
-                            lastSpeakerName = wifiUiState.lastSpeakerName,
-                            lastSpeakerTimestamp = wifiUiState.lastSpeakerTimestamp,
-                            isBeaconActive = false,
-                            beaconCountdownSeconds = 0,
-                            myId = wifiUiState.myId,
-                            onGoVisible = {},
-                            onStartTalk = {
-                                isUserSpeakingLocalOffline = true
-                                vibrate()
-                                playTone(ToneGenerator.TONE_CDMA_PIP)
-                                wifiDirectManager?.startTalking()
-                                offlineService?.updateNotification("Transmitting...")
-                            },
-                            onStopTalk = {
-                                isUserSpeakingLocalOffline = false
-                                wifiDirectManager?.stopTalking()
-                                offlineService?.updateNotification("Ready to talk")
-                            },
-                            onLeave = {
-                                wifiDirectManager?.leaveSquad()
-                                offlineService?.updateNotification("Squad Talk Ready")
-                            },
-                            vibrate = ::vibrate,
-                            onReplay = { wifiDirectManager?.audioPlayer?.replayLastTransmissions() },
-                            onWhisper = {
-                                vibrate()
-                                isUserSpeakingLocalOffline = true
-                                playTone(ToneGenerator.TONE_CDMA_PIP)
-                                wifiDirectManager?.startTalking()
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    delay(2000)
-                                    isUserSpeakingLocalOffline = false
-                                    wifiDirectManager?.stopTalking()
-                                }
-                            },
-                            isBatterySaverEnabled = isBatterySaverEnabled,
-                            onBatterySaverToggle = { isBatterySaverEnabled = it },
-                            notificationMessage = notificationMessage,
-                            onRetry = { wifiDirectManager?.retryJoin() }
-                        )
-                    } else {
-                        // 5. MASTER UNIFIED HOME DASHBOARD (OPTION 1 SEGMENTED SWITCHER)
-                        // Auto-process deep links if any
-                        LaunchedEffect(deepLinkRoomId, isLoggedIn) {
-                            if (deepLinkRoomId.isNotEmpty() && isLoggedIn && currentUsername.isNotEmpty()) {
-                                val targetCode = deepLinkRoomId
-                                deepLinkRoomId = ""
-                                val userId = currentUserId
-
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    val roomRes = SupabaseRoomManager.getRoomByCode(targetCode)
-                                    if (roomRes is RoomResult.Success) {
-                                        val room = roomRes.data
-                                        val statusRes = SupabaseRoomManager.getMemberStatus(room.id, userId)
-                                        val status = if (statusRes is RoomResult.Success) statusRes.data else null
-                                        val isOwner = room.ownerId == userId
-
-                                        if (isOwner || status == "APPROVED") {
-                                            notificationQueue.add("Entering ${room.name} 🚀")
-                                            enterInternetSquad(room.code, currentUsername, room.name)
-                                        } else if (status == "PENDING") {
-                                            notificationQueue.add("⏳ Join request pending owner approval for ${room.name}")
-                                        } else {
-                                            val reqRes = SupabaseRoomManager.requestJoin(room.code, userId, currentUsername)
-                                            if (reqRes is RoomResult.Success) {
-                                                notificationQueue.add("⏳ Join request sent to ${room.name} owner for approval")
-                                            } else {
-                                                val errMsg = (reqRes as RoomResult.Error).message
-                                                notificationQueue.add(errMsg)
-                                            }
-                                        }
-                                    } else {
-                                        notificationQueue.add("⚠️ Squad not found for code: $targetCode")
+                    fun fetchPendingRequests() {
+                        if (isLoggedIn && currentUserId.isNotEmpty()) {
+                            scope.launch(Dispatchers.IO) {
+                                val res = SupabaseRoomManager.getPendingRequests(currentUserId)
+                                if (res is RoomResult.Success) {
+                                    withContext(Dispatchers.Main) {
+                                        pendingRequests = res.data
                                     }
                                 }
                             }
                         }
+                    }
 
-                        MasterHomeScreen(
-                            currentUserId = currentUserId,
-                            currentUsername = currentUsername,
-                            callSign = persistentCallSign,
-                            selectedMode = selectedTransportMode,
-                            onSelectMode = { mode ->
-                                selectedTransportMode = mode
-                                
-                                val activeType = when (mode) {
-                                    TransportMode.BLUETOOTH -> com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
-                                    TransportMode.WIFI_DIRECT -> com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
-                                    TransportMode.INTERNET -> com.example.walkietalkieapp.dna.model.TransportType.Internet
-                                }
-                                VoiceQualityEngine.instance.activeTransport = activeType
-
-                                if (mode == TransportMode.BLUETOOTH) {
-                                    wifiDirectManager?.stopDiscovery()
-                                    if (!isBluetoothEnabled()) {
-                                        showBluetoothDialog = true
-                                    } else {
-                                        btManager?.startSquadScan()
+                    fun refreshRoomsAndMembers() {
+                        if (isLoggedIn && currentUserId.isNotEmpty()) {
+                            scope.launch(Dispatchers.IO) {
+                                val res = SupabaseRoomManager.getMyRooms(currentUserId)
+                                if (res is RoomResult.Success) {
+                                    val rooms = res.data
+                                    withContext(Dispatchers.Main) {
+                                        myRooms = rooms
                                     }
-                                } else if (mode == TransportMode.WIFI_DIRECT) {
-                                    btManager?.stopSquadScan()
-                                    if (!isWifiEnabled()) {
-                                        showWifiDialog = true
+
+                                    val roomIds = rooms.map { it.id }
+                                    val membersRes = SupabaseRoomManager.getAllRoomMembersForRooms(roomIds)
+                                    if (membersRes is RoomResult.Success) {
+                                        val newMap = mutableMapOf<String, List<SquadMember>>()
+                                        val fetchedMap = membersRes.data
+                                        rooms.forEach { room ->
+                                            val membersList = fetchedMap[room.id] ?: emptyList()
+                                            val squadMembers = membersList.map { m ->
+                                                val isOwner = room.ownerId == currentUserId && m.username.equals(currentUsername, ignoreCase = true)
+                                                SquadMember(
+                                                    name = m.username,
+                                                    avatar = m.username.take(1).uppercase(),
+                                                    online = m.username.equals(currentUsername, ignoreCase = true),
+                                                    isOwner = isOwner
+                                                )
+                                            }.toMutableList()
+
+                                            // Ensure current user is in squad members if not present
+                                            if (currentUsername.isNotBlank() && squadMembers.none { it.name.equals(currentUsername, ignoreCase = true) }) {
+                                                squadMembers.add(
+                                                    SquadMember(
+                                                        name = currentUsername,
+                                                        avatar = currentUsername.take(1).uppercase(),
+                                                        online = true,
+                                                        isOwner = room.ownerId == currentUserId
+                                                    )
+                                                )
+                                            }
+
+                                            // Multi-key mapping for bulletproof lookups
+                                            val codeTrimmed = room.code.trim()
+                                            val idTrimmed = room.id.trim()
+                                            newMap[codeTrimmed] = squadMembers
+                                            newMap[codeTrimmed.uppercase()] = squadMembers
+                                            newMap[codeTrimmed.lowercase()] = squadMembers
+                                            newMap[idTrimmed] = squadMembers
+                                            newMap[idTrimmed.lowercase()] = squadMembers
+                                        }
+                                        withContext(Dispatchers.Main) {
+                                            roomMembersMap = newMap
+                                        }
+                                    }
+                                }
+                            }
+                            fetchPendingRequests()
+                        } else {
+                            myRooms = emptyList()
+                            roomMembersMap = emptyMap()
+                            pendingRequests = emptyList()
+                        }
+                    }
+
+                    LaunchedEffect(isLoggedIn, currentUserId) {
+                        refreshRoomsAndMembers()
+                    }
+
+                    // Auto-load members for active internet room if code is entered directly or via deep link
+                    LaunchedEffect(socketUiState.roomId) {
+                        val activeCode = socketUiState.roomId.trim()
+                        if (activeCode.isNotEmpty()) {
+                            scope.launch(Dispatchers.IO) {
+                                val res = SupabaseRoomManager.getApprovedRoomMembers(activeCode)
+                                if (res is RoomResult.Success) {
+                                    val mems = res.data.map { uname ->
+                                        SquadMember(
+                                            name = uname,
+                                            avatar = uname.take(1).uppercase(),
+                                            online = uname.equals(currentUsername, ignoreCase = true)
+                                        )
+                                    }.toMutableList()
+
+                                    if (currentUsername.isNotBlank() && mems.none { it.name.equals(currentUsername, ignoreCase = true) }) {
+                                        mems.add(
+                                            SquadMember(
+                                                name = currentUsername,
+                                                avatar = currentUsername.take(1).uppercase(),
+                                                online = true
+                                            )
+                                        )
+                                    }
+
+                                    withContext(Dispatchers.Main) {
+                                        val updated = roomMembersMap.toMutableMap()
+                                        updated[activeCode] = mems
+                                        updated[activeCode.uppercase()] = mems
+                                        updated[activeCode.lowercase()] = mems
+                                        roomMembersMap = updated
+                                    }
+                                }
+                            }
+                            fetchPendingRequests()
+                        }
+                    }
+
+                    // Auto-process deep links if any
+                    LaunchedEffect(deepLinkRoomId, isLoggedIn) {
+                        if (deepLinkRoomId.isNotEmpty() && isLoggedIn && currentUsername.isNotEmpty()) {
+                            val targetCode = deepLinkRoomId
+                            deepLinkRoomId = ""
+                            val userId = currentUserId
+
+                            CoroutineScope(Dispatchers.Main).launch {
+                                val roomRes = SupabaseRoomManager.getRoomByCode(targetCode)
+                                if (roomRes is RoomResult.Success) {
+                                    val room = roomRes.data
+                                    val statusRes = SupabaseRoomManager.getMemberStatus(room.id, userId)
+                                    val status = if (statusRes is RoomResult.Success) statusRes.data else null
+                                    val isOwner = room.ownerId == userId
+
+                                    if (isOwner || status == "APPROVED") {
+                                        notificationQueue.add("Entering ${room.name} 🚀")
+                                        enterInternetSquad(room.code, currentUsername, room.name)
+                                    } else if (status == "PENDING") {
+                                        notificationQueue.add("⏳ Join request pending owner approval for ${room.name}")
                                     } else {
-                                        wifiDirectManager?.startDiscovery()
+                                        val reqRes = SupabaseRoomManager.requestJoin(room.code, userId, currentUsername)
+                                        if (reqRes is RoomResult.Success) {
+                                            notificationQueue.add("⏳ Join request sent to ${room.name} owner for approval")
+                                        } else {
+                                            val errMsg = (reqRes as RoomResult.Error).message
+                                            notificationQueue.add(errMsg)
+                                        }
                                     }
                                 } else {
-                                    // Internet mode
-                                    btManager?.stopSquadScan()
-                                    wifiDirectManager?.stopDiscovery()
+                                    notificationQueue.add("⚠️ Squad not found for code: $targetCode")
                                 }
-                            },
-                            onEditCallSign = { showCallSignDialog = true },
-                            onLogout = {
-                                CoroutineScope(Dispatchers.IO).launch {
-                                    SupabaseAuthManager.signOut()
-                                }
-                                sessionManager.clearSession()
-                                currentUserId = ""
-                                currentUsername = ""
-                                persistentCallSign = ""
-                                isLoggedIn = false
-                                webRtcService?.webRTCManager?.cleanup()
-                                SupabaseRealtimeManager.leaveRoom()
-                                btManager?.leaveSquad()
-                                wifiDirectManager?.leaveSquad()
-                            },
-                            isBatterySaverEnabled = isBatterySaverEnabled,
-                            onBatterySaverToggle = { isBatterySaverEnabled = it },
-                            onJoinInternetRoom = { roomCode, roomName ->
-                                deepLinkRoomId = ""
-                                enterInternetSquad(roomCode, currentUsername, roomName)
-                            },
-                            btUiState = btUiState,
-                            wifiUiState = wifiUiState,
-                            hasPermissions = hasAllPermissions,
-                            onRequestPermissions = { checkAndRequestPermissions() },
-                            onHostBtSquad = { user, squad ->
-                                if (!isBluetoothEnabled()) showBluetoothDialog = true
-                                else btManager?.hostSquad(user, squad)
-                            },
-                            onJoinBtSquad = { squad, user ->
-                                if (!isBluetoothEnabled()) showBluetoothDialog = true
-                                else btManager?.joinSquad(squad, user)
-                            },
-                            onStartBtScan = {
-                                if (!isBluetoothEnabled()) showBluetoothDialog = true
-                                else btManager?.startSquadScan()
-                            },
-                            onHostWifiSquad = { user, squad ->
-                                if (!isWifiEnabled()) showWifiDialog = true
-                                else wifiDirectManager?.hostSquad(user, squad)
-                            },
-                            onJoinWifiSquad = { squad, user ->
-                                if (!isWifiEnabled()) showWifiDialog = true
-                                else wifiDirectManager?.joinSquad(squad, user)
-                            },
-                            onStartWifiScan = {
-                                if (!isWifiEnabled()) showWifiDialog = true
-                                else wifiDirectManager?.startDiscovery()
                             }
-                        )
+                        }
                     }
+
+                    WalkieTalkieApp(
+                        currentUserId = currentUserId,
+                        currentUsername = currentUsername.ifBlank { persistentCallSign.ifBlank { "User" } },
+                        persistentCallSign = persistentCallSign,
+                        isLoggedIn = isLoggedIn,
+                        selectedMode = selectedTransportMode,
+                        onSelectMode = { mode ->
+                            selectedTransportMode = mode
+                            val activeType = when (mode) {
+                                TransportMode.BLUETOOTH -> com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+                                TransportMode.WIFI_DIRECT -> com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+                                TransportMode.INTERNET -> com.example.walkietalkieapp.dna.model.TransportType.Internet
+                            }
+                            VoiceQualityEngine.instance.activeTransport = activeType
+
+                            if (mode == TransportMode.BLUETOOTH) {
+                                wifiDirectManager?.stopDiscovery()
+                                if (!isBluetoothEnabled()) {
+                                    showBluetoothDialog = true
+                                } else {
+                                    btManager?.startSquadScan()
+                                }
+                            } else if (mode == TransportMode.WIFI_DIRECT) {
+                                btManager?.stopSquadScan()
+                                if (!isWifiEnabled()) {
+                                    showWifiDialog = true
+                                } else {
+                                    wifiDirectManager?.startDiscovery()
+                                }
+                            } else {
+                                btManager?.stopSquadScan()
+                                wifiDirectManager?.stopDiscovery()
+                            }
+                        },
+                        onEditCallSign = { showCallSignDialog = true },
+                        onLogout = {
+                            CoroutineScope(Dispatchers.IO).launch {
+                                SupabaseAuthManager.signOut()
+                            }
+                            sessionManager.clearSession()
+                            currentUserId = ""
+                            currentUsername = ""
+                            persistentCallSign = ""
+                            isLoggedIn = false
+                            webRtcService?.webRTCManager?.cleanup()
+                            SupabaseRealtimeManager.leaveRoom()
+                            btManager?.leaveSquad()
+                            wifiDirectManager?.leaveSquad()
+                        },
+                        onAuthSuccess = { uid, uname ->
+                            sessionManager.saveSession(uid, uname)
+                            currentUserId = uid
+                            currentUsername = uname
+                            persistentCallSign = uname
+                            isLoggedIn = true
+                            refreshRoomsAndMembers()
+                        },
+
+                        // Internet Rooms
+                        myRooms = myRooms,
+                        roomMembersMap = roomMembersMap,
+                        onCreateInternetRoom = { name, code ->
+                            CoroutineScope(Dispatchers.IO).launch {
+                                val res = SupabaseRoomManager.createRoom(name, currentUserId, currentUsername)
+                                if (res is RoomResult.Success) {
+                                    refreshRoomsAndMembers()
+                                    runOnUiThread {
+                                        enterInternetSquad(res.data.code, currentUsername, res.data.name)
+                                    }
+                                }
+                            }
+                        },
+                        onJoinInternetRoomByCode = { code ->
+                            CoroutineScope(Dispatchers.IO).launch {
+                                val res = SupabaseRoomManager.getRoomByCode(code)
+                                if (res is RoomResult.Success) {
+                                    val room = res.data
+                                    val statusRes = SupabaseRoomManager.getMemberStatus(room.id, currentUserId)
+                                    val status = if (statusRes is RoomResult.Success) statusRes.data else null
+                                    val isOwner = room.ownerId == currentUserId
+
+                                    if (isOwner || status == "APPROVED") {
+                                        refreshRoomsAndMembers()
+                                        runOnUiThread {
+                                            notificationQueue.add("Entering ${room.name} 🚀")
+                                            enterInternetSquad(room.code, currentUsername, room.name)
+                                        }
+                                    } else if (status == "PENDING") {
+                                        runOnUiThread {
+                                            notificationQueue.add("⏳ Join request pending owner approval for ${room.name}")
+                                        }
+                                    } else {
+                                        val reqRes = SupabaseRoomManager.requestJoin(room.code, currentUserId, currentUsername)
+                                        if (reqRes is RoomResult.Success) {
+                                            runOnUiThread {
+                                                notificationQueue.add("⏳ Join request sent to ${room.name} owner for approval")
+                                            }
+                                        } else {
+                                            val errMsg = (reqRes as RoomResult.Error).message
+                                            runOnUiThread {
+                                                notificationQueue.add(errMsg)
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    runOnUiThread {
+                                        notificationQueue.add("⚠️ Squad not found for code: $code")
+                                    }
+                                }
+                            }
+                        },
+                        onEnterInternetRoom = { roomCode, roomName ->
+                            enterInternetSquad(roomCode, currentUsername, roomName)
+                        },
+                        onLeaveInternetRoom = {
+                            webRtcService?.webRTCManager?.cleanup()
+                            SupabaseRealtimeManager.leaveRoom()
+                            webRtcService?.updateNotification("Ready to talk")
+                        },
+                        activeInternetRoomId = socketUiState.roomId,
+                        activeInternetRoomName = socketUiState.roomName,
+                        onShareSquadCode = { code ->
+                            try {
+                                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("Squad Code", code)
+                                clipboard.setPrimaryClip(clip)
+                                notificationQueue.add("📋 Squad Code copied: $code")
+                            } catch (e: Exception) {
+                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, "Join my squad on SquadTalk with code: $code")
+                                }
+                                startActivity(Intent.createChooser(shareIntent, "Share Squad Code"))
+                            }
+                        },
+                        pendingRequests = pendingRequests,
+                        onApproveRequest = { req ->
+                            scope.launch(Dispatchers.IO) {
+                                val res = SupabaseRoomManager.approveRequest(req.roomId, req.userId)
+                                if (res is RoomResult.Success) {
+                                    withContext(Dispatchers.Main) {
+                                        notificationQueue.add("✅ Approved ${req.username}")
+                                    }
+                                    refreshRoomsAndMembers()
+                                }
+                            }
+                        },
+                        onDeclineRequest = { req ->
+                            scope.launch(Dispatchers.IO) {
+                                val res = SupabaseRoomManager.declineRequest(req.roomId, req.userId)
+                                if (res is RoomResult.Success) {
+                                    withContext(Dispatchers.Main) {
+                                        notificationQueue.add("❌ Declined ${req.username}")
+                                    }
+                                    refreshRoomsAndMembers()
+                                }
+                            }
+                        },
+
+                        // Floor & WebRTC
+                        floorStatus = floorStatus,
+                        socketUiState = socketUiState,
+                        isOthersSpeakingOnline = isOthersSpeakingOnline,
+                        hasAudioPermission = hasAudioPermission,
+                        onRequestAudioPermission = { checkAndRequestPermissions() },
+                        onStartTalkOnline = { isPriority ->
+                            startPushToTalkOnline(isPriority)
+                        },
+                        onStopTalkOnline = {
+                            stopPushToTalkOnline()
+                        },
+                        onReplayAudio = {
+                            if (selectedTransportMode == TransportMode.INTERNET) {
+                                webRtcService?.replayLastTransmissions()
+                            } else if (selectedTransportMode == TransportMode.BLUETOOTH) {
+                                btManager?.audioPlayer?.replayLastTransmissions()
+                            } else {
+                                wifiDirectManager?.audioPlayer?.replayLastTransmissions()
+                            }
+                        },
+                        onWhisperOnline = {
+                            vibrate()
+                            startPushToTalkOnline(false)
+                            CoroutineScope(Dispatchers.Main).launch {
+                                delay(2000)
+                                stopPushToTalkOnline()
+                            }
+                        },
+
+                        // Offline (Bluetooth & Wi-Fi Direct)
+                        btUiState = btUiState,
+                        wifiUiState = wifiUiState,
+                        onStartBtScan = {
+                            if (!isBluetoothEnabled()) showBluetoothDialog = true
+                            else btManager?.startSquadScan()
+                        },
+                        onHostBtSquad = { user, squad ->
+                            if (!isBluetoothEnabled()) showBluetoothDialog = true
+                            else btManager?.hostSquad(user, squad)
+                        },
+                        onJoinBtSquad = { squad, user ->
+                            if (!isBluetoothEnabled()) showBluetoothDialog = true
+                            else btManager?.joinSquad(squad, user)
+                        },
+                        onStartWifiScan = {
+                            if (!isWifiEnabled()) showWifiDialog = true
+                            else wifiDirectManager?.startDiscovery()
+                        },
+                        onHostWifiSquad = { user, squad ->
+                            if (!isWifiEnabled()) showWifiDialog = true
+                            else wifiDirectManager?.hostSquad(user, squad)
+                        },
+                        onJoinWifiSquad = { squad, user ->
+                            if (!isWifiEnabled()) showWifiDialog = true
+                            else wifiDirectManager?.joinSquad(squad, user)
+                        },
+                        onStartTalkOffline = {
+                            isUserSpeakingLocalOffline = true
+                            vibrate()
+                            playTone(ToneGenerator.TONE_CDMA_PIP)
+                            if (selectedTransportMode == TransportMode.BLUETOOTH) {
+                                btManager?.startTalking()
+                            } else {
+                                wifiDirectManager?.startTalking()
+                            }
+                            offlineService?.updateNotification("Transmitting...")
+                        },
+                        onStopTalkOffline = {
+                            isUserSpeakingLocalOffline = false
+                            if (selectedTransportMode == TransportMode.BLUETOOTH) {
+                                btManager?.stopTalking()
+                            } else {
+                                wifiDirectManager?.stopTalking()
+                            }
+                            offlineService?.updateNotification("Ready to talk")
+                        },
+                        onLeaveOfflineSquad = {
+                            if (selectedTransportMode == TransportMode.BLUETOOTH) {
+                                btManager?.leaveSquad()
+                            } else {
+                                wifiDirectManager?.leaveSquad()
+                            }
+                            offlineService?.updateNotification("Squad Talk Ready")
+                        },
+                        isUserSpeakingOffline = isUserSpeakingLocalOffline,
+
+                        // Controls
+                        isBatterySaverEnabled = isBatterySaverEnabled,
+                        onBatterySaverToggle = { isBatterySaverEnabled = it },
+                        isKrispAiEnabled = isKrispAiEnabled,
+                        onKrispAiToggle = { enabled ->
+                            isKrispAiEnabled = enabled
+                            webRtcService?.webRTCManager?.setKrispEnabled(enabled)
+                            notificationQueue.add(if (enabled) "✨ Krisp AI Voice Denoising Active" else "Krisp AI Voice Denoising Disabled")
+                        }
+                    )
 
                     // Persistent Call Sign Edit Dialog
                     if (showCallSignDialog) {
@@ -729,11 +879,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             if (notificationQueue.isNotEmpty()) {
                                 val msg = notificationQueue.removeAt(0)
                                 notificationMessage = msg
-                                delay(2500)
+                                android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                delay(2000)
                                 notificationMessage = null
-                                delay(300)
                             } else {
-                                delay(100)
+                                delay(500)
                             }
                         }
                     }
@@ -904,9 +1054,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        rotationSensor?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-        }
         if (hasAllPermissions) {
             checkHardwareStateForCurrentMode()
         }
@@ -914,27 +1061,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onPause() {
         super.onPause()
-        sensorManager?.unregisterListener(this)
         offlineService?.wifiDirectManager?.onAppBackgrounded()
         offlineService?.bluetoothManager?.onAppBackgrounded()
     }
 
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
-            val rotationMatrix = FloatArray(9)
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-            val orientation = FloatArray(3)
-            SensorManager.getOrientation(rotationMatrix, orientation)
-
-            val pitch = orientation[1]
-            val roll = orientation[2]
-
-            gyroOffset = Offset(
-                x = roll * 35f,
-                y = pitch * 35f
-            )
-        }
-    }
+    override fun onSensorChanged(event: SensorEvent?) {}
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
@@ -1017,5 +1148,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             unbindService(offlineServiceConnection)
             isOfflineBound = false
         }
+
+        // Stop services completely and dismiss any persistent notifications on app close
+        runCatching { stopService(Intent(this, WalkieTalkieService::class.java)) }
+        runCatching { stopService(Intent(this, BluetoothWalkieTalkieService::class.java)) }
     }
 }

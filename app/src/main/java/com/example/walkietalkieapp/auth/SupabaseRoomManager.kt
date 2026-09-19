@@ -136,10 +136,81 @@ object SupabaseRoomManager {
 
     suspend fun getMyRooms(userId: String): RoomResult<List<Room>> = withContext(Dispatchers.IO) {
         try {
-            // We need rooms where the user is an APPROVED member.
-            // Using PostgREST resource embedding / joins: room_members?user_id=eq.X&status=eq.APPROVED&select=rooms(*)
-            val url = "$SUPABASE_URL/rest/v1/room_members?user_id=eq.$userId&status=eq.APPROVED&select=rooms(id,name,code,owner_id)"
-            
+            val roomsMap = mutableMapOf<String, Room>()
+
+            // 1. Fetch rooms where user is an APPROVED member
+            val memberUrl = "$SUPABASE_URL/rest/v1/room_members?user_id=eq.$userId&status=eq.APPROVED&select=rooms(id,name,code,owner_id)"
+            val memberReq = Request.Builder()
+                .url(memberUrl)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(memberReq).execute().use { response ->
+                val responseBody = response.body?.string() ?: ""
+                if (response.isSuccessful) {
+                    val jsonArray = JSONArray(responseBody)
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        if (obj.has("rooms") && !obj.isNull("rooms")) {
+                            val rObj = obj.getJSONObject("rooms")
+                            val id = rObj.getString("id")
+                            roomsMap[id] = Room(
+                                id = id,
+                                name = rObj.getString("name"),
+                                code = rObj.getString("code"),
+                                ownerId = rObj.getString("owner_id")
+                            )
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "getMyRooms member query returned code ${response.code}")
+                }
+            }
+
+            // 2. Also fetch rooms where user is the OWNER
+            val ownerUrl = "$SUPABASE_URL/rest/v1/rooms?owner_id=eq.$userId&select=id,name,code,owner_id"
+            val ownerReq = Request.Builder()
+                .url(ownerUrl)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+
+            client.newCall(ownerReq).execute().use { response ->
+                val responseBody = response.body?.string() ?: ""
+                if (response.isSuccessful) {
+                    val jsonArray = JSONArray(responseBody)
+                    for (i in 0 until jsonArray.length()) {
+                        val rObj = jsonArray.getJSONObject(i)
+                        val id = rObj.getString("id")
+                        if (!roomsMap.containsKey(id)) {
+                            roomsMap[id] = Room(
+                                id = id,
+                                name = rObj.getString("name"),
+                                code = rObj.getString("code"),
+                                ownerId = rObj.getString("owner_id")
+                            )
+                        }
+                    }
+                }
+            }
+
+            return@withContext RoomResult.Success(roomsMap.values.toList())
+        } catch (e: Exception) {
+            Log.e(TAG, "getMyRooms exception", e)
+            return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun getAllRoomMembersForRooms(roomIds: List<String>): RoomResult<Map<String, List<RoomMember>>> = withContext(Dispatchers.IO) {
+        val cleanIds = roomIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return@withContext RoomResult.Success(emptyMap())
+        try {
+            val inClause = cleanIds.joinToString(",")
+            // Fetch all room members regardless of status casing
+            val url = "$SUPABASE_URL/rest/v1/room_members?room_id=in.($inClause)&select=room_id,user_id,username,status"
             val request = Request.Builder()
                 .url(url)
                 .addHeader("apikey", SUPABASE_ANON_KEY)
@@ -147,31 +218,95 @@ object SupabaseRoomManager {
                 .get()
                 .build()
 
+            val resultMap = mutableMapOf<String, MutableList<RoomMember>>()
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string() ?: ""
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "getMyRooms error ${response.code}: $responseBody")
-                    return@withContext RoomResult.Error("Failed to fetch rooms")
+                if (response.isSuccessful && responseBody.isNotBlank()) {
+                    val jsonArray = JSONArray(responseBody)
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val rId = obj.optString("room_id", "")
+                        val uId = obj.optString("user_id", "")
+                        val uName = obj.optString("username", "")
+                        val status = obj.optString("status", "APPROVED")
+                        // Accept APPROVED, approved, or blank
+                        if (rId.isNotBlank() && uName.isNotBlank() && (status.isEmpty() || status.equals("APPROVED", ignoreCase = true))) {
+                            val list = resultMap.getOrPut(rId) { mutableListOf() }
+                            if (list.none { it.username.equals(uName, ignoreCase = true) }) {
+                                list.add(RoomMember(userId = uId, username = uName, status = "APPROVED"))
+                            }
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "getAllRoomMembersForRooms response ${response.code}: $responseBody")
                 }
+            }
 
-                val rooms = mutableListOf<Room>()
-                val jsonArray = JSONArray(responseBody)
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    if (obj.has("rooms") && !obj.isNull("rooms")) {
-                        val rObj = obj.getJSONObject("rooms")
-                        rooms.add(Room(
-                            id = rObj.getString("id"),
-                            name = rObj.getString("name"),
-                            code = rObj.getString("code"),
-                            ownerId = rObj.getString("owner_id")
-                        ))
+            // Also ensure room owners are included for any room missing owner in room_members table
+            try {
+                val roomsUrl = "$SUPABASE_URL/rest/v1/rooms?id=in.($inClause)&select=id,owner_id"
+                val rReq = Request.Builder()
+                    .url(roomsUrl)
+                    .addHeader("apikey", SUPABASE_ANON_KEY)
+                    .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                    .get()
+                    .build()
+                client.newCall(rReq).execute().use { rRes ->
+                    val rBody = rRes.body?.string() ?: ""
+                    if (rRes.isSuccessful && rBody.isNotBlank()) {
+                        val rArr = JSONArray(rBody)
+                        val ownerIds = mutableListOf<String>()
+                        val roomOwnerMap = mutableMapOf<String, String>() // roomId -> ownerId
+                        for (i in 0 until rArr.length()) {
+                            val rObj = rArr.getJSONObject(i)
+                            val rid = rObj.optString("id", "")
+                            val oid = rObj.optString("owner_id", "")
+                            if (rid.isNotBlank() && oid.isNotBlank()) {
+                                roomOwnerMap[rid] = oid
+                                ownerIds.add(oid)
+                            }
+                        }
+
+                        if (ownerIds.isNotEmpty()) {
+                            val uClause = ownerIds.distinct().joinToString(",")
+                            val uUrl = "$SUPABASE_URL/rest/v1/users?id=in.($uClause)&select=id,username"
+                            val uReq = Request.Builder()
+                                .url(uUrl)
+                                .addHeader("apikey", SUPABASE_ANON_KEY)
+                                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                                .get()
+                                .build()
+                            client.newCall(uReq).execute().use { uRes ->
+                                val uBody = uRes.body?.string() ?: ""
+                                if (uRes.isSuccessful && uBody.isNotBlank()) {
+                                    val uArr = JSONArray(uBody)
+                                    val userMap = mutableMapOf<String, String>() // userId -> username
+                                    for (i in 0 until uArr.length()) {
+                                        val uObj = uArr.getJSONObject(i)
+                                        userMap[uObj.optString("id")] = uObj.optString("username")
+                                    }
+
+                                    roomOwnerMap.forEach { (rid, oid) ->
+                                        val ownerUsername = userMap[oid]
+                                        if (!ownerUsername.isNullOrBlank()) {
+                                            val list = resultMap.getOrPut(rid) { mutableListOf() }
+                                            if (list.none { it.username.equals(ownerUsername, ignoreCase = true) }) {
+                                                list.add(0, RoomMember(userId = oid, username = ownerUsername, status = "APPROVED"))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                return@withContext RoomResult.Success(rooms)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resolve missing room owners: ${e.message}")
             }
+
+            return@withContext RoomResult.Success(resultMap)
         } catch (e: Exception) {
-            Log.e(TAG, "getMyRooms exception", e)
+            Log.e(TAG, "getAllRoomMembersForRooms exception", e)
             return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")
         }
     }
@@ -180,12 +315,34 @@ object SupabaseRoomManager {
         val clean = roomCodeOrId.trim()
         if (clean.isBlank()) return@withContext RoomResult.Success(emptyList())
         try {
-            val url = if (clean.startsWith("WT-") || clean.length <= 8) {
-                "$SUPABASE_URL/rest/v1/room_members?status=eq.APPROVED&select=username,rooms!inner(code)&rooms.code=eq.${clean.uppercase()}"
+            var targetRoomId = clean
+            var ownerId: String? = null
+            // If clean is likely a code (starts with WT- or length <= 10 without hyphen dashes of UUID), resolve room id
+            val isCode = clean.startsWith("WT-", ignoreCase = true) || (clean.length <= 10 && !clean.contains("-"))
+            val findRoomUrl = if (isCode) {
+                "$SUPABASE_URL/rest/v1/rooms?code=eq.${clean.uppercase()}&select=id,owner_id"
             } else {
-                "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$clean&status=eq.APPROVED&select=username"
+                "$SUPABASE_URL/rest/v1/rooms?id=eq.$clean&select=id,owner_id"
             }
-            
+            val req = Request.Builder()
+                .url(findRoomUrl)
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string() ?: ""
+                if (res.isSuccessful && body.isNotBlank()) {
+                    val arr = JSONArray(body)
+                    if (arr.length() > 0) {
+                        val rObj = arr.getJSONObject(0)
+                        targetRoomId = rObj.optString("id", clean)
+                        ownerId = rObj.optString("owner_id").takeIf { it.isNotBlank() }
+                    }
+                }
+            }
+
+            val url = "$SUPABASE_URL/rest/v1/room_members?room_id=eq.$targetRoomId&select=username,status"
             val request = Request.Builder()
                 .url(url)
                 .addHeader("apikey", SUPABASE_ANON_KEY)
@@ -193,24 +350,50 @@ object SupabaseRoomManager {
                 .get()
                 .build()
 
+            val usernames = mutableListOf<String>()
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string() ?: ""
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "getApprovedRoomMembers error ${response.code}: $responseBody")
-                    return@withContext RoomResult.Error("Failed to fetch members")
-                }
-
-                val usernames = mutableListOf<String>()
-                val jsonArray = JSONArray(responseBody)
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val uname = obj.optString("username", "")
-                    if (uname.isNotBlank()) {
-                        usernames.add(uname)
+                if (response.isSuccessful && responseBody.isNotBlank()) {
+                    val jsonArray = JSONArray(responseBody)
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val uname = obj.optString("username", "")
+                        val status = obj.optString("status", "APPROVED")
+                        if (uname.isNotBlank() && (status.isEmpty() || status.equals("APPROVED", ignoreCase = true))) {
+                            usernames.add(uname)
+                        }
                     }
                 }
-                return@withContext RoomResult.Success(usernames.distinct())
             }
+
+            // If owner is not yet in usernames, resolve owner username
+            if (!ownerId.isNullOrBlank()) {
+                try {
+                    val uUrl = "$SUPABASE_URL/rest/v1/users?id=eq.$ownerId&select=username"
+                    val uReq = Request.Builder()
+                        .url(uUrl)
+                        .addHeader("apikey", SUPABASE_ANON_KEY)
+                        .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                        .get()
+                        .build()
+                    client.newCall(uReq).execute().use { uRes ->
+                        val uBody = uRes.body?.string() ?: ""
+                        if (uRes.isSuccessful && uBody.isNotBlank()) {
+                            val uArr = JSONArray(uBody)
+                            if (uArr.length() > 0) {
+                                val oName = uArr.getJSONObject(0).optString("username")
+                                if (oName.isNotBlank() && usernames.none { it.equals(oName, ignoreCase = true) }) {
+                                    usernames.add(0, oName)
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error resolving owner username: ${e.message}")
+                }
+            }
+
+            return@withContext RoomResult.Success(usernames.distinct())
         } catch (e: Exception) {
             Log.e(TAG, "getApprovedRoomMembers exception", e)
             return@withContext RoomResult.Error(e.localizedMessage ?: "Network error")

@@ -57,6 +57,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.1")
+    implementation("androidx.compose.ui:ui-text-google-fonts:1.6.0")
     
     // Added WebRTC and Supabase Realtime dependencies
     implementation("io.github.webrtc-sdk:android:144.7559.01")

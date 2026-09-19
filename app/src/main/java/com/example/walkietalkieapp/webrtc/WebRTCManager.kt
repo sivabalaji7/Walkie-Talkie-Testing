@@ -54,6 +54,26 @@ class WebRTCManager(private val context: Context) {
     private var isInitialized = false
     private var isSessionActive = false
     private var isTalking = false
+    @Volatile
+    private var authorizedSpeaker: String? = null
+
+    fun setAuthorizedSpeaker(speaker: String?) {
+        val clean = speaker?.trim()?.lowercase()
+        authorizedSpeaker = clean
+        Log.d(TAG, "Audio gating: setting authorized speaker to $clean across ${peerConnections.size} peer(s)")
+        audioExecutor.execute {
+            peerConnections.forEach { (peerKey, pc) ->
+                val isAllowed = clean != null && peerKey.equals(clean, ignoreCase = true)
+                pc.receivers.forEach { receiver ->
+                    val track = receiver.track()
+                    if (track is AudioTrack) {
+                        track.setEnabled(isAllowed)
+                        track.setVolume(if (isAllowed) 1.0 else 0.0)
+                    }
+                }
+            }
+        }
+    }
     
     var onStateChange: ((PeerConnection.IceConnectionState) -> Unit)? = null
     var onCallConnected: (() -> Unit)? = null
@@ -137,9 +157,12 @@ class WebRTCManager(private val context: Context) {
         }
     }
 
-    fun prepareForIncomingVoice() {
+    fun prepareForIncomingVoice(speaker: String? = authorizedSpeaker) {
         audioExecutor.execute {
             try {
+                if (speaker != null) {
+                    authorizedSpeaker = speaker.trim().lowercase()
+                }
                 ensureHandsFreeAudioRouting()
                 audioDeviceModule?.setSpeakerMute(false)
                 audioManager?.let { am ->
@@ -149,16 +172,18 @@ class WebRTCManager(private val context: Context) {
                         am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.85f).toInt(), 0)
                     }
                 }
-                peerConnections.values.forEach { pc ->
+                val allowedKey = authorizedSpeaker
+                peerConnections.forEach { (peerKey, pc) ->
+                    val isAllowed = allowedKey == null || peerKey.equals(allowedKey, ignoreCase = true)
                     pc.receivers.forEach { receiver ->
                         val track = receiver.track()
                         if (track is AudioTrack) {
-                            track.setEnabled(true)
-                            track.setVolume(1.0)
+                            track.setEnabled(isAllowed)
+                            track.setVolume(if (isAllowed) 1.0 else 0.0)
                         }
                     }
                 }
-                Log.d(TAG, "Hardware prepared for incoming voice transmission")
+                Log.d(TAG, "Hardware prepared for incoming voice (authorized speaker: $allowedKey)")
             } catch (e: Exception) {
                 Log.e(TAG, "Error preparing for incoming voice: ${e.message}")
             }
@@ -493,8 +518,9 @@ class WebRTCManager(private val context: Context) {
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error ensuring hands-free routing on track", e)
                             }
-                            track.setEnabled(true)
-                            track.setVolume(1.0)
+                            val isAllowed = authorizedSpeaker == null || normKey(peerId).equals(authorizedSpeaker, ignoreCase = true)
+                            track.setEnabled(isAllowed)
+                            track.setVolume(if (isAllowed) 1.0 else 0.0)
                             track.addSink { buffer, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames, timestamp ->
                                 val dup = buffer.duplicate()
                                 val data = ByteArray(dup.remaining())

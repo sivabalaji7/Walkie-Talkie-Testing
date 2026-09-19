@@ -7,7 +7,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
@@ -17,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,7 +26,6 @@ import com.example.walkietalkieapp.bluetooth.DiscoveredSquad
 import com.example.walkietalkieapp.wifidirect.DiscoveredWifiSquad
 import com.example.walkietalkieapp.wifidirect.WifiSquadUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MasterHomeScreen(
     currentUserId: String,
@@ -55,7 +54,7 @@ fun MasterHomeScreen(
             .fillMaxSize()
             .statusBarsPadding()
     ) {
-        // Master Header Bar (User Badge, Battery Saver, Logout)
+        // Master Header Bar (WalkieX Branding, Operator Callsign, Quick Controls)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -63,84 +62,124 @@ fun MasterHomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Operator Call Sign Badge (Clickable to Edit)
-            Surface(
-                onClick = onEditCallSign,
-                color = Color(0xFF14161B),
-                shape = RoundedCornerShape(20.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF262B35))
-            ) {
+            // Brand & System Indicator
+            Column {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        Icons.Default.AccountCircle,
-                        contentDescription = null,
-                        tint = when (selectedMode) {
-                            TransportMode.INTERNET -> Color(0xFF00FF66)
-                            TransportMode.BLUETOOTH -> Color(0xFF00E5FF)
-                            TransportMode.WIFI_DIRECT -> Color(0xFF4CAF50)
-                        },
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = callSign.ifBlank { currentUsername },
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        text = "WALKIEX",
+                        fontFamily = SpaceGrotesk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp,
+                        letterSpacing = 1.sp,
+                        color = TactileColors.onSurface
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(TactileColors.primaryContainer, CircleShape)
                     )
                 }
+                Text(
+                    text = "PRECISION TRANSCEIVER",
+                    fontFamily = Manrope,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.2.sp,
+                    color = TactileColors.onSurfaceVariant.copy(alpha = 0.7f)
+                )
             }
 
-            // Right Action Controls (Battery Saver Toggle + Logout)
+            // Right Actions (Operator Call Sign Badge + Battery Saver + Logout)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Operator Call Sign Badge (Clickable to Edit)
+                Surface(
+                    onClick = onEditCallSign,
+                    color = TactileColors.surfaceContainerLow,
+                    shape = TactileShapes.pill,
+                    modifier = Modifier.border(1.dp, TactileColors.ghostBorder, TactileShapes.pill)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        val modeColor = when (selectedMode) {
+                            TransportMode.INTERNET -> TactileColors.primary
+                            TransportMode.BLUETOOTH -> TactileColors.statusConnecting
+                            TransportMode.WIFI_DIRECT -> TactileColors.statusActive
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .background(modeColor, CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = callSign.ifBlank { currentUsername },
+                            color = TactileColors.onSurface,
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit Call Sign",
+                            tint = TactileColors.onSecondaryContainer,
+                            modifier = Modifier.size(11.dp)
+                        )
+                    }
+                }
+
+                // Battery Saver Toggle Button
                 IconButton(
                     onClick = { onBatterySaverToggle(!isBatterySaverEnabled) },
                     modifier = Modifier
                         .size(36.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF1E2126))
-                        .border(1.dp, Color(0xFF2E333D), CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
                     Icon(
-                        Icons.Default.BatterySaver,
+                        imageVector = Icons.Default.BatterySaver,
                         contentDescription = "Battery Saver",
-                        tint = if (isBatterySaverEnabled) Color(0xFF4CAF50) else Color.Gray,
+                        tint = if (isBatterySaverEnabled) TactileColors.statusActive else TactileColors.onSecondaryContainer,
                         modifier = Modifier.size(18.dp)
                     )
                 }
 
+                // Logout Button
                 IconButton(
                     onClick = onLogout,
                     modifier = Modifier
                         .size(36.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF1E2126))
-                        .border(1.dp, Color(0xFF2E333D), CircleShape)
+                        .background(TactileColors.surfaceContainerLow)
+                        .border(1.dp, TactileColors.ghostBorder, CircleShape)
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.Logout,
+                        imageVector = Icons.AutoMirrored.Filled.Logout,
                         contentDescription = "Log Out",
-                        tint = Color(0xFFFF5252),
+                        tint = TactileColors.error,
                         modifier = Modifier.size(18.dp)
                     )
                 }
             }
         }
 
-        // Segmented Transport Switcher Bar (Option 1: 3-Way Toggle)
+        // Segmented Transport Switcher Bar (Tactile Digitalism Tonal Switcher)
         Surface(
-            color = Color(0xFF121418),
-            shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222630)),
+            color = TactileColors.surfaceContainerLowest,
+            shape = TactileShapes.tile,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 4.dp)
+                .border(1.dp, TactileColors.ghostBorder, TactileShapes.tile)
         ) {
             Row(
                 modifier = Modifier
@@ -153,7 +192,7 @@ fun MasterHomeScreen(
                     title = "Internet",
                     icon = Icons.Default.Cloud,
                     isSelected = selectedMode == TransportMode.INTERNET,
-                    selectedColor = Color(0xFF00FF66),
+                    selectedColor = TactileColors.primary,
                     onClick = { onSelectMode(TransportMode.INTERNET) },
                     modifier = Modifier.weight(1f)
                 )
@@ -165,7 +204,7 @@ fun MasterHomeScreen(
                     title = "Bluetooth",
                     icon = Icons.Default.Bluetooth,
                     isSelected = selectedMode == TransportMode.BLUETOOTH,
-                    selectedColor = Color(0xFF00E5FF),
+                    selectedColor = TactileColors.statusConnecting,
                     onClick = { onSelectMode(TransportMode.BLUETOOTH) },
                     modifier = Modifier.weight(1f)
                 )
@@ -177,7 +216,7 @@ fun MasterHomeScreen(
                     title = "Wi-Fi Direct",
                     icon = Icons.Default.Wifi,
                     isSelected = selectedMode == TransportMode.WIFI_DIRECT,
-                    selectedColor = Color(0xFF4CAF50),
+                    selectedColor = TactileColors.statusActive,
                     onClick = { onSelectMode(TransportMode.WIFI_DIRECT) },
                     modifier = Modifier.weight(1f)
                 )
@@ -190,7 +229,7 @@ fun MasterHomeScreen(
             TransportMode.BLUETOOTH -> com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
             TransportMode.WIFI_DIRECT -> com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
         }
-        
+
         LaunchedEffect(currentTransportType) {
             com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.setActiveTransport(currentTransportType)
         }
@@ -198,7 +237,9 @@ fun MasterHomeScreen(
         val allLinks by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.allLinksState.collectAsState()
         val activeLinkState by com.example.walkietalkieapp.dna.valour.ValourLinkIntelligence.activeLinkState.collectAsState()
 
-        var selectedSheetLinkState by remember { mutableStateOf<com.example.walkietalkieapp.dna.valour.ValourLinkState?>(null) }
+        var selectedSheetLinkState by remember {
+            mutableStateOf<com.example.walkietalkieapp.dna.valour.ValourLinkState?>(null)
+        }
 
         Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
             com.example.walkietalkieapp.dna.valour.ValourLinkDashboardCard(
@@ -217,7 +258,7 @@ fun MasterHomeScreen(
 
         Spacer(modifier = Modifier.height(2.dp))
 
-        // Mode Content Container
+        // Mode Content Container (Smooth cross-fade transitions)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -277,23 +318,41 @@ fun MasterHomeScreen(
 @Composable
 fun TransportTabButton(
     title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     isSelected: Boolean,
     selectedColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (isSelected) TactileColors.surfaceContainerHighest else Color.Transparent,
+        animationSpec = tween(250),
+        label = "tabBg"
+    )
+
+    val iconColor by animateColorAsState(
+        targetValue = if (isSelected) selectedColor else TactileColors.onSecondaryContainer,
+        animationSpec = tween(250),
+        label = "tabIcon"
+    )
+
+    val textColor by animateColorAsState(
+        targetValue = if (isSelected) TactileColors.onSurface else TactileColors.onSecondaryContainer,
+        animationSpec = tween(250),
+        label = "tabText"
+    )
+
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) selectedColor.copy(alpha = 0.15f) else Color.Transparent)
+            .clip(TactileShapes.tile)
+            .background(backgroundColor)
             .border(
                 width = if (isSelected) 1.dp else 0.dp,
-                color = if (isSelected) selectedColor.copy(alpha = 0.6f) else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
+                color = if (isSelected) TactileColors.outlineVariant.copy(alpha = 0.5f) else Color.Transparent,
+                shape = TactileShapes.tile
             )
             .clickable { onClick() }
-            .padding(vertical = 8.dp, horizontal = 4.dp),
+            .padding(vertical = 10.dp, horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -303,15 +362,16 @@ fun TransportTabButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (isSelected) selectedColor else Color.Gray,
-                modifier = Modifier.size(15.dp)
+                tint = iconColor,
+                modifier = Modifier.size(16.dp)
             )
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = title,
-                color = if (isSelected) Color.White else Color.Gray,
-                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                fontSize = 11.sp
+                color = textColor,
+                fontFamily = if (isSelected) SpaceGrotesk else Manrope,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                fontSize = 12.sp
             )
         }
     }

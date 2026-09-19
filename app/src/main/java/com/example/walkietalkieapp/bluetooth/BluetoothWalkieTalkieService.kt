@@ -66,10 +66,27 @@ class BluetoothWalkieTalkieService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        bluetoothManager?.release()
+        bluetoothManager = null
+        wifiDirectManager?.release()
+        wifiDirectManager = null
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
 
     private fun createNotification(contentText: String): Notification {
         val notificationIntent = Intent(this, MainActivity::class.java).apply {
@@ -113,6 +130,14 @@ class BluetoothWalkieTalkieService : Service() {
         bluetoothManager = null
         wifiDirectManager?.release()
         wifiDirectManager = null
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         super.onDestroy()
     }
 }
