@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
@@ -57,6 +58,8 @@ fun DisplayPanel(
     wheelDeviceIndex: Int = 0,
     pairedDevices: List<DisplayDevice> = emptyList(),
     onCodeClick: (() -> Unit)? = null,
+    isE2EActive: Boolean = false,
+    e2eFingerprint: String = "",
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(connectivityMode)
@@ -149,33 +152,75 @@ fun DisplayPanel(
                     )
                 }
 
-                // Mode Badge
+                // Top Right: E2E Security Badge & Mode Badge
                 Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black.copy(alpha = 0.25f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val (modeIcon, modeLabel) = when (connectivityMode) {
-                        ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
-                        ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
-                        ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                    if (connectivityMode == ConnectivityMode.INTERNET) {
+                        val e2eColor = if (isE2EActive) Color(0xFF10B981) else Color.White.copy(alpha = 0.5f)
+                        val e2eBg = if (isE2EActive) Color(0xFF064E3B).copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.25f)
+                        val e2eBorder = if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.15f)
+
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(e2eBg)
+                                .border(0.5.dp, e2eBorder, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(e2eColor)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "E2E Encrypted",
+                                tint = e2eColor,
+                                modifier = Modifier.size(10.dp)
+                            )
+                            Text(
+                                text = if (isE2EActive) "E2E" else "E2E READY",
+                                color = if (isE2EActive) Color(0xFFD1FAE5) else Color.White.copy(alpha = 0.6f),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 9.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
                     }
 
-                    Icon(
-                        imageVector = modeIcon,
-                        contentDescription = modeLabel,
-                        tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(12.dp)
-                    )
-                    Text(
-                        text = modeLabel,
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp
-                    )
+                    // Mode Badge
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black.copy(alpha = 0.25f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val (modeIcon, modeLabel) = when (connectivityMode) {
+                            ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
+                            ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
+                            ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                        }
+
+                        Icon(
+                            imageVector = modeIcon,
+                            contentDescription = modeLabel,
+                            tint = Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = modeLabel,
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp
+                        )
+                    }
                 }
             }
 

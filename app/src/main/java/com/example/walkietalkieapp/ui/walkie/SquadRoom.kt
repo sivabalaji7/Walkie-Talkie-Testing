@@ -52,6 +52,8 @@ fun SquadRoom(
     pendingRequests: List<RoomMemberRequest> = emptyList(),
     onApproveRequest: (RoomMemberRequest) -> Unit = {},
     onDeclineRequest: (RoomMemberRequest) -> Unit = {},
+    isE2EActive: Boolean = false,
+    e2eFingerprint: String = "",
     modifier: Modifier = Modifier
 ) {
     var memberIndex by remember { mutableIntStateOf(0) }
@@ -111,7 +113,9 @@ fun SquadRoom(
                 isWheelActive = wheelActive,
                 wheelDeviceIndex = memberIndex,
                 pairedDevices = squad.members.map { DisplayDevice(it.name, it.avatar, it.online) },
-                onCodeClick = { onShareSquadCode(squad.id) }
+                onCodeClick = { onShareSquadCode(squad.id) },
+                isE2EActive = isE2EActive,
+                e2eFingerprint = e2eFingerprint
             )
 
             // 3. Copyable Squad Code Chip & Online Status Header

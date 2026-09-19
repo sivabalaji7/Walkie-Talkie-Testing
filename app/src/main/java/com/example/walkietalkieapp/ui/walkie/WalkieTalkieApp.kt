@@ -430,7 +430,9 @@ fun WalkieTalkieApp(
                                         else -> onStopTalkOffline()
                                     }
                                 },
-                                onQuickActions = onReplayAudio
+                                onQuickActions = onReplayAudio,
+                                isE2EActive = socketUiState.isE2EActive,
+                                e2eFingerprint = socketUiState.e2eFingerprint
                             )
                         } else {
                             SquadHub(

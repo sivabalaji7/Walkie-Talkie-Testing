@@ -1,6 +1,7 @@
 package com.example.walkietalkieapp.socket
 
 import android.util.Log
+import com.example.walkietalkieapp.crypto.E2ECryptoManager
 import com.example.walkietalkieapp.floor.FloorManager
 import com.example.walkietalkieapp.floor.FloorState
 import com.example.walkietalkieapp.supabase.SupabaseClientManager
@@ -28,18 +29,22 @@ data class SocketUiState(
     val voiceLinkState: String = "IDLE",
     val lastActivityTimestamp: Long = System.currentTimeMillis(),
     val lastSpeakerName: String? = null,
-    val lastSpeakerTimestamp: Long = 0
+    val lastSpeakerTimestamp: Long = 0,
+    val isE2EActive: Boolean = false,
+    val e2eFingerprint: String = ""
 )
 
 @Serializable
 data class SignalMessage(
-    val type: String = "", // "offer", "answer", "ice-candidate", "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave"
+    val type: String = "", // "offer", "answer", "ice-candidate", "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave", "key-exchange"
     val sender: String = "",
     val to: String? = null,
     val sdp: String? = null,
     val candidate: String? = null,
     val isPriority: Boolean? = null,
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val publicKey: String? = null,
+    val encryptedPayload: String? = null
 )
 
 @Serializable
@@ -143,12 +148,22 @@ object SupabaseRealtimeManager {
         FloorManager.myUsername = cleanUsername
         leaveRoom()
 
+        val myPubKey = try {
+            E2ECryptoManager.initSession()
+            E2ECryptoManager.getMyPublicKeyBase64()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing E2EE session: ${e.message}")
+            null
+        }
+
         _socketUiState.update { 
             it.copy(
                 roomId = cleanId, 
                 roomName = if (roomName.isNotEmpty()) roomName else cleanId, 
                 username = cleanUsername,
-                detail = "Joining $cleanId..."
+                detail = "Joining $cleanId...",
+                isE2EActive = false,
+                e2eFingerprint = E2ECryptoManager.getMyFingerprint()
             ) 
         }
         
@@ -198,8 +213,8 @@ object SupabaseRealtimeManager {
                 peerLastSeen[cleanUsername.lowercase()] = System.currentTimeMillis()
                 updateMemberList()
 
-                // Announce presence immediately via Broadcast peer-join
-                broadcastSignal(SignalMessage(type = "peer-join", sender = cleanUsername))
+                // Announce presence immediately via Broadcast peer-join with public key
+                broadcastSignal(SignalMessage(type = "peer-join", sender = cleanUsername, publicKey = myPubKey))
 
                 // Start active presence heartbeat loop (every 8 seconds)
                 heartbeatJob?.cancel()
@@ -331,12 +346,34 @@ object SupabaseRealtimeManager {
         // Any message from a sender acts as an implicit presence heartbeat
         handlePeerSeen(msg.sender)
 
+        // Ingest peer public key if attached to any message
+        msg.publicKey?.let { pubKey ->
+            val registered = E2ECryptoManager.registerPeerPublicKey(msg.sender, pubKey)
+            if (registered) {
+                _socketUiState.update { it.copy(isE2EActive = E2ECryptoManager.getEncryptedPeersCount() > 0) }
+                // If we don't have this peer recorded or if they joined, share our public key
+                val myKey = E2ECryptoManager.getMyPublicKeyBase64()
+                if (myKey != null && (msg.type == "peer-join" || msg.type == "key-exchange")) {
+                    broadcastSignal(SignalMessage(type = "key-exchange", sender = myName, to = msg.sender, publicKey = myKey))
+                }
+            }
+        }
+
         when (msg.type) {
+            "key-exchange" -> {
+                Log.d(TAG, "Received E2EE key-exchange from ${msg.sender}")
+                msg.publicKey?.let { pubKey ->
+                    if (E2ECryptoManager.registerPeerPublicKey(msg.sender, pubKey)) {
+                        _socketUiState.update { it.copy(isE2EActive = E2ECryptoManager.getEncryptedPeersCount() > 0) }
+                    }
+                }
+            }
             "peer-join" -> {
                 Log.d(TAG, "Received peer-join from ${msg.sender}")
                 handlePeerSeen(msg.sender)
-                // Acknowledge presence so the newly joined peer discovers us immediately
-                broadcastSignal(SignalMessage(type = "peer-ack", sender = myName, to = msg.sender))
+                // Acknowledge presence so the newly joined peer discovers us immediately, including our public key
+                val myKey = E2ECryptoManager.getMyPublicKeyBase64()
+                broadcastSignal(SignalMessage(type = "peer-ack", sender = myName, to = msg.sender, publicKey = myKey))
                 checkAndTriggerWebRtcOffers()
             }
             "peer-ack" -> {
@@ -349,18 +386,49 @@ object SupabaseRealtimeManager {
             }
             "peer-leave" -> {
                 Log.d(TAG, "Received peer-leave from ${msg.sender}")
+                E2ECryptoManager.removePeer(msg.sender)
+                _socketUiState.update { it.copy(isE2EActive = E2ECryptoManager.getEncryptedPeersCount() > 0) }
                 handlePeerLeft(msg.sender)
             }
             "offer" -> {
-                Log.d(TAG, "Received SDP offer from ${msg.sender}")
-                msg.sdp?.let { signalingListener?.onOfferReceived(msg.sender, it) }
+                Log.d(TAG, "Received SDP offer from ${msg.sender} (encrypted=${msg.encryptedPayload != null})")
+                val effectiveSdp = if (msg.encryptedPayload != null) {
+                    val decrypted = E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload)
+                    if (decrypted != null) {
+                        Log.d(TAG, "Successfully decrypted SDP offer from ${msg.sender} with AES-256-GCM")
+                        decrypted
+                    } else {
+                        Log.e(TAG, "Failed to decrypt SDP offer from ${msg.sender}, falling back to plaintext")
+                        msg.sdp
+                    }
+                } else {
+                    msg.sdp
+                }
+                effectiveSdp?.let { signalingListener?.onOfferReceived(msg.sender, it) }
             }
             "answer" -> {
-                Log.d(TAG, "Received SDP answer from ${msg.sender}")
-                msg.sdp?.let { signalingListener?.onAnswerReceived(msg.sender, it) }
+                Log.d(TAG, "Received SDP answer from ${msg.sender} (encrypted=${msg.encryptedPayload != null})")
+                val effectiveSdp = if (msg.encryptedPayload != null) {
+                    val decrypted = E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload)
+                    if (decrypted != null) {
+                        Log.d(TAG, "Successfully decrypted SDP answer from ${msg.sender} with AES-256-GCM")
+                        decrypted
+                    } else {
+                        Log.e(TAG, "Failed to decrypt SDP answer from ${msg.sender}, falling back to plaintext")
+                        msg.sdp
+                    }
+                } else {
+                    msg.sdp
+                }
+                effectiveSdp?.let { signalingListener?.onAnswerReceived(msg.sender, it) }
             }
             "ice-candidate" -> {
-                msg.candidate?.let { signalingListener?.onIceCandidateReceived(msg.sender, it) }
+                val effectiveCandidate = if (msg.encryptedPayload != null) {
+                    E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload) ?: msg.candidate
+                } else {
+                    msg.candidate
+                }
+                effectiveCandidate?.let { signalingListener?.onIceCandidateReceived(msg.sender, it) }
             }
             "floor-grant" -> {
                 val speaker = msg.sender
@@ -411,6 +479,7 @@ object SupabaseRealtimeManager {
 
         activePeers.clear()
         peerLastSeen.clear()
+        E2ECryptoManager.resetSession()
         _socketUiState.update { 
             it.copy(
                 roomId = "", 
@@ -418,7 +487,9 @@ object SupabaseRealtimeManager {
                 roomMembers = emptyList(), 
                 lastSpeakerName = null,
                 voiceLinkState = "IDLE",
-                detail = "Ready to connect."
+                detail = "Ready to connect.",
+                isE2EActive = false,
+                e2eFingerprint = ""
             ) 
         }
         FloorManager.reset()
@@ -427,17 +498,36 @@ object SupabaseRealtimeManager {
 
     fun sendOffer(targetPeerId: String, sdp: String) {
         val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, sdp = sdp))
+        val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, sdp)
+        if (encrypted != null) {
+            Log.d(TAG, "Sending AES-256-GCM encrypted SDP offer to $targetPeerId")
+            broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, encryptedPayload = encrypted))
+        } else {
+            Log.d(TAG, "Sending plaintext SDP offer to $targetPeerId (no shared secret yet)")
+            broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, sdp = sdp))
+        }
     }
 
     fun sendAnswer(targetPeerId: String, sdp: String) {
         val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, sdp = sdp))
+        val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, sdp)
+        if (encrypted != null) {
+            Log.d(TAG, "Sending AES-256-GCM encrypted SDP answer to $targetPeerId")
+            broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, encryptedPayload = encrypted))
+        } else {
+            Log.d(TAG, "Sending plaintext SDP answer to $targetPeerId (no shared secret yet)")
+            broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, sdp = sdp))
+        }
     }
 
     fun sendIceCandidate(targetPeerId: String, candidate: String) {
         val myName = _socketUiState.value.username.trim()
-        broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, candidate = candidate))
+        val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, candidate)
+        if (encrypted != null) {
+            broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, encryptedPayload = encrypted))
+        } else {
+            broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, candidate = candidate))
+        }
     }
 
     private fun broadcastSignal(msg: SignalMessage) {
