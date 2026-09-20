@@ -3,12 +3,15 @@ package com.example.walkietalkieapp.audio.intelligence
 /**
  * Represents the inferred acoustic state of the local microphone environment.
  */
-enum class AcousticEnvironment {
-    QUIET,       // Low noise floor, clean speech
-    NORMAL,      // Moderate ambient noise (e.g., standard room)
-    NOISY,       // High ambient noise (e.g., street, crowd, fan)
-    VERY_NOISY,  // Extreme noise, clipping risk
-    UNKNOWN      // Insufficient data to classify
+enum class AcousticEnvironment(
+    val displayName: String,
+    val colorHex: String
+) {
+    QUIET("QUIET (STUDIO)", "#22C55E"),
+    NORMAL("NORMAL (ROOM)", "#38BDF8"),
+    NOISY("NOISY (TRAFFIC/OFFICE)", "#F59E0B"),
+    VERY_NOISY("VERY NOISY (HIGH SPL)", "#EF4444"),
+    UNKNOWN("CALIBRATING...", "#9CA3AF")
 }
 
 /**

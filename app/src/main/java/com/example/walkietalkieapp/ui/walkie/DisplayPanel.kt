@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.ui.theme.*
 import kotlin.math.PI
 import kotlin.math.sin
@@ -65,6 +67,9 @@ fun DisplayPanel(
     isE2EActive: Boolean = false,
     e2eFingerprint: String = "",
     onE2EClick: (() -> Unit)? = null,
+    acousticSplDb: Float = 38.0f,
+    acousticEnvironment: AcousticEnvironment = AcousticEnvironment.QUIET,
+    onRadarClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(connectivityMode)
@@ -218,6 +223,74 @@ fun DisplayPanel(
                         }
                     }
 
+                    // Tactical Acoustic Radar Badge Button
+                    val radarColor = when (acousticEnvironment) {
+                        AcousticEnvironment.QUIET -> StatusReady
+                        AcousticEnvironment.NORMAL -> Color(0xFF38BDF8)
+                        AcousticEnvironment.NOISY -> StatusSearching
+                        AcousticEnvironment.VERY_NOISY -> Color(0xFFEF4444)
+                        AcousticEnvironment.UNKNOWN -> Color.White.copy(alpha = 0.6f)
+                    }
+                    val radarBg = Color.Black.copy(alpha = 0.28f)
+                    val radarBorder = radarColor.copy(alpha = 0.45f)
+
+                    val radarInteraction = remember { MutableInteractionSource() }
+                    val isRadarPressed by radarInteraction.collectIsPressedAsState()
+                    val radarScale by animateFloatAsState(
+                        targetValue = if (isRadarPressed) 0.88f else 1f,
+                        animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                        label = "radarBtnScale"
+                    )
+                    val haptic = LocalHapticFeedback.current
+
+                    Row(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                scaleX = radarScale
+                                scaleY = radarScale
+                            }
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(radarBg)
+                            .border(0.6.dp, radarBorder, RoundedCornerShape(8.dp))
+                            .clickable(
+                                interactionSource = radarInteraction,
+                                indication = null
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onRadarClick?.invoke()
+                            }
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(radarColor)
+                        )
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = "Acoustic Radar",
+                            tint = radarColor,
+                            modifier = Modifier.size(10.dp)
+                        )
+                        val envShort = when (acousticEnvironment) {
+                            AcousticEnvironment.QUIET -> "QUIET"
+                            AcousticEnvironment.NORMAL -> "NORM"
+                            AcousticEnvironment.NOISY -> "NOISY"
+                            AcousticEnvironment.VERY_NOISY -> "COMBAT"
+                            AcousticEnvironment.UNKNOWN -> "CAL"
+                        }
+                        Text(
+                            text = "${acousticSplDb.toInt()}dB $envShort",
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            letterSpacing = 0.4.sp
+                        )
+                    }
+
                     // Mode Badge
                     Row(
                         modifier = Modifier
@@ -363,7 +436,7 @@ fun DisplayPanel(
                     }
 
                     val talkingLabel = when (talkingState) {
-                        TalkingState.IDLE -> "No one talking"
+                        TalkingState.IDLE -> "Ambient: ${acousticSplDb.toInt()} dB • Ready"
                         TalkingState.YOU_TALKING -> "You're talking"
                         TalkingState.OTHER_TALKING -> if (otherUser.isNotEmpty()) "$otherUser is talking" else "Someone is talking"
                         TalkingState.LISTENING -> "Listening..."

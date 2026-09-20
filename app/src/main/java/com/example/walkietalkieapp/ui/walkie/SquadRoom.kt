@@ -42,9 +42,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import com.example.walkietalkieapp.audio.VoiceHistoryManager
 import com.example.walkietalkieapp.audio.VoiceTransmission
+import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
+import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
@@ -78,9 +81,23 @@ fun SquadRoom(
     var wheelActive by remember { mutableStateOf(false) }
     var showE2ESecurityModal by remember { mutableStateOf(false) }
     var showVoiceReelModal by remember { mutableStateOf(false) }
+    var showAcousticRadarModal by remember { mutableStateOf(false) }
     val transmissions by VoiceHistoryManager.transmissions.collectAsState()
     val currentlyPlayingId by VoiceHistoryManager.currentlyPlayingId.collectAsState()
+    val acousticSplDb by AcousticRadarManager.currentSplDb.collectAsState()
+    val acousticEnvironment by AcousticRadarManager.currentEnvironment.collectAsState()
+    val acousticNoiseFloor by AcousticRadarManager.baselineNoiseFloorDb.collectAsState()
+    val acousticSpectralBands by AcousticRadarManager.spectralBands.collectAsState()
+    val isRadarCalibrating by AcousticRadarManager.isCalibrating.collectAsState()
+    val radarCalibrationProgress by AcousticRadarManager.calibrationProgress.collectAsState()
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+
+    LaunchedEffect(talkingState) {
+        if (talkingState == TalkingState.IDLE) {
+            AcousticRadarManager.sampleAmbientOnce(context)
+        }
+    }
 
     LaunchedEffect(wheelActive) {
         if (wheelActive) {
@@ -138,7 +155,10 @@ fun SquadRoom(
                 onCodeClick = { onShareSquadCode(squad.id) },
                 isE2EActive = isE2EActive,
                 e2eFingerprint = e2eFingerprint,
-                onE2EClick = { showE2ESecurityModal = true }
+                onE2EClick = { showE2ESecurityModal = true },
+                acousticSplDb = acousticSplDb,
+                acousticEnvironment = acousticEnvironment,
+                onRadarClick = { showAcousticRadarModal = true }
             )
 
             // 3. Copyable Squad Code Chip & Online Status Header
@@ -335,7 +355,7 @@ fun SquadRoom(
                 }
             }
 
-            // 6. Action Buttons (Exit, Channel, Members, Speaker, Replay Reel)
+            // 6. Action Buttons (Exit, Channel, Members, Speaker, Radar, Replay Reel)
             ActionButtons(
                 isPowered = true,
                 onPowerToggle = onExit,
@@ -348,7 +368,11 @@ fun SquadRoom(
                 speakerOn = speakerOn,
                 inSquad = true,
                 mode = mode,
-                replayCount = transmissions.size
+                replayCount = transmissions.size,
+                onRadar = { showAcousticRadarModal = true },
+                radarLabel = "${acousticSplDb.toInt()} dB",
+                isRadarActive = true,
+                radarIndicatorColor = acousticEnvironment.toComposeColor()
             )
 
             // 7. Push To Talk Button
@@ -412,6 +436,25 @@ fun SquadRoom(
                     VoiceHistoryManager.stopPlayback()
                     showVoiceReelModal = false
                 }
+            )
+        }
+
+        // 11. Interactive Tactical Acoustic Radar Modal
+        if (showAcousticRadarModal) {
+            AcousticRadarDialog(
+                currentSplDb = acousticSplDb,
+                currentEnvironment = acousticEnvironment,
+                baselineNoiseFloorDb = acousticNoiseFloor,
+                spectralBands = acousticSpectralBands,
+                isCalibrating = isRadarCalibrating,
+                calibrationProgress = radarCalibrationProgress,
+                onCalibrate = {
+                    AcousticRadarManager.startAutoCalibration(context)
+                },
+                onDismiss = {
+                    showAcousticRadarModal = false
+                },
+                mode = mode
             )
         }
     }

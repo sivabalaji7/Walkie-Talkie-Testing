@@ -53,10 +53,12 @@ class AudioRecorder {
         isRecording = true
 
         try {
+            com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(true)
             activeRecorder.startRecording()
             Log.d(TAG, "AudioRecorder started recording with Far-Field Vocal Boost DSP (16kHz PCM)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
+            com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(false)
             isRecording = false
             return
         }
@@ -67,8 +69,9 @@ class AudioRecorder {
             while (isRecording) {
                 val read = activeRecorder.read(buffer, 0, buffer.size)
                 if (read > 0 && isRecording) {
-                    // 1. Analyze the raw acoustic environment
+                    // 1. Analyze the raw acoustic environment & Acoustic Radar
                     environmentAnalyzer.analyzeFrame(buffer, 0, read)
+                    com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.feedPcmFrame(buffer, 0, read)
                     
                     // 2. Decide the optimal enhancement profile
                     val activeProfile = policyEngine.evaluate(environmentAnalyzer.currentEnvironment)
@@ -95,6 +98,7 @@ class AudioRecorder {
     fun stop() {
         if (!isRecording) return
         isRecording = false
+        com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(false)
 
         val activeRecorder = recorder
         val oldThread = recordingThread

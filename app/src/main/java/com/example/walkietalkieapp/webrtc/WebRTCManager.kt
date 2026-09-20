@@ -337,6 +337,7 @@ class WebRTCManager(private val context: Context) {
                 val data = ByteArray(dup.remaining())
                 dup.get(data)
                 localAudioRecording.add(data)
+                com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.feedPcmFrame(data, 0, data.size)
             }
         }
     }
@@ -872,6 +873,7 @@ class WebRTCManager(private val context: Context) {
                 localAudioStartTime = System.currentTimeMillis()
                 localAudioRecording.clear()
                 isTalking = true
+                com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(true)
                 if (!isSessionActive) {
                     isSessionActive = true
                     if (!isInitialized) initialize()
@@ -908,6 +910,7 @@ class WebRTCManager(private val context: Context) {
                 
                 isTalking = false
                 localAudioTrack?.setEnabled(false)
+                com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(false)
                 commitLocalAudioTransmission()
                 Log.d(TAG, "PTT released — mic muted, audio focus retained for incoming transmission")
             } catch (e: Exception) {
