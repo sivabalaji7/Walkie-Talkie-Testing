@@ -45,6 +45,7 @@ fun ActionButtons(
     replayCount: Int = 0,
     radarTargetCount: Int = 0,
     isGpsActive: Boolean = false,
+    activeChannelCode: String = "CH-01",
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -73,10 +74,11 @@ fun ActionButtons(
             TacticalButton(
                 icon = Icons.Default.Radio,
                 label = "Channel",
-                isActive = false,
+                isActive = inSquad,
                 accent = false,
                 activeBrush = currentTheme.gradient,
                 indicatorColor = currentTheme.primaryColor,
+                badgeText = if (inSquad) activeChannelCode else "",
                 onClick = onCreateChannel,
                 modifier = Modifier.weight(1f)
             )
@@ -143,6 +145,7 @@ fun TacticalButton(
     indicatorColor: Color,
     onClick: () -> Unit,
     badgeCount: Int = 0,
+    badgeText: String = "",
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -197,18 +200,18 @@ fun TacticalButton(
             )
         }
 
-        // Tactical Counter Badge (e.g. unplayed voice reel transmissions)
-        if (badgeCount > 0) {
+        // Tactical Counter or Text Badge
+        if (badgeCount > 0 || badgeText.isNotEmpty()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-5).dp, y = 4.dp)
+                    .offset(x = (-4).dp, y = 4.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFFEF4444))
+                    .background(if (badgeText.isNotEmpty()) WalkieAmber.copy(alpha = 0.85f) else Color(0xFFEF4444))
                     .padding(horizontal = 4.dp, vertical = 1.dp)
             ) {
                 Text(
-                    text = if (badgeCount > 99) "99+" else "$badgeCount",
+                    text = if (badgeText.isNotEmpty()) badgeText else if (badgeCount > 99) "99+" else "$badgeCount",
                     color = Color.White,
                     fontSize = 7.5.sp,
                     fontWeight = FontWeight.ExtraBold,

@@ -53,6 +53,7 @@ import com.example.walkietalkieapp.audio.VoiceTransmission
 import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
+import com.example.walkietalkieapp.channel.SquadChannelManager
 import com.example.walkietalkieapp.chat.TacticalChatManager
 import com.example.walkietalkieapp.location.SquadRadarManager
 import com.example.walkietalkieapp.mesh.AdaptiveMeshManager
@@ -96,6 +97,9 @@ fun SquadRoom(
     var showHardwarePttModal by remember { mutableStateOf(false) }
     var showMeshModal by remember { mutableStateOf(false) }
     var showSquadRadarModal by remember { mutableStateOf(false) }
+    var showChannelTunerModal by remember { mutableStateOf(false) }
+    val activeChannel by SquadChannelManager.activeChannel.collectAsState()
+    val isEmergencyOverride by SquadChannelManager.isEmergencyOverrideActive.collectAsState()
     val isMeshFailoverActive by AdaptiveMeshManager.isFailoverActive.collectAsState()
     val squadLocations by SquadRadarManager.squadLocations.collectAsState()
     val isGpsLocked by SquadRadarManager.isGpsFixAcquired.collectAsState()
@@ -191,7 +195,7 @@ fun SquadRoom(
             DisplayPanel(
                 status = status,
                 talkingState = talkingState,
-                channelName = squad.name,
+                channelName = if (isEmergencyOverride) "🚨 EMERGENCY CH-06" else "${squad.name} • ${activeChannel.id}",
                 connectivityMode = mode,
                 squadCode = squad.id,
                 onlineCount = onlineCount,
@@ -359,7 +363,11 @@ fun SquadRoom(
             ActionButtons(
                 isPowered = true,
                 onPowerToggle = onExit,
-                onCreateChannel = { onShareSquadCode(squad.id) },
+                onCreateChannel = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    showChannelTunerModal = true
+                },
+                activeChannelCode = activeChannel.id,
                 onPairedDevices = { wheelActive = true },
                 onSpeaker = onSpeakerToggle,
                 onQuickActions = {
@@ -395,6 +403,7 @@ fun SquadRoom(
             onScroll = { dir ->
                 wheelActive = true
                 memberIndex = (memberIndex + dir).coerceIn(0, (squad.members.size - 1).coerceAtLeast(0))
+                SquadChannelManager.tuneStep(dir)
             },
             isActive = wheelActive,
             deviceCount = squad.members.size,
@@ -506,6 +515,13 @@ fun SquadRoom(
                 squadName = squad.name,
                 currentUsername = myUsername,
                 onDismiss = { showSquadRadarModal = false }
+            )
+        }
+
+        // 16. Interactive Tactical Channel & Frequency Tuner Modal
+        if (showChannelTunerModal) {
+            ChannelTunerDialog(
+                onDismiss = { showChannelTunerModal = false }
             )
         }
     }
