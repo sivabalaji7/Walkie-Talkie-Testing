@@ -1,6 +1,7 @@
 package com.example.walkietalkieapp.socket
 
 import android.util.Log
+import com.example.walkietalkieapp.chat.TacticalChatManager
 import com.example.walkietalkieapp.crypto.E2ECryptoManager
 import com.example.walkietalkieapp.floor.FloorManager
 import com.example.walkietalkieapp.floor.FloorState
@@ -36,7 +37,7 @@ data class SocketUiState(
 
 @Serializable
 data class SignalMessage(
-    val type: String = "", // "offer", "answer", "ice-candidate", "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave", "key-exchange"
+    val type: String = "", // "offer", "answer", "ice-candidate", "floor-grant", "floor-release", "peer-join", "peer-ack", "peer-ping", "peer-leave", "key-exchange", "tactical-msg"
     val sender: String = "",
     val to: String? = null,
     val sdp: String? = null,
@@ -44,7 +45,12 @@ data class SignalMessage(
     val isPriority: Boolean? = null,
     val timestamp: Long = 0L,
     val publicKey: String? = null,
-    val encryptedPayload: String? = null
+    val encryptedPayload: String? = null,
+    val textContent: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val locationLabel: String? = null,
+    val isBeacon: Boolean? = null
 )
 
 @Serializable
@@ -454,6 +460,18 @@ object SupabaseRealtimeManager {
                     Log.d(TAG, "Ignoring floor-release from ${msg.sender} because active speaker is $currentSpeaker")
                 }
             }
+            "tactical-msg" -> {
+                Log.d(TAG, "Received tactical-msg from ${msg.sender}")
+                TacticalChatManager.receiveMessage(
+                    sender = msg.sender,
+                    content = msg.textContent ?: "",
+                    timestamp = if (msg.timestamp > 0) msg.timestamp else System.currentTimeMillis(),
+                    latitude = msg.latitude,
+                    longitude = msg.longitude,
+                    locationLabel = msg.locationLabel,
+                    isBeacon = msg.isBeacon == true
+                )
+            }
         }
     }
 
@@ -575,6 +593,31 @@ object SupabaseRealtimeManager {
 
     fun emitReleaseFloor() {
         sendStopVoice()
+    }
+
+    fun sendTacticalMessage(
+        textContent: String,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        locationLabel: String? = null,
+        isBeacon: Boolean = false
+    ) {
+        val myName = _socketUiState.value.username.trim()
+        val roomId = _socketUiState.value.roomId
+        if (myName.isNotEmpty() && roomId.isNotEmpty()) {
+            broadcastSignal(
+                SignalMessage(
+                    type = "tactical-msg",
+                    sender = myName,
+                    textContent = textContent,
+                    latitude = latitude,
+                    longitude = longitude,
+                    locationLabel = locationLabel,
+                    isBeacon = isBeacon,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
     }
 
     fun rekeySession() {

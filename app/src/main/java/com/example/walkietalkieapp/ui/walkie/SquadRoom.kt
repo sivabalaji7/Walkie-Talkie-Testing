@@ -5,6 +5,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lock
@@ -50,6 +53,8 @@ import com.example.walkietalkieapp.audio.VoiceTransmission
 import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
+import com.example.walkietalkieapp.chat.TacticalChatManager
+import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -78,11 +83,15 @@ fun SquadRoom(
     onRekeySession: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val currentTheme = ModeThemes.get(mode)
     var memberIndex by remember { mutableIntStateOf(0) }
     var wheelActive by remember { mutableStateOf(false) }
     var showE2ESecurityModal by remember { mutableStateOf(false) }
     var showVoiceReelModal by remember { mutableStateOf(false) }
     var showAcousticRadarModal by remember { mutableStateOf(false) }
+    var showTacticalChatModal by remember { mutableStateOf(false) }
+    val tacticalMessages by TacticalChatManager.messages.collectAsState()
+    val tacticalUnreadCount by TacticalChatManager.unreadCount.collectAsState()
     val transmissions by VoiceHistoryManager.transmissions.collectAsState()
     val currentlyPlayingId by VoiceHistoryManager.currentlyPlayingId.collectAsState()
     val acousticSplDb by AcousticRadarManager.currentSplDb.collectAsState()
@@ -99,6 +108,13 @@ fun SquadRoom(
         AcousticRadarManager.startPeriodicMonitoring(context, intervalSeconds = 15L)
         onDispose {
             AcousticRadarManager.stopPeriodicMonitoring()
+        }
+    }
+
+    LaunchedEffect(showTacticalChatModal) {
+        TacticalChatManager.isChatDialogVisible = showTacticalChatModal
+        if (showTacticalChatModal) {
+            TacticalChatManager.markAllRead()
         }
     }
 
@@ -214,6 +230,51 @@ fun SquadRoom(
                             contentDescription = "Copy",
                             tint = WalkieTextSecondary,
                             modifier = Modifier.size(11.dp)
+                        )
+                    }
+                }
+
+                // Tactical Data Link Physical Chassis Button with Unread Badge
+                val chatInteractionSource = remember { MutableInteractionSource() }
+                val chatPressed by chatInteractionSource.collectIsPressedAsState()
+                val chatScale by animateFloatAsState(
+                    targetValue = if (chatPressed) 0.93f else 1f,
+                    animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                    label = "chatScale"
+                )
+
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        TacticalChatManager.markAllRead()
+                        showTacticalChatModal = true
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (tacticalUnreadCount > 0) WalkieAmber.copy(alpha = 0.22f) else WalkieButton,
+                    border = BorderStroke(1.dp, if (tacticalUnreadCount > 0) WalkieAmber else WalkieCardBorder),
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = chatScale
+                        scaleY = chatScale
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Forum,
+                            contentDescription = "Data Link",
+                            tint = if (tacticalUnreadCount > 0) WalkieAmber else currentTheme.primaryColor,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = if (tacticalUnreadCount > 0) "DATA LINK ($tacticalUnreadCount)" else "DATA LINK",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (tacticalUnreadCount > 0) WalkieAmber else WalkieTextPrimary,
+                            letterSpacing = 0.4.sp
                         )
                     }
                 }
@@ -466,6 +527,25 @@ fun SquadRoom(
                     showAcousticRadarModal = false
                 },
                 mode = mode
+            )
+        }
+
+        // 12. Interactive Tactical Micro-Chat & GPS Beacon Modal
+        if (showTacticalChatModal) {
+            val myUsername = SupabaseRealtimeManager.socketUiState.collectAsState().value.username.ifBlank { otherUser }.ifBlank { "OPERATOR" }
+            TacticalChatDialog(
+                messages = tacticalMessages,
+                senderName = myUsername,
+                mode = mode,
+                onSendMessage = { text ->
+                    TacticalChatManager.sendTextMessage(myUsername, text)
+                },
+                onSendGpsBeacon = {
+                    TacticalChatManager.sendGpsBeacon(context, myUsername, label = "${squad.name} BEACON")
+                },
+                onDismiss = {
+                    showTacticalChatModal = false
+                }
             )
         }
     }
