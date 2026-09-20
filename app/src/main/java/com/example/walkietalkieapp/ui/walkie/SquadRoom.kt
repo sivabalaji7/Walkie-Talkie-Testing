@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -98,6 +99,15 @@ fun SquadRoom(
         AcousticRadarManager.startPeriodicMonitoring(context, intervalSeconds = 15L)
         onDispose {
             AcousticRadarManager.stopPeriodicMonitoring()
+        }
+    }
+
+    val rosterListState = rememberLazyListState()
+
+    // Smoothly scroll the horizontal squad roster when memberIndex changes
+    LaunchedEffect(memberIndex) {
+        if (squad.members.isNotEmpty() && memberIndex in squad.members.indices) {
+            rosterListState.animateScrollToItem(memberIndex)
         }
     }
 
@@ -257,6 +267,7 @@ fun SquadRoom(
                     }
                 } else {
                     LazyRow(
+                        state = rosterListState,
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -264,9 +275,11 @@ fun SquadRoom(
                         items(squad.members, key = { it.name }) { member ->
                             val isCurrentSpeaker = member.name.equals(otherUser, ignoreCase = true) ||
                                 (member.online && member.isSpeaking)
+                            val isSelected = squad.members.indexOf(member) == memberIndex && wheelActive
                             TacticalMemberBadge(
                                 member = member,
                                 isCurrentSpeaker = isCurrentSpeaker,
+                                isSelected = isSelected,
                                 modifier = Modifier.clickable {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     memberIndex = squad.members.indexOf(member)
@@ -486,6 +499,7 @@ private fun SpeakingAura() {
 fun TacticalMemberBadge(
     member: SquadMember,
     isCurrentSpeaker: Boolean,
+    isSelected: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -501,6 +515,14 @@ fun TacticalMemberBadge(
             // Speaking Halo when transmitting
             if (isCurrentSpeaker) {
                 SpeakingAura()
+            } else if (isSelected) {
+                // Tactical Selection Ring when dialed by scroller
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .border(1.5.dp, WalkieAmber, CircleShape)
+                )
             }
 
             // Avatar Circle
@@ -510,12 +532,13 @@ fun TacticalMemberBadge(
                     .clip(CircleShape)
                     .background(
                         if (isCurrentSpeaker) WalkieAmber
+                        else if (isSelected) WalkieAmber.copy(alpha = 0.25f)
                         else if (member.online) WalkieButton
                         else WalkieDeviceBody
                     )
                     .border(
-                        width = if (isCurrentSpeaker) 2.dp else 1.dp,
-                        color = if (isCurrentSpeaker) WalkieAmber
+                        width = if (isCurrentSpeaker || isSelected) 2.dp else 1.dp,
+                        color = if (isCurrentSpeaker || isSelected) WalkieAmber
                         else if (member.online) WalkieAmber.copy(alpha = 0.6f)
                         else WalkieCardBorder,
                         shape = CircleShape
@@ -528,6 +551,7 @@ fun TacticalMemberBadge(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isCurrentSpeaker) Color.Black
+                    else if (isSelected) WalkieAmber
                     else if (member.online) WalkieTextPrimary
                     else WalkieTextMuted
                 )
@@ -563,8 +587,8 @@ fun TacticalMemberBadge(
             text = member.name,
             fontFamily = PlusJakartaSans,
             fontSize = 10.sp,
-            fontWeight = if (isCurrentSpeaker || member.online) FontWeight.Bold else FontWeight.Normal,
-            color = if (isCurrentSpeaker) WalkieAmber
+            fontWeight = if (isCurrentSpeaker || isSelected || member.online) FontWeight.Bold else FontWeight.Normal,
+            color = if (isCurrentSpeaker || isSelected) WalkieAmber
             else if (member.online) WalkieTextPrimary
             else WalkieTextMuted,
             maxLines = 1,

@@ -45,17 +45,24 @@ fun DeviceWheel(
     val minAngle = -(safeDeviceCount - 1) * STEP_ANGLE
     val maxAngle = 0f
 
+    val currentOnScroll by rememberUpdatedState(onScroll)
+    val currentSafeIndex by rememberUpdatedState(safeIndex)
+    val currentDeviceCount by rememberUpdatedState(safeDeviceCount)
+
     val angleAnim = remember { Animatable(-safeIndex * STEP_ANGLE) }
     var angle by remember { mutableFloatStateOf(-safeIndex * STEP_ANGLE) }
     var accY by remember { mutableFloatStateOf(0f) }
     var isDragging by remember { mutableStateOf(false) }
 
+    // Animate to target angle when safeIndex changes, but only if user is not actively dragging
     LaunchedEffect(safeIndex, safeDeviceCount) {
-        val target = -safeIndex * STEP_ANGLE
-        if (abs(angle - target) > 0.02f) {
-            angleAnim.snapTo(angle)
-            angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 420f)) {
-                angle = this.value
+        if (!isDragging) {
+            val target = -safeIndex * STEP_ANGLE
+            if (abs(angle - target) > 0.02f) {
+                angleAnim.snapTo(angle)
+                angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 420f)) {
+                    angle = this.value
+                }
             }
         }
     }
@@ -88,7 +95,7 @@ fun DeviceWheel(
                     if (isActive || isDragging) WalkieAmber.copy(alpha = 0.7f) else WalkieCardBorder,
                     RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
                 )
-                .pointerInput(safeIndex, safeDeviceCount) {
+                .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = {
                             isDragging = true
@@ -97,7 +104,7 @@ fun DeviceWheel(
                         onDragEnd = {
                             isDragging = false
                             accY = 0f
-                            val target = -safeIndex * STEP_ANGLE
+                            val target = -currentSafeIndex * STEP_ANGLE
                             coroutineScope.launch {
                                 angleAnim.snapTo(angle)
                                 angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 450f)) {
@@ -108,7 +115,7 @@ fun DeviceWheel(
                         onDragCancel = {
                             isDragging = false
                             accY = 0f
-                            val target = -safeIndex * STEP_ANGLE
+                            val target = -currentSafeIndex * STEP_ANGLE
                             coroutineScope.launch {
                                 angleAnim.snapTo(angle)
                                 angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 450f)) {
@@ -122,29 +129,35 @@ fun DeviceWheel(
                             val rawDelta = -dy * 0.045f
                             accY += dy
 
-                            val newAngle = if (rawDelta > 0 && angle >= maxAngle) {
-                                (angle + rawDelta * 0.12f).coerceAtMost(maxAngle + 0.20f)
-                            } else if (rawDelta < 0 && angle <= minAngle) {
-                                (angle + rawDelta * 0.12f).coerceAtLeast(minAngle - 0.20f)
+                            val maxA = 0f
+                            val minA = -(currentDeviceCount - 1) * STEP_ANGLE
+
+                            val newAngle = if (rawDelta > 0 && angle >= maxA) {
+                                (angle + rawDelta * 0.12f).coerceAtMost(maxA + 0.20f)
+                            } else if (rawDelta < 0 && angle <= minA) {
+                                (angle + rawDelta * 0.12f).coerceAtLeast(minA - 0.20f)
                             } else {
-                                (angle + rawDelta).coerceIn(minAngle - 0.20f, maxAngle + 0.20f)
+                                (angle + rawDelta).coerceIn(minA - 0.20f, maxA + 0.20f)
                             }
                             angle = newAngle
 
-                            // Stepped scroll triggering with bounds check and haptics
-                            if (abs(accY) > 18f) {
+                            // Continuous multi-point stepped scroll
+                            // Seamlessly processes multiple steps in a single swipe without stopping
+                            val stepThreshold = 16f
+                            while (abs(accY) >= stepThreshold) {
                                 val dir = if (accY > 0) 1 else -1
-                                if (dir > 0 && safeIndex < safeDeviceCount - 1) {
+                                if (dir > 0 && currentSafeIndex < currentDeviceCount - 1) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onScroll(1)
-                                    accY = 0f
-                                } else if (dir < 0 && safeIndex > 0) {
+                                    currentOnScroll(1)
+                                    accY -= stepThreshold
+                                } else if (dir < 0 && currentSafeIndex > 0) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    onScroll(-1)
-                                    accY = 0f
+                                    currentOnScroll(-1)
+                                    accY += stepThreshold
                                 } else {
-                                    // Hard stop reached: clamp travel
+                                    // Boundary hard stop reached
                                     accY = 0f
+                                    break
                                 }
                             }
                         }
