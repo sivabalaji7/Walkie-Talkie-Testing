@@ -54,6 +54,7 @@ import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.chat.TacticalChatManager
+import com.example.walkietalkieapp.mesh.AdaptiveMeshManager
 import com.example.walkietalkieapp.ptt.HardwarePttManager
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.theme.*
@@ -92,6 +93,8 @@ fun SquadRoom(
     var showAcousticRadarModal by remember { mutableStateOf(false) }
     var showTacticalChatModal by remember { mutableStateOf(false) }
     var showHardwarePttModal by remember { mutableStateOf(false) }
+    var showMeshModal by remember { mutableStateOf(false) }
+    val isMeshFailoverActive by AdaptiveMeshManager.isFailoverActive.collectAsState()
     val isHwPttEnabled by HardwarePttManager.isVolumeKeyPttEnabled.collectAsState()
     val isHwKeyDown by HardwarePttManager.isHardwareKeyDown.collectAsState()
     val tacticalMessages by TacticalChatManager.messages.collectAsState()
@@ -136,6 +139,14 @@ fun SquadRoom(
             delay(2500)
             wheelActive = false
         }
+    }
+
+    // Keep Mesh Topology Nodes synchronized with real-time squad roster
+    LaunchedEffect(squad.members) {
+        AdaptiveMeshManager.syncSquadNodes(
+            members = squad.members.map { it.name },
+            selfName = otherUser.ifBlank { "OPERATOR" }
+        )
     }
 
     Box(
@@ -200,7 +211,12 @@ fun SquadRoom(
                 onE2EClick = { showE2ESecurityModal = true },
                 acousticSplDb = acousticSplDb,
                 acousticEnvironment = acousticEnvironment,
-                onRadarClick = { showAcousticRadarModal = true }
+                onRadarClick = { showAcousticRadarModal = true },
+                isFailoverActive = isMeshFailoverActive,
+                onMeshClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    showMeshModal = true
+                }
             )
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -461,6 +477,15 @@ fun SquadRoom(
             HardwarePttDialog(
                 mode = mode,
                 onDismiss = { showHardwarePttModal = false }
+            )
+        }
+
+        // 14. Interactive Hybrid Mesh Topology Radar & Fallback Modal
+        if (showMeshModal) {
+            MeshTopologyDialog(
+                onDismiss = {
+                    showMeshModal = false
+                }
             )
         }
     }

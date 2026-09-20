@@ -287,6 +287,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // Initialize Communication DNA / Network Intelligence Engine
         com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.initialize(this)
 
+        // Initialize Adaptive Mesh & Auto-Failover Engine
+        com.example.walkietalkieapp.mesh.AdaptiveMeshManager.bindConnectivity(this)
+
         // Initialize Online WebRTC Socket
         SupabaseRealtimeManager.initialize()
         SupabaseRealtimeManager.connect()
@@ -1203,6 +1206,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        com.example.walkietalkieapp.mesh.AdaptiveMeshManager.unbindConnectivity(this)
         HardwarePttManager.unregisterPttTrigger()
         if (isSystemReceiverRegistered) {
             runCatching { unregisterReceiver(systemStateReceiver) }

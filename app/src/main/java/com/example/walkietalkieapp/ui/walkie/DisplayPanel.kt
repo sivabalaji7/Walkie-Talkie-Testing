@@ -78,6 +78,8 @@ fun DisplayPanel(
     acousticSplDb: Float = 38.0f,
     acousticEnvironment: AcousticEnvironment = AcousticEnvironment.QUIET,
     onRadarClick: (() -> Unit)? = null,
+    isFailoverActive: Boolean = false,
+    onMeshClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(connectivityMode)
@@ -185,31 +187,61 @@ fun DisplayPanel(
                         letterSpacing = 0.8.sp
                     )
 
-                    // Compact Mode Pill
-                    val (modeIcon, modeLabel) = when (connectivityMode) {
-                        ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
-                        ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
-                        ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                    // Tactical Hybrid Mesh & Failover Button
+                    val meshInteraction = remember { MutableInteractionSource() }
+                    val isMeshPressed by meshInteraction.collectIsPressedAsState()
+                    val meshScale by animateFloatAsState(
+                        targetValue = if (isMeshPressed) 0.88f else 1f,
+                        animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                        label = "meshBtnScale"
+                    )
+
+                    val (modeIcon, modeLabel) = when {
+                        isFailoverActive -> Pair(Icons.Default.Wifi, "FAILOVER")
+                        connectivityMode == ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "MESH")
+                        connectivityMode == ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
+                        connectivityMode == ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                        else -> Pair(Icons.Default.Language, "NET")
                     }
+
+                    val meshBorder = if (isFailoverActive) WalkieAmber.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.16f)
+                    val meshBg = if (isFailoverActive) Color(0xFF78350F).copy(alpha = 0.45f) else Color.Black.copy(alpha = 0.24f)
 
                     Row(
                         modifier = Modifier
+                            .graphicsLayer {
+                                scaleX = meshScale
+                                scaleY = meshScale
+                            }
                             .clip(RoundedCornerShape(6.dp))
-                            .background(Color.Black.copy(alpha = 0.24f))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                            .background(meshBg)
+                            .border(0.5.dp, meshBorder, RoundedCornerShape(6.dp))
+                            .clickable(
+                                interactionSource = meshInteraction,
+                                indication = null
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onMeshClick?.invoke()
+                            }
                             .padding(horizontal = 5.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .size(4.5.dp)
+                                .clip(CircleShape)
+                                .background(if (isFailoverActive) WalkieAmber else StatusReady)
+                        )
                         Icon(
                             imageVector = modeIcon,
                             contentDescription = modeLabel,
-                            tint = Color.White.copy(alpha = 0.85f),
+                            tint = if (isFailoverActive) WalkieAmber else Color.White.copy(alpha = 0.85f),
                             modifier = Modifier.size(9.dp)
                         )
                         Text(
                             text = modeLabel,
-                            color = Color.White.copy(alpha = 0.85f),
+                            color = if (isFailoverActive) WalkieAmber else Color.White.copy(alpha = 0.85f),
                             fontWeight = FontWeight.Bold,
                             fontSize = 8.5.sp
                         )
