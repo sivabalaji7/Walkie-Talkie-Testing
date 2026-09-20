@@ -1,17 +1,22 @@
 package com.example.walkietalkieapp.ui.walkie
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,6 +44,9 @@ fun PushToTalk(
     onPressEnd: () -> Unit,
     disabled: Boolean = false,
     mode: ConnectivityMode = ConnectivityMode.INTERNET,
+    onHardwarePttClick: () -> Unit = {},
+    isHardwarePttEnabled: Boolean = true,
+    isHardwareKeyDown: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -199,5 +207,58 @@ fun PushToTalk(
             color = if (isTalking) currentTheme.primaryColor else WalkieTextMuted,
             letterSpacing = 1.5.sp
         )
+
+        Spacer(modifier = Modifier.height(5.dp))
+
+        // Hardware PTT Physical Chassis Switch Pill
+        val hwInteractionSource = remember { MutableInteractionSource() }
+        val hwPressed by hwInteractionSource.collectIsPressedAsState()
+        val hwScale by animateFloatAsState(
+            targetValue = if (hwPressed) 0.93f else 1f,
+            animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+            label = "hwScale"
+        )
+
+        Surface(
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onHardwarePttClick()
+            },
+            shape = RoundedCornerShape(8.dp),
+            color = if (isHardwareKeyDown) WalkieAmber.copy(alpha = 0.25f)
+                    else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.12f)
+                    else WalkieButton,
+            border = BorderStroke(
+                1.dp,
+                if (isHardwareKeyDown) WalkieAmber
+                else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.5f)
+                else WalkieCardBorder
+            ),
+            modifier = Modifier.graphicsLayer {
+                scaleX = hwScale
+                scaleY = hwScale
+            }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else StatusOff)
+                )
+                Text(
+                    text = if (isHardwareKeyDown) "HW KEY PRESSED" else if (isHardwarePttEnabled) "HW PTT: VOL KEY ON" else "HW PTT: OFF",
+                    fontFamily = SpaceGrotesk,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else WalkieTextSecondary,
+                    letterSpacing = 0.5.sp
+                )
+            }
+        }
     }
 }

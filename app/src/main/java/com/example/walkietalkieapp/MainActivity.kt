@@ -25,9 +25,11 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import com.example.walkietalkieapp.ptt.HardwarePttManager
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -359,6 +361,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
 
+        // Hardware PTT Trigger Registration (Volume Down, Headset, Notification)
+        HardwarePttManager.registerPttTrigger(
+            onStart = { runOnUiThread { triggerHardwarePttStart() } },
+            onEnd = { runOnUiThread { triggerHardwarePttStop() } }
+        )
+
         setContent {
             WalkieTalkieAppTheme(darkTheme = true) {
                 Surface(modifier = Modifier.fillMaxSize(), color = TactileColors.background) {
@@ -388,6 +396,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val isBtActiveRoom = btUiState.connectionState == "HOSTING" || btUiState.connectionState == "CONNECTED" || btUiState.connectionState == "CONNECTING"
                     val isWifiActiveRoom = wifiUiState.connectionState == "HOSTING" || wifiUiState.connectionState == "CONNECTED" || wifiUiState.connectionState == "CONNECTING"
                     val isInternetActiveRoom = socketUiState.roomId.isNotEmpty()
+
+                    val inActiveSquad = (selectedTransportMode == TransportMode.INTERNET && isInternetActiveRoom) ||
+                        (selectedTransportMode == TransportMode.BLUETOOTH && isBtActiveRoom) ||
+                        (selectedTransportMode == TransportMode.WIFI_DIRECT && isWifiActiveRoom)
+
+                    LaunchedEffect(inActiveSquad) {
+                        HardwarePttManager.isInsideActiveSquad = inActiveSquad
+                    }
 
                     val isUserSpeakingLocalOnline = floorStatus.state == FloorState.TRANSMITTING
                     val othersSpeakingStateOnline = socketUiState.roomMembers.any { it.isSpeaking && it.username != socketUiState.username }
@@ -950,6 +966,39 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         FloorManager.releaseFloor()
     }
 
+    private fun triggerHardwarePttStart() {
+        if (!hasAudioPermission) return
+        when (selectedTransportMode) {
+            TransportMode.INTERNET -> startPushToTalkOnline(false)
+            TransportMode.BLUETOOTH -> {
+                vibrate()
+                playTone(ToneGenerator.TONE_CDMA_PIP)
+                offlineService?.bluetoothManager?.startTalking()
+                offlineService?.updateNotification("Transmitting...")
+            }
+            TransportMode.WIFI_DIRECT -> {
+                vibrate()
+                playTone(ToneGenerator.TONE_CDMA_PIP)
+                offlineService?.wifiDirectManager?.startTalking()
+                offlineService?.updateNotification("Transmitting...")
+            }
+        }
+    }
+
+    private fun triggerHardwarePttStop() {
+        when (selectedTransportMode) {
+            TransportMode.INTERNET -> stopPushToTalkOnline()
+            TransportMode.BLUETOOTH -> {
+                offlineService?.bluetoothManager?.stopTalking()
+                offlineService?.updateNotification("Ready to talk")
+            }
+            TransportMode.WIFI_DIRECT -> {
+                offlineService?.wifiDirectManager?.stopTalking()
+                offlineService?.updateNotification("Ready to talk")
+            }
+        }
+    }
+
     private fun startWebRtcService() {
         val intent = Intent(this, WalkieTalkieService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1131,8 +1180,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         notificationQueue.add("Invite link copied to share 🚀")
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_HEADSETHOOK ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_PLAY ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_STOP
+        ) {
+            if (HardwarePttManager.isInsideActiveSquad) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    val handled = HardwarePttManager.onHardwareKeyDown(keyCode, event.repeatCount)
+                    if (handled) return true
+                } else if (event.action == KeyEvent.ACTION_UP) {
+                    val handled = HardwarePttManager.onHardwareKeyUp(keyCode)
+                    if (handled) return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        HardwarePttManager.unregisterPttTrigger()
         if (isSystemReceiverRegistered) {
             runCatching { unregisterReceiver(systemStateReceiver) }
             isSystemReceiverRegistered = false

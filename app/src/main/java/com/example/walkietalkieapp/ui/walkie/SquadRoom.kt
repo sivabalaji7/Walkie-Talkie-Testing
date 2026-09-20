@@ -54,6 +54,7 @@ import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.chat.TacticalChatManager
+import com.example.walkietalkieapp.ptt.HardwarePttManager
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
@@ -90,6 +91,9 @@ fun SquadRoom(
     var showVoiceReelModal by remember { mutableStateOf(false) }
     var showAcousticRadarModal by remember { mutableStateOf(false) }
     var showTacticalChatModal by remember { mutableStateOf(false) }
+    var showHardwarePttModal by remember { mutableStateOf(false) }
+    val isHwPttEnabled by HardwarePttManager.isVolumeKeyPttEnabled.collectAsState()
+    val isHwKeyDown by HardwarePttManager.isHardwareKeyDown.collectAsState()
     val tacticalMessages by TacticalChatManager.messages.collectAsState()
     val tacticalUnreadCount by TacticalChatManager.unreadCount.collectAsState()
     val transmissions by VoiceHistoryManager.transmissions.collectAsState()
@@ -453,7 +457,10 @@ fun SquadRoom(
                 onPressStart = onPressStart,
                 onPressEnd = onPressEnd,
                 disabled = false,
-                mode = mode
+                mode = mode,
+                onHardwarePttClick = { showHardwarePttModal = true },
+                isHardwarePttEnabled = isHwPttEnabled,
+                isHardwareKeyDown = isHwKeyDown
             )
         }
 
@@ -546,6 +553,14 @@ fun SquadRoom(
                 onDismiss = {
                     showTacticalChatModal = false
                 }
+            )
+        }
+
+        // 13. Interactive Hardware PTT & Hands-Free Controller Modal
+        if (showHardwarePttModal) {
+            HardwarePttDialog(
+                mode = mode,
+                onDismiss = { showHardwarePttModal = false }
             )
         }
     }

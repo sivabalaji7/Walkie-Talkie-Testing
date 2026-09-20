@@ -12,6 +12,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.walkietalkieapp.MainActivity
 import com.example.walkietalkieapp.R
+import com.example.walkietalkieapp.ptt.HardwarePttManager
 import com.example.walkietalkieapp.socket.SignalingListener
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 
@@ -29,6 +30,7 @@ class WalkieTalkieService : Service(), SignalingListener {
     companion object {
         private const val CHANNEL_ID = "WalkieTalkieServiceChannel"
         private const val NOTIFICATION_ID = 1
+        const val ACTION_TOGGLE_PTT = "com.example.walkietalkieapp.ACTION_TOGGLE_PTT"
     }
 
     inner class LocalBinder : Binder() {
@@ -145,6 +147,13 @@ class WalkieTalkieService : Service(), SignalingListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_TOGGLE_PTT) {
+            HardwarePttManager.toggleNotificationPtt()
+            val isTransmitting = HardwarePttManager.activeTriggerSource.value != null
+            updateNotification(if (isTransmitting) "🔴 Transmitting (Quick PTT)..." else "Voice Link Ready")
+            return START_NOT_STICKY
+        }
+
         val notification = createNotification("Ready to talk")
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -232,11 +241,26 @@ class WalkieTalkieService : Service(), SignalingListener {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val togglePttIntent = Intent(this, WalkieTalkieService::class.java).apply {
+            action = ACTION_TOGGLE_PTT
+        }
+        val pttPendingIntent = PendingIntent.getService(
+            this, 101, togglePttIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val isTransmitting = HardwarePttManager.activeTriggerSource.value != null
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Squad Talk Active")
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pendingIntent)
+            .addAction(
+                android.R.drawable.ic_btn_speak_now,
+                if (isTransmitting) "⏹ RELEASE" else "🎙️ QUICK PTT",
+                pttPendingIntent
+            )
             .setOngoing(true)
             .build()
     }
