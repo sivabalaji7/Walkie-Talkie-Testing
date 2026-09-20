@@ -54,6 +54,7 @@ import com.example.walkietalkieapp.audio.intelligence.AcousticEnvironment
 import com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager
 import com.example.walkietalkieapp.auth.RoomMemberRequest
 import com.example.walkietalkieapp.chat.TacticalChatManager
+import com.example.walkietalkieapp.location.SquadRadarManager
 import com.example.walkietalkieapp.mesh.AdaptiveMeshManager
 import com.example.walkietalkieapp.ptt.HardwarePttManager
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
@@ -94,7 +95,10 @@ fun SquadRoom(
     var showTacticalChatModal by remember { mutableStateOf(false) }
     var showHardwarePttModal by remember { mutableStateOf(false) }
     var showMeshModal by remember { mutableStateOf(false) }
+    var showSquadRadarModal by remember { mutableStateOf(false) }
     val isMeshFailoverActive by AdaptiveMeshManager.isFailoverActive.collectAsState()
+    val squadLocations by SquadRadarManager.squadLocations.collectAsState()
+    val isGpsLocked by SquadRadarManager.isGpsFixAcquired.collectAsState()
     val isHwPttEnabled by HardwarePttManager.isVolumeKeyPttEnabled.collectAsState()
     val isHwKeyDown by HardwarePttManager.isHardwareKeyDown.collectAsState()
     val tacticalMessages by TacticalChatManager.messages.collectAsState()
@@ -361,6 +365,12 @@ fun SquadRoom(
                 onQuickActions = {
                     showVoiceReelModal = true
                 },
+                onRadarClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    showSquadRadarModal = true
+                },
+                radarTargetCount = squadLocations.size,
+                isGpsActive = isGpsLocked,
                 speakerOn = speakerOn,
                 inSquad = true,
                 mode = mode,
@@ -486,6 +496,16 @@ fun SquadRoom(
                 onDismiss = {
                     showMeshModal = false
                 }
+            )
+        }
+
+        // 15. Interactive Tactical Squad GPS Radar Modal
+        if (showSquadRadarModal) {
+            val myUsername = SupabaseRealtimeManager.socketUiState.collectAsState().value.username.ifBlank { otherUser }.ifBlank { "OPERATOR" }
+            SquadRadarDialog(
+                squadName = squad.name,
+                currentUsername = myUsername,
+                onDismiss = { showSquadRadarModal = false }
             )
         }
     }

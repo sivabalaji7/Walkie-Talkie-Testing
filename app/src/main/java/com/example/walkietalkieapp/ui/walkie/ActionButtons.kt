@@ -38,10 +38,13 @@ fun ActionButtons(
     onPairedDevices: () -> Unit,
     onSpeaker: () -> Unit,
     onQuickActions: () -> Unit,
+    onRadarClick: (() -> Unit)? = null,
     speakerOn: Boolean = true,
     inSquad: Boolean = false,
     mode: ConnectivityMode = ConnectivityMode.INTERNET,
     replayCount: Int = 0,
+    radarTargetCount: Int = 0,
+    isGpsActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -89,7 +92,7 @@ fun ActionButtons(
             )
         }
 
-        // Bottom Row: 2 wider buttons (Speaker, Replay Reel)
+        // Bottom Row: 3 balanced tactical buttons (Speaker, Radar, Replay Reel)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -102,6 +105,17 @@ fun ActionButtons(
                 activeBrush = currentTheme.gradient,
                 indicatorColor = currentTheme.primaryColor,
                 onClick = onSpeaker,
+                modifier = Modifier.weight(1f)
+            )
+            TacticalButton(
+                icon = Icons.Default.Explore,
+                label = "Radar",
+                isActive = inSquad && isGpsActive,
+                accent = false,
+                activeBrush = currentTheme.gradient,
+                indicatorColor = if (isGpsActive) StatusReady else currentTheme.primaryColor,
+                badgeCount = if (inSquad) radarTargetCount else 0,
+                onClick = { onRadarClick?.invoke() },
                 modifier = Modifier.weight(1f)
             )
             TacticalButton(

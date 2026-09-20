@@ -1207,6 +1207,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         com.example.walkietalkieapp.mesh.AdaptiveMeshManager.unbindConnectivity(this)
+        com.example.walkietalkieapp.location.SquadRadarManager.stopCompass()
         HardwarePttManager.unregisterPttTrigger()
         if (isSystemReceiverRegistered) {
             runCatching { unregisterReceiver(systemStateReceiver) }

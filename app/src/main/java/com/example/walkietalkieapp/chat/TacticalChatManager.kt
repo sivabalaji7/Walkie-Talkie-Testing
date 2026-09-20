@@ -133,6 +133,16 @@ object TacticalChatManager {
 
                 appendMessage(msg)
 
+                // Sync self location with SquadRadarManager
+                com.example.walkietalkieapp.location.SquadRadarManager.updateMyLocation(
+                    latitude = lat,
+                    longitude = lng,
+                    altitude = location.altitude,
+                    accuracy = location.accuracy,
+                    speed = location.speed,
+                    bearing = location.bearing
+                )
+
                 try {
                     SupabaseRealtimeManager.sendTacticalMessage(
                         textContent = beaconText,
@@ -177,6 +187,17 @@ object TacticalChatManager {
         )
 
         appendMessage(msg)
+
+        // If message contains GPS coordinates, automatically plot peer on Squad Radar
+        if (latitude != null && longitude != null) {
+            val isSos = isBeacon && (locationLabel?.contains("SOS", ignoreCase = true) == true || content.contains("SOS", ignoreCase = true))
+            com.example.walkietalkieapp.location.SquadRadarManager.updatePeerLocation(
+                callsign = sender,
+                latitude = latitude,
+                longitude = longitude,
+                isSos = isSos
+            )
+        }
 
         if (!isChatDialogVisible) {
             _unreadCount.update { it + 1 }

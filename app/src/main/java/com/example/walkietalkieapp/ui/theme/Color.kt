@@ -68,6 +68,8 @@ val ModeWifiDirectGlow = Color(0x5910B981)
 val StatusReady = Color(0xFF22C55E)
 val StatusSearching = Color(0xFFF59E0B)
 val StatusOff = Color(0xFF6B7280)
+val WalkieGreen = Color(0xFF10B981)
+val WalkieRed = Color(0xFFEF4444)
 
 // Side Drawer
 val DrawerBackground = Color(0xFF131315)
