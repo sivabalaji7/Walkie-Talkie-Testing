@@ -241,6 +241,16 @@ fun DisplayPanel(
                         animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
                         label = "radarBtnScale"
                     )
+                    val infiniteTransition = rememberInfiniteTransition(label = "splPulse")
+                    val pulseAlpha by infiniteTransition.animateFloat(
+                        initialValue = 0.55f,
+                        targetValue = 1.0f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(1200, easing = FastOutSlowInEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "splDotPulse"
+                    )
                     val haptic = LocalHapticFeedback.current
 
                     Row(
@@ -267,7 +277,7 @@ fun DisplayPanel(
                             modifier = Modifier
                                 .size(5.dp)
                                 .clip(CircleShape)
-                                .background(radarColor)
+                                .background(radarColor.copy(alpha = pulseAlpha))
                         )
                         Icon(
                             imageVector = Icons.Default.GraphicEq,

@@ -93,9 +93,11 @@ fun SquadRoom(
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
 
-    LaunchedEffect(talkingState) {
-        if (talkingState == TalkingState.IDLE) {
-            AcousticRadarManager.sampleAmbientOnce(context)
+    // Actively sample ambient room noise every 15s (10-25s user window) when idle
+    DisposableEffect(Unit) {
+        AcousticRadarManager.startPeriodicMonitoring(context, intervalSeconds = 15L)
+        onDispose {
+            AcousticRadarManager.stopPeriodicMonitoring()
         }
     }
 
@@ -355,7 +357,7 @@ fun SquadRoom(
                 }
             }
 
-            // 6. Action Buttons (Exit, Channel, Members, Speaker, Radar, Replay Reel)
+            // 6. Action Buttons (Exit, Channel, Members, Speaker, Replay Reel)
             ActionButtons(
                 isPowered = true,
                 onPowerToggle = onExit,
@@ -368,11 +370,7 @@ fun SquadRoom(
                 speakerOn = speakerOn,
                 inSquad = true,
                 mode = mode,
-                replayCount = transmissions.size,
-                onRadar = { showAcousticRadarModal = true },
-                radarLabel = "${acousticSplDb.toInt()} dB",
-                isRadarActive = true,
-                radarIndicatorColor = acousticEnvironment.toComposeColor()
+                replayCount = transmissions.size
             )
 
             // 7. Push To Talk Button

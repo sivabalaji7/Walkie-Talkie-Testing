@@ -307,4 +307,36 @@ object AcousticRadarManager {
             }
         }
     }
+
+    private var periodicMonitorJob: Job? = null
+
+    /**
+     * Starts background periodic ambient noise monitoring, updating SPL dBA and acoustic environment
+     * every [intervalSeconds] (default 15s) while idle. Automatically yields if PTT is active.
+     */
+    fun startPeriodicMonitoring(context: Context, intervalSeconds: Long = 15L) {
+        if (periodicMonitorJob?.isActive == true) return
+
+        periodicMonitorJob = scope.launch(Dispatchers.IO) {
+            logD("Started periodic ambient monitoring every ${intervalSeconds}s")
+            if (!isPttActive.get() && !_isCalibrating.value) {
+                sampleAmbientOnce(context)
+            }
+            while (isActive) {
+                delay(intervalSeconds * 1000L)
+                if (!isPttActive.get() && !_isCalibrating.value) {
+                    sampleAmbientOnce(context)
+                }
+            }
+        }
+    }
+
+    /**
+     * Stops periodic ambient monitoring to release resources when screen is left.
+     */
+    fun stopPeriodicMonitoring() {
+        periodicMonitorJob?.cancel()
+        periodicMonitorJob = null
+        logD("Stopped periodic ambient monitoring")
+    }
 }

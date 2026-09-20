@@ -73,4 +73,11 @@ class AcousticRadarManagerTest {
         assertEquals("VERY NOISY (HIGH SPL)", AcousticEnvironment.VERY_NOISY.displayName)
         assertEquals("CALIBRATING...", AcousticEnvironment.UNKNOWN.displayName)
     }
+
+    @Test
+    fun testPeriodicMonitoringLifecycle() {
+        AcousticRadarManager.stopPeriodicMonitoring()
+        // Idempotent stop should not throw
+        AcousticRadarManager.stopPeriodicMonitoring()
+    }
 }
