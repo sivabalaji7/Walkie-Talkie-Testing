@@ -169,22 +169,32 @@ fun SquadRoom(
                 )
             }
 
-            // 2. Display LCD Panel (124dp fixed height, rich color and styling)
+            // 2. Tactical Display LCD Panel - Unified Cockpit Box
             val totalCount = squad.members.size
             val onlineCount = squad.members.count { it.online }
-            val memberCountText = "$totalCount Members • $onlineCount Online"
 
             DisplayPanel(
                 status = status,
                 talkingState = talkingState,
                 channelName = squad.name,
                 connectivityMode = mode,
-                pairedDevice = memberCountText,
+                squadCode = squad.id,
+                onlineCount = onlineCount,
+                totalMembers = totalCount,
+                tacticalUnreadCount = tacticalUnreadCount,
+                onCodeClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onShareSquadCode(squad.id)
+                },
+                onDataLinkClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    TacticalChatManager.markAllRead()
+                    showTacticalChatModal = true
+                },
                 otherUser = otherUser.ifBlank { squad.members.firstOrNull { it.online && it.name != squad.name }?.name ?: "" },
                 isWheelActive = wheelActive,
                 wheelDeviceIndex = memberIndex,
                 pairedDevices = squad.members.map { DisplayDevice(it.name, it.avatar, it.online) },
-                onCodeClick = { onShareSquadCode(squad.id) },
                 isE2EActive = isE2EActive,
                 e2eFingerprint = e2eFingerprint,
                 onE2EClick = { showE2ESecurityModal = true },
@@ -193,117 +203,7 @@ fun SquadRoom(
                 onRadarClick = { showAcousticRadarModal = true }
             )
 
-            // 3. Copyable Squad Code Chip & Online Status Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 3.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Copyable Squad Code Chip (Tap to share/copy)
-                Surface(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onShareSquadCode(squad.id)
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = WalkieButton,
-                    border = BorderStroke(1.dp, WalkieCardBorder)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Tag,
-                            contentDescription = "Code",
-                            tint = WalkieAmber,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = "CODE: ${squad.id}",
-                            fontFamily = SpaceGrotesk,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = WalkieTextPrimary
-                        )
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
-                            tint = WalkieTextSecondary,
-                            modifier = Modifier.size(11.dp)
-                        )
-                    }
-                }
-
-                // Tactical Data Link Physical Chassis Button with Unread Badge
-                val chatInteractionSource = remember { MutableInteractionSource() }
-                val chatPressed by chatInteractionSource.collectIsPressedAsState()
-                val chatScale by animateFloatAsState(
-                    targetValue = if (chatPressed) 0.93f else 1f,
-                    animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
-                    label = "chatScale"
-                )
-
-                Surface(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        TacticalChatManager.markAllRead()
-                        showTacticalChatModal = true
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (tacticalUnreadCount > 0) WalkieAmber.copy(alpha = 0.22f) else WalkieButton,
-                    border = BorderStroke(1.dp, if (tacticalUnreadCount > 0) WalkieAmber else WalkieCardBorder),
-                    modifier = Modifier.graphicsLayer {
-                        scaleX = chatScale
-                        scaleY = chatScale
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Forum,
-                            contentDescription = "Data Link",
-                            tint = if (tacticalUnreadCount > 0) WalkieAmber else currentTheme.primaryColor,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = if (tacticalUnreadCount > 0) "DATA LINK ($tacticalUnreadCount)" else "DATA LINK",
-                            fontFamily = SpaceGrotesk,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (tacticalUnreadCount > 0) WalkieAmber else WalkieTextPrimary,
-                            letterSpacing = 0.4.sp
-                        )
-                    }
-                }
-
-                // Member Count Status Pill
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(if (onlineCount > 0) StatusReady else StatusOff)
-                    )
-                    Text(
-                        text = "$onlineCount/$totalCount ONLINE",
-                        fontFamily = SpaceGrotesk,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (onlineCount > 0) StatusReady else WalkieTextSecondary,
-                        letterSpacing = 0.5.sp
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.height(4.dp))
 
             // 4. Tactical Squad Members Horizontal Roster
             Box(

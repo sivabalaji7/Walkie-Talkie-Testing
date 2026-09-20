@@ -12,10 +12,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -58,6 +61,11 @@ fun DisplayPanel(
     talkingState: TalkingState,
     channelName: String,
     connectivityMode: ConnectivityMode,
+    squadCode: String = "",
+    onlineCount: Int = 0,
+    totalMembers: Int = 0,
+    tacticalUnreadCount: Int = 0,
+    onDataLinkClick: (() -> Unit)? = null,
     pairedDevice: String = "",
     otherUser: String = "",
     isWheelActive: Boolean = false,
@@ -74,8 +82,9 @@ fun DisplayPanel(
 ) {
     val currentTheme = ModeThemes.get(connectivityMode)
     val isTalking = talkingState == TalkingState.YOU_TALKING || talkingState == TalkingState.OTHER_TALKING
+    val haptic = LocalHapticFeedback.current
 
-    // Pulsing animation for scanning status dot (isolated to draw phase)
+    // Pulsing animation for scanning status dot
     val infiniteTransition = rememberInfiniteTransition(label = "displayInfinite")
     val scanningAlpha = infiniteTransition.animateFloat(
         initialValue = 1f,
@@ -87,7 +96,7 @@ fun DisplayPanel(
         label = "scanningAlpha"
     )
 
-    // Mic glow pulse when talking (isolated to draw phase)
+    // Mic glow pulse when talking
     val micPulseAlpha = infiniteTransition.animateFloat(
         initialValue = 0.5f,
         targetValue = 1f,
@@ -98,33 +107,48 @@ fun DisplayPanel(
         label = "micPulseAlpha"
     )
 
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "splDotPulse"
+    )
+
+    // Unified Cockpit LCD Box - Rigid Layout with Next-Level Spacing & Zero Shifting
     Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp)
             .shadow(
-                elevation = 6.dp,
-                shape = RoundedCornerShape(18.dp),
-                ambientColor = currentTheme.primaryColor,
-                spotColor = currentTheme.primaryColor
+                elevation = 8.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = currentTheme.primaryColor.copy(alpha = 0.5f),
+                spotColor = currentTheme.primaryColor.copy(alpha = 0.5f)
             )
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(20.dp))
             .background(currentTheme.gradient)
-            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(18.dp))
-            .padding(horizontal = 14.dp, vertical = 8.dp)
-            .height(126.dp)
+            .border(1.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(20.dp))
+            .padding(horizontal = 13.dp, vertical = 10.dp)
+            .height(154.dp)
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Row: Status Dot + Label & Connectivity Badge
+            // ==========================================
+            // TIER 1: Top Status, Security & Radar Strip (24dp)
+            // ==========================================
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(24.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Status Indicator
+                // Left: Connection Dot + Status + Mode Pill
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -141,7 +165,7 @@ fun DisplayPanel(
                             .graphicsLayer {
                                 alpha = if (status == ConnectionStatus.SEARCHING) scanningAlpha.value else 1f
                             }
-                            .size(8.dp)
+                            .size(7.dp)
                             .clip(CircleShape)
                             .background(dotColor)
                     )
@@ -155,22 +179,52 @@ fun DisplayPanel(
 
                     Text(
                         text = statusText,
-                        color = Color.White.copy(alpha = 0.9f),
+                        color = Color.White.copy(alpha = 0.95f),
                         fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        letterSpacing = 1.sp
+                        fontSize = 10.5.sp,
+                        letterSpacing = 0.8.sp
                     )
+
+                    // Compact Mode Pill
+                    val (modeIcon, modeLabel) = when (connectivityMode) {
+                        ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
+                        ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
+                        ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.Black.copy(alpha = 0.24f))
+                            .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 5.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = modeIcon,
+                            contentDescription = modeLabel,
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(9.dp)
+                        )
+                        Text(
+                            text = modeLabel,
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 8.5.sp
+                        )
+                    }
                 }
 
-                // Top Right: E2E Security Badge & Mode Badge
+                // Right: E2E Security Badge & Acoustic Radar Badge
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     if (connectivityMode == ConnectivityMode.INTERNET) {
-                        val e2eColor = if (isE2EActive) Color(0xFF10B981) else Color.White.copy(alpha = 0.5f)
-                        val e2eBg = if (isE2EActive) Color(0xFF064E3B).copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.25f)
-                        val e2eBorder = if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.15f)
+                        val e2eColor = if (isE2EActive) Color(0xFF10B981) else Color.White.copy(alpha = 0.55f)
+                        val e2eBg = if (isE2EActive) Color(0xFF064E3B).copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.25f)
+                        val e2eBorder = if (isE2EActive) Color(0xFF10B981).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.16f)
 
                         val e2eInteraction = remember { MutableInteractionSource() }
                         val isE2EPressed by e2eInteraction.collectIsPressedAsState()
@@ -179,7 +233,6 @@ fun DisplayPanel(
                             animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
                             label = "e2eBtnScale"
                         )
-                        val haptic = LocalHapticFeedback.current
 
                         Row(
                             modifier = Modifier
@@ -187,9 +240,9 @@ fun DisplayPanel(
                                     scaleX = e2eScale
                                     scaleY = e2eScale
                                 }
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(7.dp))
                                 .background(e2eBg)
-                                .border(0.5.dp, e2eBorder, RoundedCornerShape(8.dp))
+                                .border(0.5.dp, e2eBorder, RoundedCornerShape(7.dp))
                                 .clickable(
                                     interactionSource = e2eInteraction,
                                     indication = null
@@ -197,13 +250,13 @@ fun DisplayPanel(
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onE2EClick?.invoke()
                                 }
-                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                                .padding(horizontal = 6.dp, vertical = 2.5.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(5.dp)
+                                    .size(4.5.dp)
                                     .clip(CircleShape)
                                     .background(e2eColor)
                             )
@@ -211,19 +264,19 @@ fun DisplayPanel(
                                 imageVector = Icons.Default.Lock,
                                 contentDescription = "E2E Encrypted",
                                 tint = e2eColor,
-                                modifier = Modifier.size(10.dp)
+                                modifier = Modifier.size(9.5.dp)
                             )
                             Text(
                                 text = if (isE2EActive) "E2E" else "E2E READY",
-                                color = if (isE2EActive) Color(0xFFD1FAE5) else Color.White.copy(alpha = 0.6f),
+                                color = if (isE2EActive) Color(0xFFD1FAE5) else Color.White.copy(alpha = 0.7f),
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 9.sp,
-                                letterSpacing = 0.5.sp
+                                fontSize = 8.5.sp,
+                                letterSpacing = 0.4.sp
                             )
                         }
                     }
 
-                    // Tactical Acoustic Radar Badge Button
+                    // Tactical Acoustic Radar Badge
                     val radarColor = when (acousticEnvironment) {
                         AcousticEnvironment.QUIET -> StatusReady
                         AcousticEnvironment.NORMAL -> Color(0xFF38BDF8)
@@ -241,17 +294,6 @@ fun DisplayPanel(
                         animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
                         label = "radarBtnScale"
                     )
-                    val infiniteTransition = rememberInfiniteTransition(label = "splPulse")
-                    val pulseAlpha by infiniteTransition.animateFloat(
-                        initialValue = 0.55f,
-                        targetValue = 1.0f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(1200, easing = FastOutSlowInEasing),
-                            repeatMode = RepeatMode.Reverse
-                        ),
-                        label = "splDotPulse"
-                    )
-                    val haptic = LocalHapticFeedback.current
 
                     Row(
                         modifier = Modifier
@@ -259,9 +301,9 @@ fun DisplayPanel(
                                 scaleX = radarScale
                                 scaleY = radarScale
                             }
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(7.dp))
                             .background(radarBg)
-                            .border(0.6.dp, radarBorder, RoundedCornerShape(8.dp))
+                            .border(0.5.dp, radarBorder, RoundedCornerShape(7.dp))
                             .clickable(
                                 interactionSource = radarInteraction,
                                 indication = null
@@ -269,13 +311,13 @@ fun DisplayPanel(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onRadarClick?.invoke()
                             }
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                            .padding(horizontal = 6.dp, vertical = 2.5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(5.dp)
+                                .size(4.5.dp)
                                 .clip(CircleShape)
                                 .background(radarColor.copy(alpha = pulseAlpha))
                         )
@@ -283,7 +325,7 @@ fun DisplayPanel(
                             imageVector = Icons.Default.GraphicEq,
                             contentDescription = "Acoustic Radar",
                             tint = radarColor,
-                            modifier = Modifier.size(10.dp)
+                            modifier = Modifier.size(9.5.dp)
                         )
                         val envShort = when (acousticEnvironment) {
                             AcousticEnvironment.QUIET -> "QUIET"
@@ -294,169 +336,272 @@ fun DisplayPanel(
                         }
                         Text(
                             text = "${acousticSplDb.toInt()}dB $envShort",
-                            color = Color.White.copy(alpha = 0.9f),
+                            color = Color.White.copy(alpha = 0.95f),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 9.sp,
-                            letterSpacing = 0.4.sp
-                        )
-                    }
-
-                    // Mode Badge
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color.Black.copy(alpha = 0.25f))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        val (modeIcon, modeLabel) = when (connectivityMode) {
-                            ConnectivityMode.INTERNET -> Pair(Icons.Default.Language, "NET")
-                            ConnectivityMode.BLUETOOTH -> Pair(Icons.Default.Bluetooth, "BT")
-                            ConnectivityMode.WIFI_DIRECT -> Pair(Icons.Default.Wifi, "Wi-Fi")
-                        }
-
-                        Icon(
-                            imageVector = modeIcon,
-                            contentDescription = modeLabel,
-                            tint = Color.White.copy(alpha = 0.9f),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = modeLabel,
-                            color = Color.White.copy(alpha = 0.9f),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp
+                            fontSize = 8.5.sp,
+                            letterSpacing = 0.3.sp
                         )
                     }
                 }
             }
 
-            // Center: Channel / Squad Title OR Device Carousel
+            // ==========================================
+            // TIER 2: Channel Cockpit Title (30dp)
+            // ==========================================
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 4.dp),
+                    .height(30.dp),
                 contentAlignment = Alignment.Center
             ) {
-                AnimatedContent(
-                    targetState = isWheelActive,
-                    transitionSpec = {
-                        (slideInVertically { it / 3 } + fadeIn())
-                            .togetherWith(slideOutVertically { -it / 3 } + fadeOut())
-                    },
-                    label = "centerContent"
-                ) { wheelActive ->
-                    if (wheelActive && pairedDevices.isNotEmpty()) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally
+                if (isWheelActive && pairedDevices.isNotEmpty()) {
+                    val activeDevice = pairedDevices.getOrNull(wheelDeviceIndex) ?: pairedDevices.first()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "SELECT DEVICE",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White.copy(alpha = 0.6f),
-                                letterSpacing = 1.sp
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            val activeDevice = pairedDevices.getOrNull(wheelDeviceIndex) ?: pairedDevices.first()
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(26.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color.Black.copy(alpha = 0.3f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = activeDevice.avatar,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                                Text(
-                                    text = activeDevice.name,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(if (activeDevice.online) StatusReady else StatusOff)
-                                )
-                            }
-                        }
-                    } else {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = channelName,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.ExtraBold,
+                                text = activeDevice.avatar,
                                 color = Color.White,
-                                letterSpacing = (-0.5).sp
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp
                             )
-                            if (status != ConnectionStatus.OFF && pairedDevice.isNotEmpty()) {
-                                Row(
-                                    modifier = Modifier.clickable(enabled = onCodeClick != null) {
-                                        onCodeClick?.invoke()
-                                    },
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .clip(CircleShape)
-                                            .background(if (pairedDevices.any { it.online }) StatusReady else StatusOff)
-                                    )
-                                    Text(
-                                        text = pairedDevice,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color.White.copy(alpha = 0.9f),
-                                        letterSpacing = 0.3.sp
-                                    )
-                                }
-                            }
                         }
+                        Text(
+                            text = activeDevice.name,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(5.5.dp)
+                                .clip(CircleShape)
+                                .background(if (activeDevice.online) StatusReady else StatusOff)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = channelName,
+                        fontSize = 21.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White,
+                        letterSpacing = (-0.3).sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // ==========================================
+            // TIER 3: Tactical Action & Status Chips (26dp)
+            // ==========================================
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(26.dp),
+                horizontalArrangement = if (squadCode.isNotBlank()) Arrangement.SpaceBetween else Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (squadCode.isNotBlank()) {
+                    // 1. Squad Code Chip (Tap to Copy/Share)
+                    val codeInteraction = remember { MutableInteractionSource() }
+                    val isCodePressed by codeInteraction.collectIsPressedAsState()
+                    val codeScale by animateFloatAsState(
+                        targetValue = if (isCodePressed) 0.90f else 1f,
+                        animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                        label = "codeScale"
+                    )
+                    Row(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                scaleX = codeScale
+                                scaleY = codeScale
+                            }
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(Color.Black.copy(alpha = 0.28f))
+                            .border(0.6.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(7.dp))
+                            .clickable(
+                                interactionSource = codeInteraction,
+                                indication = null
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCodeClick?.invoke()
+                            }
+                            .padding(horizontal = 7.dp, vertical = 3.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tag,
+                            contentDescription = "Code",
+                            tint = Color(0xFFFBBF24),
+                            modifier = Modifier.size(10.dp)
+                        )
+                        Text(
+                            text = "CODE: $squadCode",
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            letterSpacing = 0.3.sp
+                        )
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy",
+                            tint = Color.White.copy(alpha = 0.65f),
+                            modifier = Modifier.size(9.5.dp)
+                        )
+                    }
+
+                    // 2. Tactical Data Link Physical Chassis Button
+                    val chatInteraction = remember { MutableInteractionSource() }
+                    val isChatPressed by chatInteraction.collectIsPressedAsState()
+                    val chatScale by animateFloatAsState(
+                        targetValue = if (isChatPressed) 0.90f else 1f,
+                        animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                        label = "chatScale"
+                    )
+                    val isUnread = tacticalUnreadCount > 0
+                    Row(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                scaleX = chatScale
+                                scaleY = chatScale
+                            }
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(if (isUnread) Color(0xFFB45309).copy(alpha = 0.45f) else Color.Black.copy(alpha = 0.28f))
+                            .border(
+                                0.6.dp,
+                                if (isUnread) Color(0xFFF59E0B) else Color.White.copy(alpha = 0.16f),
+                                RoundedCornerShape(7.dp)
+                            )
+                            .clickable(
+                                interactionSource = chatInteraction,
+                                indication = null
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onDataLinkClick?.invoke()
+                            }
+                            .padding(horizontal = 7.dp, vertical = 3.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Forum,
+                            contentDescription = "Data Link",
+                            tint = if (isUnread) Color(0xFFFDE68A) else Color.White.copy(alpha = 0.9f),
+                            modifier = Modifier.size(10.dp)
+                        )
+                        Text(
+                            text = if (isUnread) "DATA LINK ($tacticalUnreadCount)" else "DATA LINK",
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isUnread) Color(0xFFFDE68A) else Color.White,
+                            letterSpacing = 0.3.sp
+                        )
+                    }
+
+                    // 3. Online Members Status Pill
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(Color.Black.copy(alpha = 0.28f))
+                            .border(0.6.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(7.dp))
+                            .padding(horizontal = 7.dp, vertical = 3.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(if (onlineCount > 0) StatusReady else StatusOff)
+                        )
+                        Text(
+                            text = "$onlineCount/$totalMembers ONLINE",
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (onlineCount > 0) Color(0xFF6EE7B7) else Color.White.copy(alpha = 0.6f),
+                            letterSpacing = 0.3.sp
+                        )
+                    }
+                } else if (pairedDevice.isNotBlank()) {
+                    // Fallback for standalone/demo usage
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(Color.Black.copy(alpha = 0.28f))
+                            .border(0.6.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(7.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(StatusReady)
+                        )
+                        Text(
+                            text = pairedDevice,
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            letterSpacing = 0.3.sp
+                        )
                     }
                 }
             }
 
-            // Bottom Row: Audio Equalizer Mic Bars & Speaking Status Text
+            // ==========================================
+            // TIER 4: Live Telemetry & Audio Status Footer (22dp)
+            // ==========================================
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(22.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (isTalking) {
-                        AnimatedMicBars()
+                    if (isTalking || talkingState == TalkingState.LISTENING) {
+                        AnimatedMicBars(modifier = Modifier.size(width = 20.dp, height = 13.dp))
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(StatusReady.copy(alpha = 0.85f))
+                        )
                     }
 
                     val talkingLabel = when (talkingState) {
                         TalkingState.IDLE -> "Ambient: ${acousticSplDb.toInt()} dB • Ready"
-                        TalkingState.YOU_TALKING -> "You're talking"
-                        TalkingState.OTHER_TALKING -> if (otherUser.isNotEmpty()) "$otherUser is talking" else "Someone is talking"
-                        TalkingState.LISTENING -> "Listening..."
+                        TalkingState.YOU_TALKING -> "You're transmitting"
+                        TalkingState.OTHER_TALKING -> if (otherUser.isNotEmpty()) "$otherUser transmitting" else "Incoming transmission"
+                        TalkingState.LISTENING -> "Channel open • Listening..."
                     }
 
                     Text(
                         text = talkingLabel,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White.copy(alpha = 0.85f)
+                        fontSize = 11.sp,
+                        fontWeight = if (isTalking) FontWeight.Bold else FontWeight.SemiBold,
+                        color = Color.White.copy(alpha = if (isTalking) 1f else 0.88f),
+                        letterSpacing = 0.2.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
 
@@ -469,7 +614,15 @@ fun DisplayPanel(
                             .graphicsLayer {
                                 alpha = micPulseAlpha.value
                             }
-                            .size(16.dp)
+                            .size(15.dp)
+                    )
+                } else {
+                    Text(
+                        text = "SQUELCH AUTO",
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White.copy(alpha = 0.5f),
+                        letterSpacing = 0.5.sp
                     )
                 }
             }
@@ -490,13 +643,13 @@ fun AnimatedMicBars(modifier: Modifier = Modifier) {
         label = "micWavePhase"
     )
 
-    androidx.compose.foundation.Canvas(modifier = modifier.size(width = 23.dp, height = 16.dp)) {
+    androidx.compose.foundation.Canvas(modifier = modifier.size(width = 20.dp, height = 13.dp)) {
         val currentPhase = phase.value
-        val barWidth = 3.dp.toPx()
-        val gap = 2.dp.toPx()
+        val barWidth = 2.5.dp.toPx()
+        val gap = 1.8.dp.toPx()
         val maxHeight = size.height
-        val cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx())
-        val color = Color.White.copy(alpha = 0.85f)
+        val cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.2.dp.toPx(), 1.2.dp.toPx())
+        val color = Color.White.copy(alpha = 0.9f)
 
         for (i in 0 until 5) {
             val scaleY = (0.35f + 0.65f * (sin(currentPhase + i * 0.8f) * 0.5f + 0.5f)).coerceIn(0.2f, 1f)
