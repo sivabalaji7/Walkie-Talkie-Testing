@@ -254,6 +254,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         currentUserId = sessionManager.getUserId()
         currentUsername = sessionManager.getUsername()
         persistentCallSign = sessionManager.getCallSign()
+        FloorManager.myUsername = currentUsername.ifBlank { persistentCallSign.ifBlank { "User" } }
 
         try {
             toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
@@ -619,6 +620,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             currentUsername = ""
                             persistentCallSign = ""
                             isLoggedIn = false
+                            com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             webRtcService?.webRTCManager?.cleanup()
                             SupabaseRealtimeManager.leaveRoom()
                             btManager?.leaveSquad()
@@ -690,6 +692,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             enterInternetSquad(roomCode, currentUsername, roomName)
                         },
                         onLeaveInternetRoom = {
+                            com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             webRtcService?.webRTCManager?.cleanup()
                             SupabaseRealtimeManager.leaveRoom()
                             webRtcService?.updateNotification("Ready to talk")
@@ -812,6 +815,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             offlineService?.updateNotification("Ready to talk")
                         },
                         onLeaveOfflineSquad = {
+                            com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
                                 btManager?.leaveSquad()
                             } else {
@@ -840,6 +844,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 sessionManager.saveCallSign(newName)
                                 persistentCallSign = newName
                                 currentUsername = newName
+                                FloorManager.myUsername = newName
                                 showCallSignDialog = false
                             },
                             onDismiss = { showCallSignDialog = false }
@@ -943,6 +948,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun enterInternetSquad(roomId: String, username: String, roomName: String = "") {
+        FloorManager.myUsername = username.trim()
+        com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = true
         if (hasAudioPermission) {
             startWebRtcService()
         }

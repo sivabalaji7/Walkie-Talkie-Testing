@@ -86,7 +86,7 @@ class WebRTCManager(private val context: Context) {
 
         audioExecutor.execute {
             peerConnections.forEach { (peerKey, pc) ->
-                val isAllowed = clean != null && peerKey.equals(clean, ignoreCase = true)
+                val isAllowed = clean == null || peerKey.equals(clean, ignoreCase = true) || peerConnections.size == 1
                 pc.receivers.forEach { receiver ->
                     val track = receiver.track()
                     if (track is AudioTrack) {
@@ -228,7 +228,7 @@ class WebRTCManager(private val context: Context) {
                 }
                 val allowedKey = authorizedSpeaker
                 peerConnections.forEach { (peerKey, pc) ->
-                    val isAllowed = allowedKey == null || peerKey.equals(allowedKey, ignoreCase = true)
+                    val isAllowed = allowedKey == null || peerKey.equals(allowedKey, ignoreCase = true) || peerConnections.size == 1
                     pc.receivers.forEach { receiver ->
                         val track = receiver.track()
                         if (track is AudioTrack) {
@@ -282,6 +282,7 @@ class WebRTCManager(private val context: Context) {
                 .createAudioDeviceModule()
 
             audioDeviceModule?.setSpeakerMute(false)
+            audioDeviceModule?.setMicrophoneMute(false)
 
             peerConnectionFactory = PeerConnectionFactory.builder()
                 .setAudioDeviceModule(audioDeviceModule)
@@ -883,15 +884,20 @@ class WebRTCManager(private val context: Context) {
                 if (localAudioTrack == null) initialize()
                 
                 localAudioTrack?.setEnabled(true)
+                audioDeviceModule?.setMicrophoneMute(false)
                 audioManager?.isMicrophoneMute = false
                 
                 // Ensure localAudioTrack is attached to audio senders in all peer connections
                 peerConnections.values.forEach { pc ->
-                    val audioSender = pc.senders.find { it.track()?.kind() == "audio" }
+                    val audioSender = pc.senders.find { it.track()?.kind() == "audio" || it.track() == null }
                     if (audioSender != null) {
                         audioSender.setTrack(localAudioTrack, false)
                     } else if (localAudioTrack != null) {
-                        pc.addTrack(localAudioTrack, listOf("LOCAL_STREAM"))
+                        try {
+                            pc.addTrack(localAudioTrack, listOf("LOCAL_STREAM"))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "addTrack notice: ${e.message}")
+                        }
                     }
                 }
                 

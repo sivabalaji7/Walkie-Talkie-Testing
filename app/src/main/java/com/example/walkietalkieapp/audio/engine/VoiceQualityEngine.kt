@@ -163,27 +163,29 @@ class VoiceQualityEngine private constructor() {
      * Called when the user releases Push-to-Talk.
      */
     fun stopTransmitting() {
-        if (currentState != VoiceQualityState.TRANSMITTING) return
+        if (currentState == VoiceQualityState.IDLE) return
         
         Log.d(TAG, "Stopping transmission.")
 
-        if (activeTransport == TransportType.Internet) {
-            webRtcManager?.stopTalking()
-        } else {
-            audioRecorder?.stop()
-            // Send one final empty frame to signal the end of transmission to the receiver's jitter buffer
-            val finalPacket = VoicePacket(
-                sequenceNumber = packetSequence++,
-                timestampMs = System.currentTimeMillis(),
-                senderId = myUserId,
-                payload = ByteArray(0),
-                isFinalFrame = true
-            )
-            routeLocalPacket(finalPacket)
-            commitLocalOfflineTransmission()
+        try {
+            if (activeTransport == TransportType.Internet) {
+                webRtcManager?.stopTalking()
+            } else {
+                audioRecorder?.stop()
+                // Send one final empty frame to signal the end of transmission to the receiver's jitter buffer
+                val finalPacket = VoicePacket(
+                    sequenceNumber = packetSequence++,
+                    timestampMs = System.currentTimeMillis(),
+                    senderId = myUserId,
+                    payload = ByteArray(0),
+                    isFinalFrame = true
+                )
+                routeLocalPacket(finalPacket)
+                commitLocalOfflineTransmission()
+            }
+        } finally {
+            currentState = VoiceQualityState.IDLE
         }
-        
-        currentState = VoiceQualityState.IDLE
     }
 
     private fun commitLocalOfflineTransmission() {
