@@ -3,13 +3,17 @@ package com.example.walkietalkieapp.auth
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 
 class SessionManager(context: Context) {
 
-    private val prefs: SharedPreferences = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-    private val squadPrefs: SharedPreferences = context.getSharedPreferences(SQUAD_PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences = createEncryptedPrefs(context, PREF_NAME)
+    private val squadPrefs: SharedPreferences = createEncryptedPrefs(context, SQUAD_PREFS_NAME)
 
     companion object {
+        private const val TAG = "SessionManager"
         private const val PREF_NAME = "walkie_talkie_session"
         private const val SQUAD_PREFS_NAME = "squad_talk_prefs"
         private const val KEY_IS_LOGGED_IN = "is_logged_in"
@@ -24,6 +28,46 @@ class SessionManager(context: Context) {
         fun getInstance(context: Context): SessionManager {
             return instance ?: synchronized(this) {
                 instance ?: SessionManager(context.applicationContext).also { instance = it }
+            }
+        }
+
+        private fun createEncryptedPrefs(context: Context, prefName: String): SharedPreferences {
+            return try {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+
+                val encrypted = EncryptedSharedPreferences.create(
+                    context,
+                    "${prefName}_encrypted",
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+
+                // Seamlessly migrate legacy plaintext preferences on first launch
+                val legacyPrefs = context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                val allLegacy = legacyPrefs.all
+                if (allLegacy.isNotEmpty()) {
+                    val editor = encrypted.edit()
+                    for ((k, v) in allLegacy) {
+                        when (v) {
+                            is String -> editor.putString(k, v)
+                            is Boolean -> editor.putBoolean(k, v)
+                            is Long -> editor.putLong(k, v)
+                            is Int -> editor.putInt(k, v)
+                            is Float -> editor.putFloat(k, v)
+                        }
+                    }
+                    editor.apply()
+                    legacyPrefs.edit().clear().apply()
+                    Log.i(TAG, "Migrated legacy plaintext preferences for $prefName to hardware-backed EncryptedSharedPreferences")
+                }
+
+                encrypted
+            } catch (e: Exception) {
+                Log.w(TAG, "EncryptedSharedPreferences initialization notice: ${e.message}. Using private fallback.", e)
+                context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
             }
         }
     }

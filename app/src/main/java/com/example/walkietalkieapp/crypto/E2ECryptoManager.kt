@@ -12,7 +12,9 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -43,6 +45,10 @@ object E2ECryptoManager {
 
     // Map: Normalized Peer Username/ID -> Public Key Base64
     private val peerPublicKeys = ConcurrentHashMap<String, String>()
+
+    // Squad Room shared key derived from room ID and room code (PBKDF2-HMAC-SHA256)
+    @Volatile
+    private var squadSharedKey: SecretKey? = null
 
     init {
         initSession()
@@ -87,6 +93,7 @@ object E2ECryptoManager {
             sessionKeyPair = kp
             peerSharedKeys.clear()
             peerPublicKeys.clear()
+            squadSharedKey = null
             logD("Initialized fresh ECDH P-256 ephemeral session keypair. Fingerprint: ${getMyFingerprint()}")
             kp
         } catch (e: Exception) {
@@ -102,6 +109,7 @@ object E2ECryptoManager {
     fun resetSession() {
         peerSharedKeys.clear()
         peerPublicKeys.clear()
+        squadSharedKey = null
         sessionKeyPair = null
         logD("E2EE session reset")
     }
@@ -279,5 +287,100 @@ object E2ECryptoManager {
         peerSharedKeys.remove(clean)
         peerPublicKeys.remove(clean)
         logD("Cleared crypto keys for departed peer [$clean]")
+    }
+
+    /**
+     * Derives a 256-bit symmetric AES key for squad-wide broadcast encryption
+     * using PBKDF2WithHmacSHA256 from roomId and roomCode.
+     */
+    @Synchronized
+    fun deriveSquadKey(roomId: String, roomCode: String): Boolean {
+        val cleanRoomId = roomId.trim().lowercase()
+        val cleanCode = roomCode.trim().uppercase()
+        if (cleanRoomId.isBlank() || cleanCode.isBlank()) return false
+
+        return try {
+            val combinedPass = "$cleanRoomId:$cleanCode".toCharArray()
+            val salt = ("SquadTalk_E2EE_Salt_2026#" + cleanRoomId).toByteArray(Charsets.UTF_8)
+            val spec = PBEKeySpec(combinedPass, salt, 10000, 256)
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            val keyBytes = factory.generateSecret(spec).encoded
+            squadSharedKey = SecretKeySpec(keyBytes, AES_KEY_ALGO)
+            logD("Derived Squad E2EE AES-256 key for room [$cleanRoomId]")
+            true
+        } catch (e: Exception) {
+            logE("Error deriving squad key: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * Checks if the squad room symmetric key is derived.
+     */
+    fun hasSquadKey(): Boolean = squadSharedKey != null
+
+    /**
+     * Encrypts plaintext using the squad-wide AES-256-GCM key.
+     * Output format: Base64( IV [12 bytes] + CiphertextWithTag )
+     */
+    fun encryptSquadPayload(plaintext: String): String? {
+        val key = squadSharedKey ?: run {
+            logW("Cannot encrypt squad payload: squad key not established")
+            return null
+        }
+
+        return try {
+            val iv = ByteArray(GCM_IV_LENGTH_BYTES)
+            secureRandom.nextBytes(iv)
+
+            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.ENCRYPT_MODE, key, spec)
+
+            val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            val combined = ByteArray(iv.size + ciphertext.size)
+            System.arraycopy(iv, 0, combined, 0, iv.size)
+            System.arraycopy(ciphertext, 0, combined, iv.size, ciphertext.size)
+
+            Base64.getEncoder().encodeToString(combined)
+        } catch (e: Exception) {
+            logE("Squad payload encryption error: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Decrypts ciphertext using the squad-wide AES-256-GCM key.
+     */
+    fun decryptSquadPayload(encryptedBase64: String): String? {
+        val key = squadSharedKey ?: run {
+            logW("Cannot decrypt squad payload: squad key not established")
+            return null
+        }
+
+        return try {
+            val combined = Base64.getDecoder().decode(encryptedBase64)
+            if (combined.size <= GCM_IV_LENGTH_BYTES) {
+                logE("Squad payload decryption error: payload too short (${combined.size} bytes)")
+                return null
+            }
+
+            val iv = ByteArray(GCM_IV_LENGTH_BYTES)
+            System.arraycopy(combined, 0, iv, 0, GCM_IV_LENGTH_BYTES)
+
+            val cipherLength = combined.size - GCM_IV_LENGTH_BYTES
+            val ciphertext = ByteArray(cipherLength)
+            System.arraycopy(combined, GCM_IV_LENGTH_BYTES, ciphertext, 0, cipherLength)
+
+            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            cipher.init(Cipher.DECRYPT_MODE, key, spec)
+
+            val decryptedBytes = cipher.doFinal(ciphertext)
+            String(decryptedBytes, Charsets.UTF_8)
+        } catch (e: Exception) {
+            logE("Squad payload decryption error: ${e.message}", e)
+            null
+        }
     }
 }

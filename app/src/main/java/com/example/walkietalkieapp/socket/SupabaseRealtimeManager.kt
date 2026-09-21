@@ -10,6 +10,7 @@ import io.github.jan.supabase.realtime.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.Serializable
+import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 data class RoomMember(
@@ -147,12 +148,15 @@ object SupabaseRealtimeManager {
         }
     }
 
-    fun joinRoom(roomId: String, username: String, roomName: String = "") {
+    fun joinRoom(roomId: String, username: String, roomName: String = "", roomCode: String = "") {
         if (roomId.isEmpty()) return
         val cleanId = roomId.trim().uppercase()
         val cleanUsername = username.trim()
         FloorManager.myUsername = cleanUsername
         leaveRoom()
+
+        val effectiveCode = if (roomCode.isNotBlank()) roomCode.trim().uppercase() else cleanId
+        E2ECryptoManager.deriveSquadKey(cleanId, effectiveCode)
 
         val myPubKey = try {
             E2ECryptoManager.initSession()
@@ -400,11 +404,12 @@ object SupabaseRealtimeManager {
                 Log.d(TAG, "Received SDP offer from ${msg.sender} (encrypted=${msg.encryptedPayload != null})")
                 val effectiveSdp = if (msg.encryptedPayload != null) {
                     val decrypted = E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload)
+                        ?: E2ECryptoManager.decryptSquadPayload(msg.encryptedPayload)
                     if (decrypted != null) {
                         Log.d(TAG, "Successfully decrypted SDP offer from ${msg.sender} with AES-256-GCM")
                         decrypted
                     } else {
-                        Log.e(TAG, "Failed to decrypt SDP offer from ${msg.sender}, falling back to plaintext")
+                        Log.e(TAG, "Failed to decrypt SDP offer from ${msg.sender}, checking plaintext")
                         msg.sdp
                     }
                 } else {
@@ -416,11 +421,12 @@ object SupabaseRealtimeManager {
                 Log.d(TAG, "Received SDP answer from ${msg.sender} (encrypted=${msg.encryptedPayload != null})")
                 val effectiveSdp = if (msg.encryptedPayload != null) {
                     val decrypted = E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload)
+                        ?: E2ECryptoManager.decryptSquadPayload(msg.encryptedPayload)
                     if (decrypted != null) {
                         Log.d(TAG, "Successfully decrypted SDP answer from ${msg.sender} with AES-256-GCM")
                         decrypted
                     } else {
-                        Log.e(TAG, "Failed to decrypt SDP answer from ${msg.sender}, falling back to plaintext")
+                        Log.e(TAG, "Failed to decrypt SDP answer from ${msg.sender}, checking plaintext")
                         msg.sdp
                     }
                 } else {
@@ -430,7 +436,9 @@ object SupabaseRealtimeManager {
             }
             "ice-candidate" -> {
                 val effectiveCandidate = if (msg.encryptedPayload != null) {
-                    E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload) ?: msg.candidate
+                    E2ECryptoManager.decryptFromPeer(msg.sender, msg.encryptedPayload)
+                        ?: E2ECryptoManager.decryptSquadPayload(msg.encryptedPayload)
+                        ?: msg.candidate
                 } else {
                     msg.candidate
                 }
@@ -461,16 +469,44 @@ object SupabaseRealtimeManager {
                 }
             }
             "tactical-msg" -> {
-                Log.d(TAG, "Received tactical-msg from ${msg.sender}")
-                TacticalChatManager.receiveMessage(
-                    sender = msg.sender,
-                    content = msg.textContent ?: "",
-                    timestamp = if (msg.timestamp > 0) msg.timestamp else System.currentTimeMillis(),
-                    latitude = msg.latitude,
-                    longitude = msg.longitude,
-                    locationLabel = msg.locationLabel,
-                    isBeacon = msg.isBeacon == true
-                )
+                Log.d(TAG, "Received tactical-msg from ${msg.sender} (encrypted=${msg.encryptedPayload != null})")
+                if (msg.encryptedPayload != null) {
+                    val decrypted = E2ECryptoManager.decryptSquadPayload(msg.encryptedPayload)
+                    if (decrypted != null) {
+                        try {
+                            val obj = JSONObject(decrypted)
+                            val text = obj.optString("text", "")
+                            val lat = if (obj.has("lat") && !obj.isNull("lat")) obj.optDouble("lat") else null
+                            val lng = if (obj.has("lng") && !obj.isNull("lng")) obj.optDouble("lng") else null
+                            val lbl = if (obj.has("label") && !obj.isNull("label")) obj.optString("label") else null
+                            val beacon = obj.optBoolean("beacon", false)
+
+                            TacticalChatManager.receiveMessage(
+                                sender = msg.sender,
+                                content = text,
+                                timestamp = if (msg.timestamp > 0) msg.timestamp else System.currentTimeMillis(),
+                                latitude = lat,
+                                longitude = lng,
+                                locationLabel = lbl,
+                                isBeacon = beacon
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing decrypted tactical-msg JSON", e)
+                        }
+                    } else {
+                        Log.e(TAG, "Failed to decrypt tactical-msg from ${msg.sender}")
+                    }
+                } else {
+                    TacticalChatManager.receiveMessage(
+                        sender = msg.sender,
+                        content = msg.textContent ?: "",
+                        timestamp = if (msg.timestamp > 0) msg.timestamp else System.currentTimeMillis(),
+                        latitude = msg.latitude,
+                        longitude = msg.longitude,
+                        locationLabel = msg.locationLabel,
+                        isBeacon = msg.isBeacon == true
+                    )
+                }
             }
         }
     }
@@ -518,11 +554,13 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         val myPubKey = E2ECryptoManager.getMyPublicKeyBase64()
         val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, sdp)
+            ?: E2ECryptoManager.encryptSquadPayload(sdp)
+
         if (encrypted != null) {
             Log.d(TAG, "Sending AES-256-GCM encrypted SDP offer to $targetPeerId")
-            broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, sdp = sdp, encryptedPayload = encrypted, publicKey = myPubKey))
+            broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, encryptedPayload = encrypted, publicKey = myPubKey))
         } else {
-            Log.d(TAG, "Sending plaintext SDP offer to $targetPeerId (no shared secret yet)")
+            Log.d(TAG, "Sending plaintext SDP offer to $targetPeerId (crypto fallback)")
             broadcastSignal(SignalMessage(type = "offer", sender = myName, to = targetPeerId, sdp = sdp, publicKey = myPubKey))
         }
     }
@@ -531,11 +569,13 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         val myPubKey = E2ECryptoManager.getMyPublicKeyBase64()
         val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, sdp)
+            ?: E2ECryptoManager.encryptSquadPayload(sdp)
+
         if (encrypted != null) {
             Log.d(TAG, "Sending AES-256-GCM encrypted SDP answer to $targetPeerId")
-            broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, sdp = sdp, encryptedPayload = encrypted, publicKey = myPubKey))
+            broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, encryptedPayload = encrypted, publicKey = myPubKey))
         } else {
-            Log.d(TAG, "Sending plaintext SDP answer to $targetPeerId (no shared secret yet)")
+            Log.d(TAG, "Sending plaintext SDP answer to $targetPeerId (crypto fallback)")
             broadcastSignal(SignalMessage(type = "answer", sender = myName, to = targetPeerId, sdp = sdp, publicKey = myPubKey))
         }
     }
@@ -544,8 +584,10 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         val myPubKey = E2ECryptoManager.getMyPublicKeyBase64()
         val encrypted = E2ECryptoManager.encryptForPeer(targetPeerId, candidate)
+            ?: E2ECryptoManager.encryptSquadPayload(candidate)
+
         if (encrypted != null) {
-            broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, candidate = candidate, encryptedPayload = encrypted, publicKey = myPubKey))
+            broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, encryptedPayload = encrypted, publicKey = myPubKey))
         } else {
             broadcastSignal(SignalMessage(type = "ice-candidate", sender = myName, to = targetPeerId, candidate = candidate, publicKey = myPubKey))
         }
@@ -610,18 +652,37 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         val roomId = _socketUiState.value.roomId
         if (myName.isNotEmpty() && roomId.isNotEmpty()) {
-            broadcastSignal(
-                SignalMessage(
-                    type = "tactical-msg",
-                    sender = myName,
-                    textContent = textContent,
-                    latitude = latitude,
-                    longitude = longitude,
-                    locationLabel = locationLabel,
-                    isBeacon = isBeacon,
-                    timestamp = System.currentTimeMillis()
+            val payloadObj = JSONObject().apply {
+                put("text", textContent)
+                if (latitude != null) put("lat", latitude)
+                if (longitude != null) put("lng", longitude)
+                if (locationLabel != null) put("label", locationLabel)
+                put("beacon", isBeacon)
+            }
+            val encrypted = E2ECryptoManager.encryptSquadPayload(payloadObj.toString())
+            if (encrypted != null) {
+                broadcastSignal(
+                    SignalMessage(
+                        type = "tactical-msg",
+                        sender = myName,
+                        encryptedPayload = encrypted,
+                        timestamp = System.currentTimeMillis()
+                    )
                 )
-            )
+            } else {
+                broadcastSignal(
+                    SignalMessage(
+                        type = "tactical-msg",
+                        sender = myName,
+                        textContent = textContent,
+                        latitude = latitude,
+                        longitude = longitude,
+                        locationLabel = locationLabel,
+                        isBeacon = isBeacon,
+                        timestamp = System.currentTimeMillis()
+                    )
+                )
+            }
         }
     }
 

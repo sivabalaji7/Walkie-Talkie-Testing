@@ -12,7 +12,10 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.net.UnknownHostException
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.concurrent.TimeUnit
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 sealed class AuthResult {
     data class Success(val userId: String, val username: String) : AuthResult()
@@ -26,6 +29,12 @@ object SupabaseAuthManager {
     private const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY"
     private const val PASSWORD_SALT = "SquadTalk_Salt_2026#"
 
+    private const val PBKDF2_ALGO = "PBKDF2WithHmacSHA512"
+    private const val PBKDF2_ITERATIONS = 65536
+    private const val PBKDF2_KEY_LENGTH = 256
+    private const val SALT_BYTES = 16
+
+    private val secureRandom = SecureRandom()
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
     private val client: OkHttpClient by lazy {
@@ -37,7 +46,51 @@ object SupabaseAuthManager {
             .build()
     }
 
-    private fun hashPassword(password: String): String {
+    /**
+     * Memory-hard PBKDF2-HMAC-SHA512 password hashing with 65,536 iterations and random salt.
+     * Output format: pbkdf2:65536:<saltHex>:<hashHex>
+     */
+    fun hashPasswordPbkdf2(
+        password: String, 
+        salt: ByteArray = ByteArray(SALT_BYTES).apply { secureRandom.nextBytes(this) }
+    ): String {
+        val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH)
+        val factory = SecretKeyFactory.getInstance(PBKDF2_ALGO)
+        val hash = factory.generateSecret(spec).encoded
+        val saltHex = salt.joinToString("") { "%02x".format(it) }
+        val hashHex = hash.joinToString("") { "%02x".format(it) }
+        return "pbkdf2:$PBKDF2_ITERATIONS:$saltHex:$hashHex"
+    }
+
+    /**
+     * Verifies password against either modern PBKDF2 format or legacy SHA-256 format.
+     */
+    fun verifyPassword(password: String, storedHash: String): Boolean {
+        return if (storedHash.startsWith("pbkdf2:")) {
+            try {
+                val parts = storedHash.split(":")
+                if (parts.size != 4) return false
+                val iterations = parts[1].toIntOrNull() ?: return false
+                val saltHex = parts[2]
+                val expectedHashHex = parts[3]
+                val salt = saltHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val spec = PBEKeySpec(password.toCharArray(), salt, iterations, PBKDF2_KEY_LENGTH)
+                val factory = SecretKeyFactory.getInstance(PBKDF2_ALGO)
+                val calculatedHash = factory.generateSecret(spec).encoded
+                val calculatedHashHex = calculatedHash.joinToString("") { "%02x".format(it) }
+                calculatedHashHex.equals(expectedHashHex, ignoreCase = true)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error verifying PBKDF2 password: ${e.message}")
+                false
+            }
+        } else {
+            // Legacy SHA-256 fallback
+            val legacy = hashPasswordLegacy(password)
+            legacy.equals(storedHash, ignoreCase = true)
+        }
+    }
+
+    private fun hashPasswordLegacy(password: String): String {
         val salted = "$password$PASSWORD_SALT"
         val bytes = MessageDigest.getInstance("SHA-256").digest(salted.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
@@ -59,8 +112,8 @@ object SupabaseAuthManager {
                 return@withContext AuthResult.Error("Username '$cleanUsername' is already taken")
             }
 
-            // 2. Insert new user
-            val passwordHash = hashPassword(password)
+            // 2. Insert new user with memory-hard PBKDF2 hash
+            val passwordHash = hashPasswordPbkdf2(password)
             val bodyJson = JSONObject().apply {
                 put("username", cleanUsername)
                 put("password_hash", passwordHash)
@@ -114,11 +167,22 @@ object SupabaseAuthManager {
                 ?: return@withContext AuthResult.Error("User '$cleanUsername' not found")
 
             val expectedHash = userRecord.getString("password_hash")
-            val inputHash = hashPassword(password)
+            val isValid = verifyPassword(password, expectedHash)
 
-            if (expectedHash == inputHash) {
+            if (isValid) {
                 val userId = userRecord.getString("id")
                 val foundUsername = userRecord.getString("username")
+
+                // Transparently upgrade legacy SHA-256 users to PBKDF2
+                if (!expectedHash.startsWith("pbkdf2:")) {
+                    try {
+                        val upgradedHash = hashPasswordPbkdf2(password)
+                        upgradeUserPasswordHash(userId, upgradedHash)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Notice: could not upgrade legacy password hash: ${e.message}")
+                    }
+                }
+
                 return@withContext AuthResult.Success(userId, foundUsername)
             } else {
                 return@withContext AuthResult.Error("Invalid password. Please try again.")
@@ -137,6 +201,31 @@ object SupabaseAuthManager {
             Log.i(TAG, "SignOut successful (clearing local session)")
         } catch (e: Exception) {
             Log.w(TAG, "Error during signOut", e)
+        }
+    }
+
+    private fun upgradeUserPasswordHash(userId: String, newHash: String) {
+        try {
+            val bodyJson = JSONObject().apply {
+                put("password_hash", newHash)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$SUPABASE_URL/rest/v1/users?id=eq.$userId")
+                .addHeader("apikey", SUPABASE_ANON_KEY)
+                .addHeader("Authorization", "Bearer $SUPABASE_ANON_KEY")
+                .patch(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.i(TAG, "Upgraded user $userId password hash to PBKDF2-HMAC-SHA512")
+                } else {
+                    Log.w(TAG, "Failed to upgrade password hash (HTTP ${response.code})")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error upgrading password hash", e)
         }
     }
 

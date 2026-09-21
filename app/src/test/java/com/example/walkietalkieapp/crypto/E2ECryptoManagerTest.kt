@@ -118,4 +118,57 @@ class E2ECryptoManagerTest {
         val result = E2ECryptoManager.encryptForPeer("bob", "test")
         assertNull("Encrypting for removed peer should return null", result)
     }
+
+    @Test
+    fun testSquadKeyDerivationAndEncryptionDecryption() {
+        val roomId = "room-alpha-99"
+        val roomCode = "WT-9999"
+
+        assertTrue("Squad key should derive successfully", E2ECryptoManager.deriveSquadKey(roomId, roomCode))
+        assertTrue("hasSquadKey should return true", E2ECryptoManager.hasSquadKey())
+
+        val secretMessage = "{\"text\":\"MOVE TO EXTRACTION POINT\",\"lat\":37.7749,\"lng\":-122.4194}"
+        val ciphertext = E2ECryptoManager.encryptSquadPayload(secretMessage)
+        assertNotNull("Ciphertext should not be null", ciphertext)
+        assertNotEquals("Ciphertext should differ from plaintext", secretMessage, ciphertext)
+
+        val decrypted = E2ECryptoManager.decryptSquadPayload(ciphertext!!)
+        assertEquals("Decrypted payload must match original", secretMessage, decrypted)
+    }
+
+    @Test
+    fun testSquadKeyTamperingRejection() {
+        E2ECryptoManager.deriveSquadKey("room-123", "WT-1234")
+        val payload = "SENSITIVE GPS BEACON"
+        val ciphertext = E2ECryptoManager.encryptSquadPayload(payload)!!
+
+        val bytes = Base64.getDecoder().decode(ciphertext)
+        bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 0x01).toByte()
+        val tampered = Base64.getEncoder().encodeToString(bytes)
+
+        val decrypted = E2ECryptoManager.decryptSquadPayload(tampered)
+        assertNull("Decryption of tampered squad payload must return null", decrypted)
+    }
+
+    @Test
+    fun testWrongSquadCodeFailsDecryption() {
+        // Squad A
+        E2ECryptoManager.deriveSquadKey("room-alpha", "WT-AAAA")
+        val ciphertext = E2ECryptoManager.encryptSquadPayload("TOP SECRET TACTICAL ORDER")!!
+
+        // Attacker / Squad B with wrong code
+        E2ECryptoManager.deriveSquadKey("room-alpha", "WT-BBBB")
+        val decryptedWithWrongCode = E2ECryptoManager.decryptSquadPayload(ciphertext)
+        assertNull("Decryption with incorrect squad code must fail", decryptedWithWrongCode)
+    }
+
+    @Test
+    fun testResetSessionClearsSquadKey() {
+        E2ECryptoManager.deriveSquadKey("room-test", "WT-TEST")
+        assertTrue(E2ECryptoManager.hasSquadKey())
+
+        E2ECryptoManager.resetSession()
+        assertFalse("Squad key should be cleared after session reset", E2ECryptoManager.hasSquadKey())
+        assertNull("Encrypting without squad key should return null", E2ECryptoManager.encryptSquadPayload("test"))
+    }
 }
