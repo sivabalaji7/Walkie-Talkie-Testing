@@ -198,13 +198,24 @@ fun PushToTalk(
 
         Spacer(modifier = Modifier.height(6.dp))
 
+        // Observe live VAD speech detection from microphone stream
+        val isLiveSpeechActive by com.example.walkietalkieapp.audio.VoiceActivityDetector.isLiveSpeechActive.collectAsState()
+
         // Tactile Status Hint Text
         Text(
-            text = if (isTalking) "TRANSMITTING LIVE" else "HOLD TO TALK",
+            text = when {
+                isTalking && isLiveSpeechActive -> "VOICE ACTIVE • CAPTURING"
+                isTalking -> "TRANSMITTING LIVE"
+                else -> "HOLD TO TALK"
+            },
             fontFamily = SpaceGrotesk,
             fontSize = 10.sp,
             fontWeight = FontWeight.ExtraBold,
-            color = if (isTalking) currentTheme.primaryColor else WalkieTextMuted,
+            color = when {
+                isTalking && isLiveSpeechActive -> StatusReady
+                isTalking -> currentTheme.primaryColor
+                else -> WalkieTextMuted
+            },
             letterSpacing = 1.5.sp
         )
 

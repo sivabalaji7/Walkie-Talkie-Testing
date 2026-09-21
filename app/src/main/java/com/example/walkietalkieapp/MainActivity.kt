@@ -288,6 +288,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // Initialize Communication DNA / Network Intelligence Engine
         com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.initialize(this)
 
+        // Initialize Blackbox Audio Reel local storage
+        com.example.walkietalkieapp.audio.VoiceHistoryManager.init(applicationContext)
+
         // Initialize Adaptive Mesh & Auto-Failover Engine
         com.example.walkietalkieapp.mesh.AdaptiveMeshManager.bindConnectivity(this)
 
@@ -695,6 +698,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             webRtcService?.webRTCManager?.cleanup()
                             SupabaseRealtimeManager.leaveRoom()
+                            com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
                             webRtcService?.updateNotification("Ready to talk")
                         },
                         activeInternetRoomId = socketUiState.roomId,
@@ -821,6 +825,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             } else {
                                 wifiDirectManager?.leaveSquad()
                             }
+                            com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
                             offlineService?.updateNotification("Squad Talk Ready")
                         },
                         isUserSpeakingOffline = isUserSpeakingLocalOffline,

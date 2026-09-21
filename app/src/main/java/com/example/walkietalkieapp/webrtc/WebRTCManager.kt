@@ -116,7 +116,7 @@ class WebRTCManager(private val context: Context) {
                     destPos += chunk.size
                 }
                 val duration = (System.currentTimeMillis() - activeRemoteStartTime).coerceAtLeast(300L)
-                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                val saved = com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
                     speakerName = speaker,
                     pcmData = pcmData,
                     sampleRate = activeRemoteSampleRate,
@@ -124,6 +124,11 @@ class WebRTCManager(private val context: Context) {
                     durationMs = duration,
                     isSelf = false
                 )
+                if (saved) {
+                    Log.d(TAG, "Remote speech from $speaker saved to local Blackbox Reel ($duration ms)")
+                } else {
+                    Log.d(TAG, "Remote transmission from $speaker had no speech activity — omitted from reel")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error committing remote voice transmission: ${e.message}")
@@ -343,6 +348,7 @@ class WebRTCManager(private val context: Context) {
                 dup.get(data)
                 localAudioRecording.add(data)
                 com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.feedPcmFrame(data, 0, data.size)
+                com.example.walkietalkieapp.audio.VoiceActivityDetector.feedLivePcmChunk(data, data.size, numberOfChannels)
             }
         }
     }
@@ -922,6 +928,7 @@ class WebRTCManager(private val context: Context) {
                 isTalking = false
                 localAudioTrack?.setEnabled(false)
                 com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.setPttActive(false)
+                com.example.walkietalkieapp.audio.VoiceActivityDetector.resetLiveState()
                 commitLocalAudioTransmission()
                 Log.d(TAG, "PTT released — mic muted, audio focus retained for incoming transmission")
             } catch (e: Exception) {
@@ -947,7 +954,7 @@ class WebRTCManager(private val context: Context) {
                 }
                 val duration = (System.currentTimeMillis() - localAudioStartTime).coerceAtLeast(300L)
                 val myName = SupabaseRealtimeManager.socketUiState.value.username.ifBlank { "You" }
-                com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
+                val saved = com.example.walkietalkieapp.audio.VoiceHistoryManager.addTransmission(
                     speakerName = myName,
                     pcmData = pcmData,
                     sampleRate = localAudioSampleRate,
@@ -955,6 +962,11 @@ class WebRTCManager(private val context: Context) {
                     durationMs = duration,
                     isSelf = true
                 )
+                if (saved) {
+                    Log.d(TAG, "Local speech recorded and saved to local Blackbox Reel ($duration ms)")
+                } else {
+                    Log.d(TAG, "Empty/silent PTT release ignored — omitted from Blackbox Reel")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error committing local voice transmission: ${e.message}")
@@ -989,6 +1001,7 @@ class WebRTCManager(private val context: Context) {
         Log.d(TAG, "Cleaning up all WebRTC peer connections")
         isSessionActive = false
         stopTalking()
+        com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
         
         audioExecutor.execute {
             peerConnections.forEach { (peerId, pc) ->

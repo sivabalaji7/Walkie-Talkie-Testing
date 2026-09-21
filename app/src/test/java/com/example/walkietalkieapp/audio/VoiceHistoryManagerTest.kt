@@ -3,8 +3,34 @@ package com.example.walkietalkieapp.audio
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
 
 class VoiceHistoryManagerTest {
+
+    private fun createSpeechPcm(
+        durationMs: Long,
+        sampleRate: Int = 48000,
+        channels: Int = 1,
+        amplitude: Double = 8000.0
+    ): ByteArray {
+        val totalSamples = ((sampleRate * durationMs) / 1000).toInt()
+        val bytesPerSample = 2 * channels
+        val pcm = ByteArray(totalSamples * bytesPerSample)
+        for (i in 0 until totalSamples) {
+            val envelope = sin(PI * i / totalSamples)
+            val wave = sin(2.0 * PI * 240.0 * i / sampleRate)
+            val sample = (wave * envelope * amplitude).toInt().toShort()
+            val byteIdx = i * bytesPerSample
+            pcm[byteIdx] = (sample.toInt() and 0xFF).toByte()
+            pcm[byteIdx + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+            if (channels == 2) {
+                pcm[byteIdx + 2] = (sample.toInt() and 0xFF).toByte()
+                pcm[byteIdx + 3] = ((sample.toInt() shr 8) and 0xFF).toByte()
+            }
+        }
+        return pcm
+    }
 
     @Before
     fun setUp() {
@@ -13,15 +39,16 @@ class VoiceHistoryManagerTest {
 
     @Test
     fun testAddTransmission() {
-        val dummyPcm = ByteArray(9600) { 0x1A }
-        VoiceHistoryManager.addTransmission(
+        val speechPcm = createSpeechPcm(durationMs = 1200L, sampleRate = 48000, channels = 1)
+        val added = VoiceHistoryManager.addTransmission(
             speakerName = "Falcon-1",
-            pcmData = dummyPcm,
+            pcmData = speechPcm,
             sampleRate = 48000,
             durationMs = 1200L,
             isSelf = false
         )
 
+        assertTrue("Speech transmission must be accepted", added)
         val list = VoiceHistoryManager.transmissions.value
         assertEquals("Reel should contain 1 transmission", 1, list.size)
         val first = list.first()
@@ -29,16 +56,50 @@ class VoiceHistoryManagerTest {
         assertEquals(1200L, first.durationMs)
         assertEquals(48000, first.sampleRate)
         assertFalse(first.isSelf)
-        assertArrayEquals(dummyPcm, first.pcmData)
+        assertArrayEquals(speechPcm, first.pcmData)
+    }
+
+    @Test
+    fun testCase2SilentOrAmbientAudioIgnored() {
+        // Accidental PTT button press: 1.5 seconds of silence
+        val silentPcm = ByteArray(48000 * 2) { 0 }
+        val addedSilent = VoiceHistoryManager.addTransmission(
+            speakerName = "Whisper-Ghost",
+            pcmData = silentPcm,
+            sampleRate = 48000,
+            durationMs = 1500L,
+            isSelf = true
+        )
+
+        assertFalse("Case 2: Silent audio must be ignored and omitted from reel", addedSilent)
+        assertEquals("Reel must remain empty after silent transmission", 0, VoiceHistoryManager.transmissions.value.size)
+
+        // Steady low-level noise (e.g. AC fan hum)
+        val totalFanSamples = 48000
+        val fanPcm = ByteArray(totalFanSamples * 2)
+        for (i in 0 until totalFanSamples) {
+            val hum = (sin(2.0 * PI * 60.0 * i / 48000) * 200).toInt().toShort()
+            fanPcm[i * 2] = (hum.toInt() and 0xFF).toByte()
+            fanPcm[i * 2 + 1] = ((hum.toInt() shr 8) and 0xFF).toByte()
+        }
+
+        val addedFan = VoiceHistoryManager.addTransmission(
+            speakerName = "Fan-Noise",
+            pcmData = fanPcm,
+            sampleRate = 48000,
+            durationMs = 1000L
+        )
+        assertFalse("Case 2: Ambient noise must be ignored and omitted from reel", addedFan)
+        assertEquals(0, VoiceHistoryManager.transmissions.value.size)
     }
 
     @Test
     fun testRingBufferCappedAt20() {
-        val dummyPcm = ByteArray(1000) { 0x01 }
         for (i in 1..25) {
+            val speechPcm = createSpeechPcm(durationMs = 500L, sampleRate = 16000, channels = 1)
             VoiceHistoryManager.addTransmission(
                 speakerName = "Speaker-$i",
-                pcmData = dummyPcm,
+                pcmData = speechPcm,
                 sampleRate = 16000,
                 durationMs = 500L,
                 isSelf = (i % 2 == 0)
@@ -53,32 +114,34 @@ class VoiceHistoryManagerTest {
 
     @Test
     fun testIgnoreTrivialChunks() {
-        val dummyPcm = ByteArray(100)
+        val dummyPcm = createSpeechPcm(durationMs = 150L, sampleRate = 48000)
         // Duration < 200ms
-        VoiceHistoryManager.addTransmission(
+        val addedShort = VoiceHistoryManager.addTransmission(
             speakerName = "Spam",
             pcmData = dummyPcm,
             durationMs = 150L
         )
-        assertEquals("Trivial short chunks must be discarded", 0, VoiceHistoryManager.transmissions.value.size)
+        assertFalse("Trivial short chunks must be discarded", addedShort)
+        assertEquals(0, VoiceHistoryManager.transmissions.value.size)
 
         // Empty bytes
-        VoiceHistoryManager.addTransmission(
+        val addedEmpty = VoiceHistoryManager.addTransmission(
             speakerName = "Empty",
             pcmData = ByteArray(0),
             durationMs = 1000L
         )
-        assertEquals("Empty byte chunks must be discarded", 0, VoiceHistoryManager.transmissions.value.size)
+        assertFalse("Empty byte chunks must be discarded", addedEmpty)
+        assertEquals(0, VoiceHistoryManager.transmissions.value.size)
     }
 
     @Test
-    fun testClearHistory() {
-        val dummyPcm = ByteArray(500)
-        VoiceHistoryManager.addTransmission("Test", dummyPcm, durationMs = 500L)
+    fun testClearHistoryPurgesReel() {
+        val speechPcm = createSpeechPcm(durationMs = 600L, sampleRate = 48000)
+        VoiceHistoryManager.addTransmission("Test", speechPcm, durationMs = 600L)
         assertEquals(1, VoiceHistoryManager.transmissions.value.size)
 
         VoiceHistoryManager.clearHistory()
-        assertEquals("Reel must be empty after clear", 0, VoiceHistoryManager.transmissions.value.size)
+        assertEquals("Reel must be empty after clear / squad exit", 0, VoiceHistoryManager.transmissions.value.size)
         assertNull("Currently playing ID must be null after clear", VoiceHistoryManager.currentlyPlayingId.value)
     }
 
@@ -112,24 +175,23 @@ class VoiceHistoryManagerTest {
 
     @Test
     fun testAddTransmissionStereoAutoDownmixesToMono() {
-        // 8000 bytes of stereo PCM = 2000 stereo frames
-        val stereoPcm = ByteArray(8000) { (it % 128).toByte() }
-        VoiceHistoryManager.addTransmission(
+        val stereoSpeech = createSpeechPcm(durationMs = 1000L, sampleRate = 48000, channels = 2)
+        val added = VoiceHistoryManager.addTransmission(
             speakerName = "Bravo-2",
-            pcmData = stereoPcm,
+            pcmData = stereoSpeech,
             sampleRate = 48000,
             channels = 2,
             durationMs = 1000L,
             isSelf = false
         )
 
+        assertTrue(added)
         val list = VoiceHistoryManager.transmissions.value
         assertEquals(1, list.size)
         val recorded = list.first()
         assertEquals("Channels should be normalized to 1 (mono) for accurate 1.0x playback", 1, recorded.channels)
-        assertEquals("Downmixed PCM data size must be exactly half (4000 bytes)", 4000, recorded.pcmData.size)
+        assertEquals("Downmixed PCM data size must be exactly half", stereoSpeech.size / 2, recorded.pcmData.size)
         assertEquals(48000, recorded.sampleRate)
         assertEquals(1000L, recorded.durationMs)
     }
 }
-

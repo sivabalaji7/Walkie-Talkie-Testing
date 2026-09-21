@@ -19,7 +19,8 @@ data class VoiceTransmission(
     val pcmData: ByteArray,
     val sampleRate: Int = 48000,
     val channels: Int = 1,
-    val isSelf: Boolean = false
+    val isSelf: Boolean = false,
+    val localFilePath: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -33,7 +34,7 @@ data class VoiceTransmission(
 
 /**
  * VoiceHistoryManager manages the rolling Blackbox Audio Reel.
- * Captures, stores, and plays back past voice transmissions.
+ * Captures, stores locally on device, and plays back authentic past voice transmissions.
  */
 object VoiceHistoryManager {
     private const val TAG = "VoiceHistoryManager"
@@ -48,6 +49,23 @@ object VoiceHistoryManager {
     @Volatile
     private var activePlaybackTrack: AudioTrack? = null
     private val isStopping = AtomicBoolean(false)
+
+    private var storageDir: java.io.File? = null
+
+    /**
+     * Initializes local storage cache directory for the squad audio reel.
+     * Audio files remain stored locally on device until the operator exits the squad.
+     */
+    fun init(context: android.content.Context) {
+        try {
+            storageDir = java.io.File(context.cacheDir, "squad_audio_reel").apply {
+                if (!exists()) mkdirs()
+            }
+            logD("Local audio reel storage initialized at: ${storageDir?.absolutePath}")
+        } catch (e: Exception) {
+            logE("Failed to initialize local audio reel storage: ${e.message}", e)
+        }
+    }
 
     private fun logD(msg: String) {
         try {
@@ -89,6 +107,10 @@ object VoiceHistoryManager {
 
     /**
      * Adds a newly completed transmission to the rolling reel.
+     * Case 1: If speech/voice is detected, records audio, persists locally on device, and adds to reel.
+     * Case 2: If no speech was spoken (silence / ambient / empty PTT), ignores and omits from recording.
+     *
+     * @return true if speech was recorded and saved; false if discarded as silence/ambient.
      */
     fun addTransmission(
         speakerName: String,
@@ -97,27 +119,49 @@ object VoiceHistoryManager {
         channels: Int = 1,
         durationMs: Long,
         isSelf: Boolean = false
-    ) {
+    ): Boolean {
         if (pcmData.isEmpty() || durationMs < 200L) {
             logD("Ignored trivial audio chunk (<200ms or empty)")
-            return
+            return false
         }
 
-        // If audio arrived in 2-channel stereo, downmix to mono to ensure 1.0x natural playback speed
+        // Case 2: Precision VAD Speech Check. If person did not speak, ignore empty audio.
+        if (!VoiceActivityDetector.hasSpeech(pcmData, sampleRate, channels)) {
+            logD("Case 2: Discarded transmission from $speakerName (${durationMs}ms) — no speech activity detected (silence/ambient)")
+            return false
+        }
+
+        // Case 1: Speech confirmed! Downmix stereo if needed to preserve 1.0x pitch
         val (finalData, finalChannels) = if (channels == 2) {
             stereoToMono(pcmData) to 1
         } else {
             pcmData to channels
         }
 
+        val recordId = UUID.randomUUID().toString()
+        var savedFilePath: String? = null
+
+        // Persist to local device storage until operator exits squad
+        storageDir?.let { dir ->
+            try {
+                val audioFile = java.io.File(dir, "transmission_${recordId}.pcm")
+                audioFile.writeBytes(finalData)
+                savedFilePath = audioFile.absolutePath
+            } catch (e: Exception) {
+                logE("Failed to save audio file to local storage: ${e.message}", e)
+            }
+        }
+
         val record = VoiceTransmission(
+            id = recordId,
             speakerName = speakerName.trim().ifBlank { "Unknown" },
             timestamp = System.currentTimeMillis(),
             durationMs = durationMs,
             pcmData = finalData,
             sampleRate = sampleRate,
             channels = finalChannels,
-            isSelf = isSelf
+            isSelf = isSelf,
+            localFilePath = savedFilePath
         )
 
         _transmissions.update { current ->
@@ -125,7 +169,8 @@ object VoiceHistoryManager {
             listOf(record) + current.take(MAX_TRANSMISSIONS - 1)
         }
 
-        logD("Added transmission from ${record.speakerName} (${record.durationMs}ms, ${finalData.size} bytes, ${record.sampleRate}Hz, ${record.channels}ch). Total reel count: ${_transmissions.value.size}")
+        logD("Case 1: Saved speech transmission from ${record.speakerName} (${record.durationMs}ms, ${finalData.size} bytes, localFile: $savedFilePath). Total reel count: ${_transmissions.value.size}")
+        return true
     }
 
     /**
@@ -239,11 +284,24 @@ object VoiceHistoryManager {
     }
 
     /**
-     * Clears all recorded transmissions.
+     * Clears all recorded transmissions and purges local device storage cache.
+     * Called whenever an operator exits the squad or manually clears the reel.
      */
     @Synchronized
     fun clearHistory() {
         stopPlayback()
+        storageDir?.let { dir ->
+            try {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isFile && file.name.startsWith("transmission_")) {
+                        file.delete()
+                    }
+                }
+                logD("Purged local audio reel cache from storage")
+            } catch (e: Exception) {
+                logE("Error purging local audio cache: ${e.message}", e)
+            }
+        }
         _transmissions.value = emptyList()
         logD("Cleared all transmissions from reel")
     }
