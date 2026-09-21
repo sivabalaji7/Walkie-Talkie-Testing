@@ -440,20 +440,24 @@ fun WalkieTalkieApp(
                                 onRekeySession = { SupabaseRealtimeManager.rekeySession() }
                             )
                         } else {
+                            val safeActiveIndex = if (displayedSquads.isNotEmpty()) {
+                                activeIndex.mod(displayedSquads.size)
+                            } else 0
+
                             SquadHub(
                                 mode = currentConnectivityMode,
                                 squads = displayedSquads,
-                                activeIndex = activeIndex.coerceIn(0, (displayedSquads.size - 1).coerceAtLeast(0)),
+                                activeIndex = safeActiveIndex,
                                 onStep = { dir ->
                                     if (displayedSquads.isNotEmpty()) {
-                                        activeIndex = (activeIndex + dir).coerceIn(0, displayedSquads.size - 1)
+                                        activeIndex = (activeIndex + dir).mod(displayedSquads.size)
                                     }
                                 },
                                 onJoin = {
                                     when (selectedMode) {
                                         TransportMode.INTERNET -> {
                                             if (displayedSquads.isNotEmpty()) {
-                                                displayedSquads.getOrNull(activeIndex)?.let {
+                                                displayedSquads.getOrNull(safeActiveIndex)?.let {
                                                     onEnterInternetRoom(it.id, it.name)
                                                 }
                                             } else {
@@ -461,12 +465,18 @@ fun WalkieTalkieApp(
                                             }
                                         }
                                         TransportMode.BLUETOOTH -> {
-                                            btUiState.discoveredSquads.getOrNull(activeIndex)?.let {
+                                            val btIdx = if (btUiState.discoveredSquads.isNotEmpty()) {
+                                                activeIndex.mod(btUiState.discoveredSquads.size)
+                                            } else 0
+                                            btUiState.discoveredSquads.getOrNull(btIdx)?.let {
                                                 onJoinBtSquad(it, persistentCallSign.ifBlank { displayCallsign })
                                             } ?: run { onStartBtScan() }
                                         }
                                         TransportMode.WIFI_DIRECT -> {
-                                            wifiUiState.discoveredSquads.getOrNull(activeIndex)?.let {
+                                            val wifiIdx = if (wifiUiState.discoveredSquads.isNotEmpty()) {
+                                                activeIndex.mod(wifiUiState.discoveredSquads.size)
+                                            } else 0
+                                            wifiUiState.discoveredSquads.getOrNull(wifiIdx)?.let {
                                                 onJoinWifiSquad(it, persistentCallSign.ifBlank { displayCallsign })
                                             } ?: run { onStartWifiScan() }
                                         }

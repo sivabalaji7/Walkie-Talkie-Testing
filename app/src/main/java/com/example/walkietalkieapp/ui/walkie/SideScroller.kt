@@ -32,7 +32,6 @@ import kotlin.math.*
 private const val RIB_COUNT = 14
 private const val PITCH = (2 * PI / RIB_COUNT).toFloat()
 private const val RADIUS_DP = 44f // Cylinder radius
-private const val STEP_ANGLE = 0.50f // Angle per squad step
 
 @Composable
 fun SideScroller(
@@ -51,11 +50,16 @@ fun SideScroller(
 
     val safeItemCount = itemCount.coerceAtLeast(1)
     val safeIndex = currentIndex.coerceIn(0, safeItemCount - 1)
-    val minAngle = -(safeItemCount - 1) * STEP_ANGLE
-    val maxAngle = 0f
 
-    val angleAnim = remember { Animatable(-safeIndex * STEP_ANGLE) }
-    var angle by remember { mutableFloatStateOf(-safeIndex * STEP_ANGLE) }
+    val currentOnStep by rememberUpdatedState(onStep)
+    val currentOnPull by rememberUpdatedState(onPull)
+    val currentDisabled by rememberUpdatedState(disabled)
+    val currentSafeIndex by rememberUpdatedState(safeIndex)
+    val currentSafeItemCount by rememberUpdatedState(safeItemCount)
+
+    val angleAnim = remember { Animatable(0f) }
+    var angle by remember { mutableFloatStateOf(0f) }
+    var lastReportedIndex by remember { mutableIntStateOf(safeIndex) }
 
     var isEngaged by remember { mutableStateOf(false) }
     var accX by remember { mutableFloatStateOf(0f) }
@@ -63,14 +67,28 @@ fun SideScroller(
     var isPullingRight by remember { mutableStateOf(false) }
     var hasPulledTrigger by remember { mutableStateOf(false) }
 
-    // Synchronize angle when external index changes
+    // Synchronize angle when external index changes (e.g. tapped item or remote event)
     LaunchedEffect(safeIndex, safeItemCount) {
-        val target = -safeIndex * STEP_ANGLE
-        if (abs(angle - target) > 0.02f) {
-            angleAnim.snapTo(angle)
-            angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 420f)) {
-                angle = this.value
+        if (!isEngaged) {
+            if (safeIndex != lastReportedIndex) {
+                val diff = safeIndex - lastReportedIndex
+                val stepDelta = if (safeItemCount > 1) {
+                    val modDiff = diff.mod(safeItemCount)
+                    if (modDiff <= safeItemCount / 2) modDiff else modDiff - safeItemCount
+                } else {
+                    0
+                }
+                lastReportedIndex = safeIndex
+                if (stepDelta != 0) {
+                    val target = angle - stepDelta * PITCH
+                    angleAnim.snapTo(angle)
+                    angleAnim.animateTo(target, spring(dampingRatio = 0.72f, stiffness = 450f)) {
+                        angle = this.value
+                    }
+                }
             }
+        } else {
+            lastReportedIndex = safeIndex
         }
     }
 
@@ -78,6 +96,15 @@ fun SideScroller(
         targetValue = if (isEngaged) 1.12f else 1f,
         animationSpec = spring(dampingRatio = 0.65f, stiffness = 360f),
         label = "scrollerScaleX"
+    )
+
+    val targetThumbFraction = if (safeItemCount > 1) {
+        safeIndex.toFloat() / (safeItemCount - 1).coerceAtLeast(1)
+    } else 0f
+    val animatedThumbFraction by animateFloatAsState(
+        targetValue = targetThumbFraction,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = 420f),
+        label = "thumbFraction"
     )
 
     Column(
@@ -98,107 +125,92 @@ fun SideScroller(
                 .clip(RoundedCornerShape(16.dp))
                 .background(WalkieDeviceBodyLight)
                 .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
-                .pointerInput(disabled, safeIndex, safeItemCount) {
-                    if (!disabled) {
-                        detectDragGestures(
-                            onDragStart = {
-                                isEngaged = true
-                                isPullingRight = false
-                                hasPulledTrigger = false
-                                accX = 0f
-                                accY = 0f
-                            },
-                            onDragEnd = {
-                                if (hasPulledTrigger) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onPull()
-                                }
-                                hasPulledTrigger = false
-                                isPullingRight = false
-                                isEngaged = false
-                                accX = 0f
-                                accY = 0f
-                                coroutineScope.launch {
-                                    dragXAnim.snapTo(dragXOffset)
-                                    dragXAnim.animateTo(0f, spring(dampingRatio = 0.65f, stiffness = 420f)) {
-                                        dragXOffset = this.value
-                                    }
-                                }
-                                // Spring back to snapped step angle
-                                val target = -safeIndex * STEP_ANGLE
-                                coroutineScope.launch {
-                                    angleAnim.snapTo(angle)
-                                    angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 450f)) {
-                                        angle = this.value
-                                    }
-                                }
-                            },
-                            onDragCancel = {
-                                hasPulledTrigger = false
-                                isPullingRight = false
-                                isEngaged = false
-                                accX = 0f
-                                accY = 0f
-                                coroutineScope.launch {
-                                    dragXAnim.snapTo(dragXOffset)
-                                    dragXAnim.animateTo(0f) {
-                                        dragXOffset = this.value
-                                    }
-                                }
-                                val target = -safeIndex * STEP_ANGLE
-                                coroutineScope.launch {
-                                    angleAnim.snapTo(angle)
-                                    angleAnim.animateTo(target, spring(dampingRatio = 0.70f, stiffness = 450f)) {
-                                        angle = this.value
-                                    }
-                                }
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                accX += dragAmount.x
-                                accY += dragAmount.y
-
-                                // Intentional right pull requires strong horizontal intent
-                                if ((accX > 22f && accX > abs(accY) * 1.3f) || isPullingRight) {
-                                    isPullingRight = true
-                                    dragXOffset = (dragXOffset + dragAmount.x).coerceIn(0f, 65f)
-                                    hasPulledTrigger = dragXOffset > 44f
-                                    return@detectDragGestures
-                                }
-
-                                // Bounded vertical scroll mode with hard limit stops
-                                val dy = dragAmount.y
-                                val rawDelta = -dy * 0.040f
-
-                                val newAngle = if (rawDelta > 0 && angle >= maxAngle) {
-                                    // At top boundary: high rubberband resistance damping
-                                    (angle + rawDelta * 0.12f).coerceAtMost(maxAngle + 0.20f)
-                                } else if (rawDelta < 0 && angle <= minAngle) {
-                                    // At bottom boundary: high rubberband resistance damping
-                                    (angle + rawDelta * 0.12f).coerceAtLeast(minAngle - 0.20f)
-                                } else {
-                                    (angle + rawDelta).coerceIn(minAngle - 0.20f, maxAngle + 0.20f)
-                                }
-                                angle = newAngle
-
-                                if (abs(accY) > 20f) {
-                                    val dir = if (accY > 0) 1 else -1
-                                    if (dir > 0 && safeIndex < safeItemCount - 1) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        onStep(1)
-                                        accY = 0f
-                                    } else if (dir < 0 && safeIndex > 0) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        onStep(-1)
-                                        accY = 0f
-                                    } else {
-                                        // Hard stop reached: clamp travel
-                                        accY = 0f
-                                    }
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = {
+                            if (currentDisabled) return@detectDragGestures
+                            isEngaged = true
+                            isPullingRight = false
+                            hasPulledTrigger = false
+                            accX = 0f
+                            accY = 0f
+                        },
+                        onDragEnd = {
+                            if (currentDisabled) return@detectDragGestures
+                            if (hasPulledTrigger) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                currentOnPull()
+                            }
+                            hasPulledTrigger = false
+                            isPullingRight = false
+                            isEngaged = false
+                            accX = 0f
+                            accY = 0f
+                            coroutineScope.launch {
+                                dragXAnim.snapTo(dragXOffset)
+                                dragXAnim.animateTo(0f, spring(dampingRatio = 0.65f, stiffness = 420f)) {
+                                    dragXOffset = this.value
                                 }
                             }
-                        )
-                    }
+                            // Magnetic detent snapping to nearest physical rib detent
+                            val target = round(angle / PITCH) * PITCH
+                            coroutineScope.launch {
+                                angleAnim.snapTo(angle)
+                                angleAnim.animateTo(target, spring(dampingRatio = 0.72f, stiffness = 450f)) {
+                                    angle = this.value
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            if (currentDisabled) return@detectDragGestures
+                            hasPulledTrigger = false
+                            isPullingRight = false
+                            isEngaged = false
+                            accX = 0f
+                            accY = 0f
+                            coroutineScope.launch {
+                                dragXAnim.snapTo(dragXOffset)
+                                dragXAnim.animateTo(0f) {
+                                    dragXOffset = this.value
+                                }
+                            }
+                            val target = round(angle / PITCH) * PITCH
+                            coroutineScope.launch {
+                                angleAnim.snapTo(angle)
+                                angleAnim.animateTo(target, spring(dampingRatio = 0.72f, stiffness = 450f)) {
+                                    angle = this.value
+                                }
+                            }
+                        },
+                        onDrag = { change, dragAmount ->
+                            if (currentDisabled) return@detectDragGestures
+                            change.consume()
+                            accX += dragAmount.x
+                            accY += dragAmount.y
+
+                            // Intentional right pull requires strong horizontal intent
+                            if ((accX > 22f && accX > abs(accY) * 1.3f) || isPullingRight) {
+                                isPullingRight = true
+                                dragXOffset = (dragXOffset + dragAmount.x).coerceIn(0f, 65f)
+                                hasPulledTrigger = dragXOffset > 44f
+                                return@detectDragGestures
+                            }
+
+                            // Infinite rotary scroll: unconstrained physical tracking
+                            val dy = dragAmount.y
+                            val rawDelta = -dy * 0.020f
+                            angle += rawDelta
+
+                            // Continuous multi-point stepped rotary scroll without boundary stop
+                            val stepThreshold = 35f
+                            while (abs(accY) >= stepThreshold) {
+                                val dir = if (accY > 0) 1 else -1
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                currentOnStep(dir)
+                                accY -= dir * stepThreshold
+                            }
+                        }
+                    )
                 }
         ) {
             // Internal bevel lighting and depth
@@ -249,32 +261,10 @@ fun SideScroller(
                     }
                 }
 
-                // Visual hard stop limits at top and bottom
-                val isAtTop = safeIndex == 0 && angle >= -0.05f
-                val isAtBottom = safeIndex >= safeItemCount - 1 && angle <= minAngle + 0.05f
-
-                if (isAtTop) {
-                    drawRoundRect(
-                        color = WalkieAmber.copy(alpha = 0.85f),
-                        topLeft = Offset(centerX - 8.dp.toPx(), 4.dp.toPx()),
-                        size = androidx.compose.ui.geometry.Size(16.dp.toPx(), 2.5.dp.toPx()),
-                        cornerRadius = cornerRadius
-                    )
-                }
-                if (isAtBottom) {
-                    drawRoundRect(
-                        color = WalkieAmber.copy(alpha = 0.85f),
-                        topLeft = Offset(centerX - 8.dp.toPx(), size.height - 6.5.dp.toPx()),
-                        size = androidx.compose.ui.geometry.Size(16.dp.toPx(), 2.5.dp.toPx()),
-                        cornerRadius = cornerRadius
-                    )
-                }
-
                 // Vertical thumb track position indicator
                 if (safeItemCount > 1) {
                     val trackHeight = size.height - 24.dp.toPx()
-                    val thumbFraction = safeIndex.toFloat() / (safeItemCount - 1).coerceAtLeast(1)
-                    val thumbY = 12.dp.toPx() + trackHeight * thumbFraction
+                    val thumbY = 12.dp.toPx() + trackHeight * animatedThumbFraction
                     drawCircle(
                         color = WalkieAmber,
                         radius = 1.8.dp.toPx(),
