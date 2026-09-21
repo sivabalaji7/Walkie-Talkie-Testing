@@ -295,7 +295,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         SupabaseRealtimeManager.initialize()
         SupabaseRealtimeManager.connect()
 
-        if (SupabaseRealtimeManager.socketUiState.value.roomId.isNotEmpty()) {
+        // Pre-warm WebRTC Service on startup so native audio drivers and IPC binder are hot in RAM
+        if (sessionManager.isLoggedIn() && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startWebRtcService()
+        } else if (SupabaseRealtimeManager.socketUiState.value.roomId.isNotEmpty()) {
             startWebRtcService()
         }
 
@@ -444,9 +447,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         VoxManager.isManualPttActive = isManualHeld
                     }
 
-                    // Load and sync myRooms, member rosters, and pending join requests for Internet mode
-                    var myRooms by remember { mutableStateOf<List<Room>>(emptyList()) }
-                    var roomMembersMap by remember { mutableStateOf<Map<String, List<SquadMember>>>(emptyMap()) }
+                    // Load and sync myRooms, member rosters, and pending join requests for Internet mode (0ms instant cache)
+                    var myRooms by remember { mutableStateOf<List<Room>>(sessionManager.getCachedRooms()) }
+                    var roomMembersMap by remember { mutableStateOf<Map<String, List<SquadMember>>>(sessionManager.getCachedRoomMembers()) }
                     var pendingRequests by remember { mutableStateOf<List<com.example.walkietalkieapp.auth.RoomMemberRequest>>(emptyList()) }
                     val scope = rememberCoroutineScope()
 
@@ -465,6 +468,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     fun refreshRoomsAndMembers() {
                         if (isLoggedIn && currentUserId.isNotEmpty()) {
+                            // Concurrently fetch pending requests in parallel
+                            fetchPendingRequests()
+
                             scope.launch(Dispatchers.IO) {
                                 val res = SupabaseRoomManager.getMyRooms(currentUserId)
                                 if (res is RoomResult.Success) {
@@ -472,6 +478,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     withContext(Dispatchers.Main) {
                                         myRooms = rooms
                                     }
+                                    sessionManager.saveCachedRooms(rooms)
 
                                     val roomIds = rooms.map { it.id }
                                     val membersRes = SupabaseRoomManager.getAllRoomMembersForRooms(roomIds)
@@ -514,10 +521,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         withContext(Dispatchers.Main) {
                                             roomMembersMap = newMap
                                         }
+                                        sessionManager.saveCachedRoomMembers(newMap)
                                     }
                                 }
                             }
-                            fetchPendingRequests()
                         } else {
                             myRooms = emptyList()
                             roomMembersMap = emptyMap()

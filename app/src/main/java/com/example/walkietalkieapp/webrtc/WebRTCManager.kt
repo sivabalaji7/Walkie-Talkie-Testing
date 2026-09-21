@@ -448,16 +448,11 @@ class WebRTCManager(private val context: Context) {
 
     private fun getRtcConfig(): PeerConnection.RTCConfiguration {
         val iceServers = mutableListOf(
-            // High-reliability global STUN servers (verified low latency over UDP)
+            // High-reliability global STUN servers (verified low latency over UDP < 50ms)
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-            PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer(),
-            
-            // Public Fallback TURN Servers
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
-            PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443?transport=tcp").setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
+            PeerConnection.IceServer.builder("stun:global.stun.twilio.com:3478").createIceServer()
         )
 
         // Dynamically load active TURN servers from BuildConfig (configurable via app/build.gradle.kts)
@@ -478,7 +473,7 @@ class WebRTCManager(private val context: Context) {
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         rtcConfig.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        rtcConfig.iceCandidatePoolSize = 2 // Optimized from 20 to prevent socket flood and speed up gathering
+        rtcConfig.iceCandidatePoolSize = 1 // Prefetch candidate pair without socket flood
         rtcConfig.bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcConfig.rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         rtcConfig.tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
@@ -499,7 +494,9 @@ class WebRTCManager(private val context: Context) {
                 if (audioDeviceModule == null) init()
                 val audioConstraints = createAudioConstraints(isKrispAiEnabled)
                 audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
-                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
+                localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)?.also {
+                    attachLocalAudioSink(it)
+                }
                 localAudioTrack?.setEnabled(isTalking)
                 Log.d(TAG, "Forced synchronous creation of localAudioTrack before PC creation.")
             } catch (e: Exception) {
@@ -975,10 +972,12 @@ class WebRTCManager(private val context: Context) {
     }
 
     fun prepareConnection() {
-        Log.d(TAG, "Pre-warming WebRTC session")
+        Log.d(TAG, "Pre-warming WebRTC session and audio capture hardware")
         isSessionActive = true
         audioExecutor.execute {
-            if (!isInitialized) initialize()
+            if (!isInitialized) init()
+            initialize()
+            ensureHandsFreeAudioRouting()
         }
     }
 

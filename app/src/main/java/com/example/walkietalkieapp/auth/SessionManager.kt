@@ -21,6 +21,8 @@ class SessionManager(context: Context) {
         private const val KEY_USERNAME = "username"
         private const val KEY_LOGIN_TIMESTAMP = "login_timestamp"
         private const val KEY_CALL_SIGN = "key_call_sign"
+        private const val KEY_CACHED_ROOMS = "cached_rooms_json"
+        private const val KEY_CACHED_MEMBERS = "cached_members_json"
 
         @Volatile
         private var instance: SessionManager? = null
@@ -118,6 +120,101 @@ class SessionManager(context: Context) {
 
     fun clearSession() {
         prefs.edit().clear().apply()
-        squadPrefs.edit().remove(KEY_CALL_SIGN).apply()
+        squadPrefs.edit().remove(KEY_CALL_SIGN).remove(KEY_CACHED_ROOMS).remove(KEY_CACHED_MEMBERS).apply()
+    }
+
+    fun saveCachedRooms(rooms: List<Room>) {
+        try {
+            val jsonArray = org.json.JSONArray()
+            rooms.forEach { room ->
+                val obj = org.json.JSONObject().apply {
+                    put("id", room.id)
+                    put("name", room.name)
+                    put("code", room.code)
+                    put("ownerId", room.ownerId)
+                }
+                jsonArray.put(obj)
+            }
+            squadPrefs.edit().putString(KEY_CACHED_ROOMS, jsonArray.toString()).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error saving cached rooms: ${e.message}")
+        }
+    }
+
+    fun getCachedRooms(): List<Room> {
+        val jsonStr = squadPrefs.getString(KEY_CACHED_ROOMS, null) ?: return emptyList()
+        return try {
+            val jsonArray = org.json.JSONArray(jsonStr)
+            val list = mutableListOf<Room>()
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                list.add(
+                    Room(
+                        id = obj.optString("id", ""),
+                        name = obj.optString("name", ""),
+                        code = obj.optString("code", ""),
+                        ownerId = obj.optString("ownerId", "")
+                    )
+                )
+            }
+            list
+        } catch (e: Exception) {
+            Log.w(TAG, "Error loading cached rooms: ${e.message}")
+            emptyList()
+        }
+    }
+
+    fun saveCachedRoomMembers(membersMap: Map<String, List<com.example.walkietalkieapp.ui.walkie.SquadMember>>) {
+        try {
+            val rootObj = org.json.JSONObject()
+            membersMap.forEach { (roomKey, members) ->
+                val arr = org.json.JSONArray()
+                members.forEach { m ->
+                    val mObj = org.json.JSONObject().apply {
+                        put("name", m.name)
+                        put("avatar", m.avatar)
+                        put("online", m.online)
+                        put("isSpeaking", m.isSpeaking)
+                        put("isOwner", m.isOwner)
+                    }
+                    arr.put(mObj)
+                }
+                rootObj.put(roomKey, arr)
+            }
+            squadPrefs.edit().putString(KEY_CACHED_MEMBERS, rootObj.toString()).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error saving cached room members: ${e.message}")
+        }
+    }
+
+    fun getCachedRoomMembers(): Map<String, List<com.example.walkietalkieapp.ui.walkie.SquadMember>> {
+        val jsonStr = squadPrefs.getString(KEY_CACHED_MEMBERS, null) ?: return emptyMap()
+        return try {
+            val rootObj = org.json.JSONObject(jsonStr)
+            val map = mutableMapOf<String, List<com.example.walkietalkieapp.ui.walkie.SquadMember>>()
+            val keys = rootObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val arr = rootObj.getJSONArray(key)
+                val mList = mutableListOf<com.example.walkietalkieapp.ui.walkie.SquadMember>()
+                for (i in 0 until arr.length()) {
+                    val mObj = arr.getJSONObject(i)
+                    mList.add(
+                        com.example.walkietalkieapp.ui.walkie.SquadMember(
+                            name = mObj.optString("name", ""),
+                            avatar = mObj.optString("avatar", ""),
+                            online = mObj.optBoolean("online", false),
+                            isSpeaking = mObj.optBoolean("isSpeaking", false),
+                            isOwner = mObj.optBoolean("isOwner", false)
+                        )
+                    )
+                }
+                map[key] = mList
+            }
+            map
+        } catch (e: Exception) {
+            Log.w(TAG, "Error loading cached room members: ${e.message}")
+            emptyMap()
+        }
     }
 }

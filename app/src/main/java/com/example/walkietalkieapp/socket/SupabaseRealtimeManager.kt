@@ -231,6 +231,17 @@ object SupabaseRealtimeManager {
                 // Announce presence immediately via Broadcast peer-join with public key
                 broadcastSignal(SignalMessage(type = "peer-join", sender = cleanUsername, publicKey = myPubKey))
 
+                // Fast discovery burst sequence (0ms, 400ms, 1200ms, 2500ms) to guarantee sub-second discovery
+                launch {
+                    val burstDelays = listOf(0L, 400L, 1200L, 2500L)
+                    for (d in burstDelays) {
+                        if (!isActive || _socketUiState.value.roomId != cleanId) break
+                        if (d > 0) delay(d)
+                        broadcastSignal(SignalMessage(type = "peer-ping", sender = cleanUsername, publicKey = myPubKey))
+                        checkAndTriggerWebRtcOffers()
+                    }
+                }
+
                 // Start active presence heartbeat loop (every 8 seconds)
                 heartbeatJob?.cancel()
                 heartbeatJob = launch {
@@ -414,7 +425,11 @@ object SupabaseRealtimeManager {
                 checkAndTriggerWebRtcOffers()
             }
             "peer-ping" -> {
+                Log.d(TAG, "Received peer-ping from ${msg.sender}")
                 handlePeerSeen(msg.sender)
+                val myKey = E2ECryptoManager.getMyPublicKeyBase64()
+                broadcastSignal(SignalMessage(type = "peer-ack", sender = myName, to = msg.sender, publicKey = myKey))
+                checkAndTriggerWebRtcOffers()
             }
             "peer-leave" -> {
                 Log.d(TAG, "Received peer-leave from ${msg.sender}")
