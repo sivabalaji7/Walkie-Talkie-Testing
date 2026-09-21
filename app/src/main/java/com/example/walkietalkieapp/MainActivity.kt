@@ -424,6 +424,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val othersSpeakingStateOnline = socketUiState.roomMembers.any { it.isSpeaking && it.username != socketUiState.username }
                     val activeSpeakingOnline = isUserSpeakingLocalOnline || isOthersSpeakingOnline || othersSpeakingStateOnline || floorStatus.state == FloorState.RECEIVING
 
+                    var isManualScreenPttHeld by remember { mutableStateOf(false) }
                     var isUserSpeakingLocalOffline by remember { mutableStateOf(false) }
                     val activeSpeakingOffline = isUserSpeakingLocalOffline || btUiState.isChannelBusy || wifiUiState.isChannelBusy
                     val activeSpeaking = activeSpeakingOnline || activeSpeakingOffline
@@ -437,7 +438,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     }
 
                     val isHwKeyDownActive by HardwarePttManager.isHardwareKeyDown.collectAsState()
-                    val isManualHeld = isUserSpeakingLocalOnline || isUserSpeakingLocalOffline || isHwKeyDownActive
+                    val isManualHeld = isManualScreenPttHeld || isHwKeyDownActive
                     LaunchedEffect(isManualHeld) {
                         VoxManager.isManualPttActive = isManualHeld
                     }
@@ -718,6 +719,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         },
                         onLeaveInternetRoom = {
                             com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
+                            isManualScreenPttHeld = false
                             webRtcService?.webRTCManager?.cleanup()
                             SupabaseRealtimeManager.leaveRoom()
                             com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
@@ -771,9 +773,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         hasAudioPermission = hasAudioPermission,
                         onRequestAudioPermission = { checkAndRequestPermissions() },
                         onStartTalkOnline = { isPriority ->
+                            isManualScreenPttHeld = true
                             startPushToTalkOnline(isPriority)
                         },
                         onStopTalkOnline = {
+                            isManualScreenPttHeld = false
                             stopPushToTalkOnline()
                         },
                         onReplayAudio = {
@@ -822,6 +826,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             else wifiDirectManager?.joinSquad(squad, user)
                         },
                         onStartTalkOffline = {
+                            isManualScreenPttHeld = true
                             isUserSpeakingLocalOffline = true
                             vibrate()
                             playTone(ToneGenerator.TONE_CDMA_PIP)
@@ -833,6 +838,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             offlineService?.updateNotification("Transmitting...")
                         },
                         onStopTalkOffline = {
+                            isManualScreenPttHeld = false
                             isUserSpeakingLocalOffline = false
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
                                 btManager?.stopTalking()
@@ -842,6 +848,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             offlineService?.updateNotification("Ready to talk")
                         },
                         onLeaveOfflineSquad = {
+                            isManualScreenPttHeld = false
                             com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
                                 btManager?.leaveSquad()

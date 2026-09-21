@@ -110,7 +110,7 @@ object VoxManager {
     private val _sensitivity = MutableStateFlow(VoxSensitivity.MEDIUM)
     val sensitivity: StateFlow<VoxSensitivity> = _sensitivity.asStateFlow()
 
-    private val _hangoverDelayMs = MutableStateFlow(700L)
+    private val _hangoverDelayMs = MutableStateFlow(3000L) // Default 3.0s auto-stop on silence
     val hangoverDelayMs: StateFlow<Long> = _hangoverDelayMs.asStateFlow()
 
     private val _voxState = MutableStateFlow(VoxState.OFF)
@@ -234,7 +234,7 @@ object VoxManager {
     }
 
     fun setHangoverDelayMs(delayMs: Long) {
-        _hangoverDelayMs.value = delayMs.coerceIn(300L, 2000L)
+        _hangoverDelayMs.value = delayMs.coerceIn(500L, 10000L)
         logD("VOX hangover delay updated to: ${_hangoverDelayMs.value} ms")
     }
 
@@ -454,25 +454,30 @@ object VoxManager {
         val rms = sqrt(sumSquares / max(1, sampleCount)).toFloat()
         _liveInputLevel.value = (_liveInputLevel.value * 0.4f + rms * 0.6f).coerceIn(0f, 1f)
 
-        // Hysteresis: 85% of threshold allows speech continuation without premature cutoff
-        val continuationThreshold = _sensitivity.value.threshold * 0.85f
-        if (rms >= continuationThreshold) {
+        // Robust voice continuation detection:
+        // Distinguishes ongoing speech phonemes from steady ambient noise / fan hum.
+        // Requires both RMS energy and speech crest-factor peak, OR VAD speech confirmation.
+        val continuationThreshold = _sensitivity.value.threshold * 0.90f
+        val isSpeechFrame = (rms >= continuationThreshold && peak >= max(0.038f, continuationThreshold * 1.35f)) ||
+                com.example.walkietalkieapp.audio.VoiceActivityDetector.isLiveSpeechActive.value
+
+        if (isSpeechFrame) {
             lastVoiceDetectedTimestamp = System.currentTimeMillis()
         }
     }
 
     /**
      * Monitors silence duration during active transmission. When silence exceeds
-     * the hangover delay, automatically un-keys the transmitter.
+     * the hangover delay (default 3.0s), automatically un-keys the transmitter.
      */
     private fun startHangoverWatchdog() {
         cancelHangoverWatchdog()
         hangoverWatchdogJob = scope.launch {
             while (_voxState.value == VoxState.TRANSMITTING && isActive) {
-                delay(60L)
+                delay(80L)
                 val silenceDuration = System.currentTimeMillis() - lastVoiceDetectedTimestamp
                 if (silenceDuration >= _hangoverDelayMs.value) {
-                    logD("VOX silence hangover expired (${silenceDuration}ms >= ${_hangoverDelayMs.value}ms) -> AUTO-RELEASING TRANSMITTER")
+                    logD("VOX silence duration reached ${silenceDuration}ms >= ${_hangoverDelayMs.value}ms -> AUTO-RELEASING TRANSMITTER")
                     runOnMain {
                         triggerVoxAutoRelease()
                     }

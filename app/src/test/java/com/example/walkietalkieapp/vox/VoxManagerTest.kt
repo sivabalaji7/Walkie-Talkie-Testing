@@ -15,6 +15,8 @@ class VoxManagerTest {
         startPttCount = 0
         endPttCount = 0
         VoxManager.stop()
+        VoxManager.setHangoverDelayMs(3000L)
+        VoxManager.setSensitivity(VoxSensitivity.MEDIUM)
         VoxManager.isInsideActiveSquad = true
         VoxManager.isChannelBusy = false
         VoxManager.isManualPttActive = false
@@ -46,7 +48,7 @@ class VoxManagerTest {
         assertFalse(VoxManager.isVoxEnabled.value)
         assertEquals(VoxState.OFF, VoxManager.voxState.value)
         assertEquals(VoxSensitivity.MEDIUM, VoxManager.sensitivity.value)
-        assertEquals(700L, VoxManager.hangoverDelayMs.value)
+        assertEquals(3000L, VoxManager.hangoverDelayMs.value)
     }
 
     @Test
@@ -73,16 +75,16 @@ class VoxManagerTest {
 
     @Test
     fun testHangoverDelayClamping() {
-        VoxManager.setHangoverDelayMs(400L)
-        assertEquals(400L, VoxManager.hangoverDelayMs.value)
+        VoxManager.setHangoverDelayMs(3000L)
+        assertEquals(3000L, VoxManager.hangoverDelayMs.value)
 
-        // Below minimum (300ms)
+        // Below minimum (500ms)
         VoxManager.setHangoverDelayMs(100L)
-        assertEquals(300L, VoxManager.hangoverDelayMs.value)
+        assertEquals(500L, VoxManager.hangoverDelayMs.value)
 
-        // Above maximum (2000ms)
-        VoxManager.setHangoverDelayMs(5000L)
-        assertEquals(2000L, VoxManager.hangoverDelayMs.value)
+        // Above maximum (10000ms)
+        VoxManager.setHangoverDelayMs(15000L)
+        assertEquals(10000L, VoxManager.hangoverDelayMs.value)
     }
 
     @Test
@@ -194,5 +196,29 @@ class VoxManagerTest {
         VoxManager.feedTransmittingFrame(speechChunk, channels = 1)
 
         assertTrue("Live input level must update with incoming frame energy", VoxManager.liveInputLevel.value > 0f)
+    }
+
+    @Test
+    fun testSilenceHangoverAutoRelease() {
+        VoxManager.setVoxEnabled(true)
+        VoxManager.setSensitivity(VoxSensitivity.MEDIUM)
+        VoxManager.setHangoverDelayMs(500L) // Set to 500ms for swift unit test execution
+
+        // 1. Trigger speech attack
+        val speechFrame1 = generateSinePcm(durationMs = 20, amplitude = 0.20)
+        val speechFrame2 = generateSinePcm(durationMs = 20, amplitude = 0.20)
+        VoxManager.processIdlePcmFrame(speechFrame1, speechFrame1.size)
+        VoxManager.processIdlePcmFrame(speechFrame2, speechFrame2.size)
+
+        assertEquals("VOX must auto-key into TRANSMITTING", VoxState.TRANSMITTING, VoxManager.voxState.value)
+        assertEquals(1, startPttCount)
+        assertEquals(0, endPttCount)
+
+        // 2. Wait for silence duration to exceed hangover delay (500ms)
+        Thread.sleep(700L)
+
+        // 3. Verify auto-release fired
+        assertEquals("VOX must auto-release to ARMED after silence duration", VoxState.ARMED, VoxManager.voxState.value)
+        assertEquals("PTT end callback must be invoked on auto-release", 1, endPttCount)
     }
 }

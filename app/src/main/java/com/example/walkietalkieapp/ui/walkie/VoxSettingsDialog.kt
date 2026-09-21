@@ -456,7 +456,7 @@ fun VoxSettingsDialog(
                             letterSpacing = 0.5.sp
                         )
                         Text(
-                            text = "${hangoverDelayMs}ms",
+                            text = "${hangoverDelayMs / 1000.0}s (${hangoverDelayMs}ms)",
                             fontFamily = SpaceGrotesk,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -469,9 +469,9 @@ fun VoxSettingsDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         listOf(
-                            400L to "400ms\nFast",
-                            700L to "700ms\nStandard",
-                            1200L to "1200ms\nExtended"
+                            1500L to "1.5s\nQuick",
+                            3000L to "3.0s\nNatural (3s)",
+                            5000L to "5.0s\nExtended"
                         ).forEach { (delay, label) ->
                             val isSelected = hangoverDelayMs == delay
                             Surface(
