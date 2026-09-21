@@ -47,6 +47,9 @@ fun PushToTalk(
     onHardwarePttClick: () -> Unit = {},
     isHardwarePttEnabled: Boolean = true,
     isHardwareKeyDown: Boolean = false,
+    onVoxClick: () -> Unit = {},
+    isVoxEnabled: Boolean = false,
+    voxState: com.example.walkietalkieapp.vox.VoxState = com.example.walkietalkieapp.vox.VoxState.OFF,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -139,44 +142,29 @@ fun PushToTalk(
                     center = center,
                     style = Stroke(
                         width = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), 0f)
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
                     )
                 )
             }
 
-            // 4. Main PTT Push Button (Hardware accelerated scale via graphicsLayer)
-            val buttonBrush = if (isTalking) {
-                currentTheme.gradient
-            } else {
-                Brush.radialGradient(
-                    listOf(WalkieButtonHover, WalkieButton)
-                )
-            }
-
-            Box(
+            // Core Interactive PTT Chassis Button
+            Surface(
                 modifier = Modifier
+                    .size(80.dp)
                     .graphicsLayer {
                         scaleX = buttonScale
                         scaleY = buttonScale
                     }
-                    .size(82.dp)
                     .shadow(
-                        elevation = if (isTalking) 8.dp else 3.dp,
+                        elevation = if (isTalking) 22.dp else 12.dp,
                         shape = CircleShape,
-                        ambientColor = if (isTalking) currentTheme.primaryColor else Color.Black,
-                        spotColor = if (isTalking) currentTheme.primaryColor else Color.Black
-                    )
-                    .clip(CircleShape)
-                    .background(buttonBrush)
-                    .border(
-                        width = 1.5.dp,
-                        color = if (isTalking) Color.White.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f),
-                        shape = CircleShape
+                        spotColor = if (isTalking) currentTheme.primaryColor else Color.Black,
+                        ambientColor = if (isTalking) currentTheme.primaryColor.copy(alpha = 0.5f) else Color.Black
                     )
                     .pointerInput(disabled) {
                         if (!disabled) {
                             awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
+                                awaitFirstDown(requireUnconsumed = false)
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onPressStart()
                                 waitForUpOrCancellation()
@@ -185,14 +173,50 @@ fun PushToTalk(
                             }
                         }
                     },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Mic,
-                    contentDescription = "Push to talk",
-                    tint = if (isTalking) Color.White else WalkieTextSecondary.copy(alpha = 0.7f),
-                    modifier = Modifier.size(28.dp)
+                shape = CircleShape,
+                color = Color.Transparent,
+                border = BorderStroke(
+                    width = 2.5.dp,
+                    brush = if (isTalking) {
+                        currentTheme.gradient
+                    } else {
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF3A4250),
+                                Color(0xFF1E2430),
+                                Color(0xFF12161F)
+                            )
+                        )
+                    }
                 )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            brush = if (isTalking) {
+                                currentTheme.gradient
+                            } else {
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        Color(0xFF283040),
+                                        Color(0xFF181D26),
+                                        Color(0xFF0F131A)
+                                    ),
+                                    radius = 120f
+                                )
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Tactile Microphone Icon
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Push To Talk",
+                        tint = if (isTalking) Color.White else WalkieTextSecondary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
         }
 
@@ -221,54 +245,143 @@ fun PushToTalk(
 
         Spacer(modifier = Modifier.height(5.dp))
 
-        // Hardware PTT Physical Chassis Switch Pill
-        val hwInteractionSource = remember { MutableInteractionSource() }
-        val hwPressed by hwInteractionSource.collectIsPressedAsState()
-        val hwScale by animateFloatAsState(
-            targetValue = if (hwPressed) 0.93f else 1f,
-            animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
-            label = "hwScale"
-        )
-
-        Surface(
-            onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onHardwarePttClick()
-            },
-            shape = RoundedCornerShape(8.dp),
-            color = if (isHardwareKeyDown) WalkieAmber.copy(alpha = 0.25f)
-                    else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.12f)
-                    else WalkieButton,
-            border = BorderStroke(
-                1.dp,
-                if (isHardwareKeyDown) WalkieAmber
-                else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.5f)
-                else WalkieCardBorder
-            ),
-            modifier = Modifier.graphicsLayer {
-                scaleX = hwScale
-                scaleY = hwScale
-            }
+        // Dual Tactical Chassis Pill Deck (HW Key PTT & Hands-Free VOX)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            // --- PILL 1: Hardware Volume Key PTT ---
+            val hwInteractionSource = remember { MutableInteractionSource() }
+            val hwPressed by hwInteractionSource.collectIsPressedAsState()
+            val hwScale by animateFloatAsState(
+                targetValue = if (hwPressed) 0.93f else 1f,
+                animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                label = "hwScale"
+            )
+
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onHardwarePttClick()
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = if (isHardwareKeyDown) WalkieAmber.copy(alpha = 0.25f)
+                        else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.12f)
+                        else WalkieButton,
+                border = BorderStroke(
+                    1.dp,
+                    if (isHardwareKeyDown) WalkieAmber
+                    else if (isHardwarePttEnabled) StatusReady.copy(alpha = 0.5f)
+                    else WalkieCardBorder
+                ),
+                modifier = Modifier.graphicsLayer {
+                    scaleX = hwScale
+                    scaleY = hwScale
+                }
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else StatusOff)
-                )
-                Text(
-                    text = if (isHardwareKeyDown) "HW KEY PRESSED" else if (isHardwarePttEnabled) "HW PTT: VOL KEY ON" else "HW PTT: OFF",
-                    fontFamily = SpaceGrotesk,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else WalkieTextSecondary,
-                    letterSpacing = 0.5.sp
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(5.5.dp)
+                            .clip(CircleShape)
+                            .background(if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else StatusOff)
+                    )
+                    Text(
+                        text = if (isHardwareKeyDown) "HW KEY" else if (isHardwarePttEnabled) "HW: ON" else "HW: OFF",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isHardwareKeyDown) WalkieAmber else if (isHardwarePttEnabled) StatusReady else WalkieTextSecondary,
+                        letterSpacing = 0.4.sp
+                    )
+                }
+            }
+
+            // --- PILL 2: Hands-Free VOX Auto-PTT ---
+            val voxInteractionSource = remember { MutableInteractionSource() }
+            val voxPressed by voxInteractionSource.collectIsPressedAsState()
+            val voxScale by animateFloatAsState(
+                targetValue = if (voxPressed) 0.93f else 1f,
+                animationSpec = spring(dampingRatio = 0.52f, stiffness = 550f),
+                label = "voxScale"
+            )
+
+            val isVoxTransmitting = voxState == com.example.walkietalkieapp.vox.VoxState.TRANSMITTING
+            val isVoxArmed = voxState == com.example.walkietalkieapp.vox.VoxState.ARMED
+            val isVoxBusy = voxState == com.example.walkietalkieapp.vox.VoxState.INHIBITED_BUSY
+
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onVoxClick()
+                },
+                shape = RoundedCornerShape(8.dp),
+                color = when {
+                    isVoxTransmitting -> StatusReady.copy(alpha = 0.22f)
+                    isVoxArmed -> WalkieAmber.copy(alpha = 0.15f)
+                    isVoxBusy -> WalkieAmber.copy(alpha = 0.10f)
+                    isVoxEnabled -> StatusReady.copy(alpha = 0.10f)
+                    else -> WalkieButton
+                },
+                border = BorderStroke(
+                    1.dp,
+                    when {
+                        isVoxTransmitting -> StatusReady
+                        isVoxArmed -> WalkieAmber.copy(alpha = 0.6f)
+                        isVoxBusy -> WalkieAmber.copy(alpha = 0.4f)
+                        isVoxEnabled -> StatusReady.copy(alpha = 0.4f)
+                        else -> WalkieCardBorder
+                    }
+                ),
+                modifier = Modifier.graphicsLayer {
+                    scaleX = voxScale
+                    scaleY = voxScale
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(5.5.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    isVoxTransmitting -> StatusReady
+                                    isVoxArmed -> WalkieAmber
+                                    isVoxBusy -> WalkieAmber.copy(alpha = 0.6f)
+                                    isVoxEnabled -> StatusReady.copy(alpha = 0.7f)
+                                    else -> StatusOff
+                                }
+                            )
+                    )
+                    Text(
+                        text = when {
+                            isVoxTransmitting -> "VOX: TX"
+                            isVoxArmed -> "VOX: ARMED"
+                            isVoxBusy -> "VOX: BUSY"
+                            isVoxEnabled -> "VOX: ON"
+                            else -> "VOX: OFF"
+                        },
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            isVoxTransmitting -> StatusReady
+                            isVoxArmed -> WalkieAmber
+                            isVoxBusy -> WalkieAmber
+                            isVoxEnabled -> StatusReady
+                            else -> WalkieTextSecondary
+                        },
+                        letterSpacing = 0.4.sp
+                    )
+                }
             }
         }
     }

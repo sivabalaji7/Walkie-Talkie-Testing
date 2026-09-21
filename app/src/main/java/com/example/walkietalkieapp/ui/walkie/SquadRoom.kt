@@ -58,6 +58,7 @@ import com.example.walkietalkieapp.chat.TacticalChatManager
 import com.example.walkietalkieapp.location.SquadRadarManager
 import com.example.walkietalkieapp.mesh.AdaptiveMeshManager
 import com.example.walkietalkieapp.ptt.HardwarePttManager
+import com.example.walkietalkieapp.vox.VoxManager
 import com.example.walkietalkieapp.socket.SupabaseRealtimeManager
 import com.example.walkietalkieapp.ui.theme.*
 import kotlinx.coroutines.delay
@@ -98,6 +99,9 @@ fun SquadRoom(
     var showMeshModal by remember { mutableStateOf(false) }
     var showSquadRadarModal by remember { mutableStateOf(false) }
     var showChannelTunerModal by remember { mutableStateOf(false) }
+    var showVoxModal by remember { mutableStateOf(false) }
+    val isVoxEnabled by VoxManager.isVoxEnabled.collectAsState()
+    val voxState by VoxManager.voxState.collectAsState()
     val activeChannel by SquadChannelManager.activeChannel.collectAsState()
     val isEmergencyOverride by SquadChannelManager.isEmergencyOverrideActive.collectAsState()
     val isMeshFailoverActive by AdaptiveMeshManager.isFailoverActive.collectAsState()
@@ -394,7 +398,10 @@ fun SquadRoom(
                 mode = mode,
                 onHardwarePttClick = { showHardwarePttModal = true },
                 isHardwarePttEnabled = isHwPttEnabled,
-                isHardwareKeyDown = isHwKeyDown
+                isHardwareKeyDown = isHwKeyDown,
+                onVoxClick = { showVoxModal = true },
+                isVoxEnabled = isVoxEnabled,
+                voxState = voxState
             )
         }
 
@@ -522,6 +529,14 @@ fun SquadRoom(
         if (showChannelTunerModal) {
             ChannelTunerDialog(
                 onDismiss = { showChannelTunerModal = false }
+            )
+        }
+
+        // 17. Interactive VOX Hands-Free Controller Modal
+        if (showVoxModal) {
+            VoxSettingsDialog(
+                mode = mode,
+                onDismiss = { showVoxModal = false }
             )
         }
     }

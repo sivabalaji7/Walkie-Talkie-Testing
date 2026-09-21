@@ -349,6 +349,7 @@ class WebRTCManager(private val context: Context) {
                 localAudioRecording.add(data)
                 com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.feedPcmFrame(data, 0, data.size)
                 com.example.walkietalkieapp.audio.VoiceActivityDetector.feedLivePcmChunk(data, data.size, numberOfChannels)
+                com.example.walkietalkieapp.vox.VoxManager.feedTransmittingFrame(data, numberOfChannels)
             }
         }
     }

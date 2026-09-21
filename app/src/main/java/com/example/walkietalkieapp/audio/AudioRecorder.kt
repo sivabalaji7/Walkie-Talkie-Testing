@@ -72,6 +72,8 @@ class AudioRecorder {
                     // 1. Analyze the raw acoustic environment & Acoustic Radar
                     environmentAnalyzer.analyzeFrame(buffer, 0, read)
                     com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.feedPcmFrame(buffer, 0, read)
+                    com.example.walkietalkieapp.audio.VoiceActivityDetector.feedLivePcmChunk(buffer, read, 1)
+                    com.example.walkietalkieapp.vox.VoxManager.feedTransmittingFrame(buffer, 1)
                     
                     // 2. Decide the optimal enhancement profile
                     val activeProfile = policyEngine.evaluate(environmentAnalyzer.currentEnvironment)

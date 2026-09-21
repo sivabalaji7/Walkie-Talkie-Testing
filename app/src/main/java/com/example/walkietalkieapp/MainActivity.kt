@@ -30,6 +30,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.example.walkietalkieapp.ptt.HardwarePttManager
+import com.example.walkietalkieapp.vox.VoxManager
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -374,6 +375,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             onEnd = { runOnUiThread { triggerHardwarePttStop() } }
         )
 
+        // VOX Hands-Free Auto-PTT Trigger Registration
+        VoxManager.registerPttTrigger(
+            onStart = { runOnUiThread { triggerHardwarePttStart() } },
+            onEnd = { runOnUiThread { triggerHardwarePttStop() } }
+        )
+
         setContent {
             WalkieTalkieAppTheme(darkTheme = true) {
                 Surface(modifier = Modifier.fillMaxSize(), color = TactileColors.background) {
@@ -410,6 +417,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     LaunchedEffect(inActiveSquad) {
                         HardwarePttManager.isInsideActiveSquad = inActiveSquad
+                        VoxManager.isInsideActiveSquad = inActiveSquad
                     }
 
                     val isUserSpeakingLocalOnline = floorStatus.state == FloorState.TRANSMITTING
@@ -419,6 +427,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     var isUserSpeakingLocalOffline by remember { mutableStateOf(false) }
                     val activeSpeakingOffline = isUserSpeakingLocalOffline || btUiState.isChannelBusy || wifiUiState.isChannelBusy
                     val activeSpeaking = activeSpeakingOnline || activeSpeakingOffline
+
+                    val isRemoteSpeaking = isOthersSpeakingOnline || othersSpeakingStateOnline || floorStatus.state == FloorState.RECEIVING ||
+                            (btUiState.isChannelBusy && btUiState.currentSpeakerId != btUiState.myId) ||
+                            (wifiUiState.isChannelBusy && wifiUiState.currentSpeakerId != wifiUiState.myId)
+
+                    LaunchedEffect(isRemoteSpeaking) {
+                        VoxManager.isChannelBusy = isRemoteSpeaking
+                    }
+
+                    val isHwKeyDownActive by HardwarePttManager.isHardwareKeyDown.collectAsState()
+                    val isManualHeld = isUserSpeakingLocalOnline || isUserSpeakingLocalOffline || isHwKeyDownActive
+                    LaunchedEffect(isManualHeld) {
+                        VoxManager.isManualPttActive = isManualHeld
+                    }
 
                     // Load and sync myRooms, member rosters, and pending join requests for Internet mode
                     var myRooms by remember { mutableStateOf<List<Room>>(emptyList()) }
@@ -699,6 +721,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             webRtcService?.webRTCManager?.cleanup()
                             SupabaseRealtimeManager.leaveRoom()
                             com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
+                            VoxManager.stop()
                             webRtcService?.updateNotification("Ready to talk")
                         },
                         activeInternetRoomId = socketUiState.roomId,
@@ -826,6 +849,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 wifiDirectManager?.leaveSquad()
                             }
                             com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
+                            VoxManager.stop()
                             offlineService?.updateNotification("Squad Talk Ready")
                         },
                         isUserSpeakingOffline = isUserSpeakingLocalOffline,
@@ -1222,6 +1246,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         com.example.walkietalkieapp.location.SquadRadarManager.stopCompass()
         com.example.walkietalkieapp.channel.SquadChannelManager.resetToDefault()
         HardwarePttManager.unregisterPttTrigger()
+        VoxManager.unregisterPttTrigger()
+        VoxManager.stop()
         if (isSystemReceiverRegistered) {
             runCatching { unregisterReceiver(systemStateReceiver) }
             isSystemReceiverRegistered = false
