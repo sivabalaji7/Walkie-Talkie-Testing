@@ -15,16 +15,20 @@ import kotlin.math.sqrt
 object VoiceActivityDetector {
     private const val TAG = "VoiceActivityDetector"
 
-    // Real-time live speech detection flag (for live PTT UI indicator)
+    // Real-time live speech detection flag (for live PTT UI indicator and VOX gating)
     private val _isLiveSpeechActive = MutableStateFlow(false)
     val isLiveSpeechActive: StateFlow<Boolean> = _isLiveSpeechActive.asStateFlow()
 
+    @Volatile
+    private var lastLiveVoicedTimestamp: Long = 0L
+    private const val LIVE_HOLD_MS = 250L // Bridging window between micro-syllabic pauses
+
     // Thresholds calibrated for mobile microphones with Android VOICE_COMMUNICATION AGC
-    private const val MIN_GLOBAL_PEAK = 0.050f        // ~1638 in 16-bit PCM (-26 dBFS)
-    private const val MIN_FRAME_PEAK = 0.035f         // ~1146 in 16-bit PCM (-29 dBFS)
-    private const val MIN_ABSOLUTE_RMS = 0.010f       // Absolute floor for speech RMS
-    private const val NOISE_FLOOR_MULTIPLIER = 1.75f  // Speech must rise 75% above ambient floor
-    private const val MIN_VOICED_DURATION_MS = 160L   // Human speech phonemes last >= 160ms
+    private const val MIN_GLOBAL_PEAK = 0.045f        // Calibrated for natural speech (-27 dBFS)
+    private const val MIN_FRAME_PEAK = 0.026f         // Calibrated for softer word inflections (-32 dBFS)
+    private const val MIN_ABSOLUTE_RMS = 0.008f       // Absolute floor for speech RMS
+    private const val NOISE_FLOOR_MULTIPLIER = 1.50f  // Speech must rise 50% above ambient floor
+    private const val MIN_VOICED_DURATION_MS = 140L   // Human speech phonemes last >= 140ms
 
     /**
      * Determines whether an entire recorded audio transmission contains authentic human speech.
@@ -146,15 +150,24 @@ object VoiceActivityDetector {
         }
 
         val rms = sqrt(sumSquares / max(1, sampleCount)).toFloat()
-        // Fast attack, smooth decay for live UI
-        val isVoiced = rms >= 0.015f && peak >= 0.040f
-        _isLiveSpeechActive.value = isVoiced
+        // Fast attack, smooth decay with speech crest factor verification
+        val crestFactor = peak / max(0.001f, rms)
+        val isVoiced = (rms >= 0.010f && peak >= 0.020f && crestFactor >= 1.25f) || (rms >= 0.030f)
+        
+        val now = System.currentTimeMillis()
+        if (isVoiced) {
+            lastLiveVoicedTimestamp = now
+            _isLiveSpeechActive.value = true
+        } else if (now - lastLiveVoicedTimestamp > LIVE_HOLD_MS) {
+            _isLiveSpeechActive.value = false
+        }
     }
 
     /**
      * Resets live speech state (e.g. when PTT is released).
      */
     fun resetLiveState() {
+        lastLiveVoicedTimestamp = 0L
         _isLiveSpeechActive.value = false
     }
 }

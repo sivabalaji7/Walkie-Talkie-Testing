@@ -221,4 +221,34 @@ class VoxManagerTest {
         assertEquals("VOX must auto-release to ARMED after silence duration", VoxState.ARMED, VoxManager.voxState.value)
         assertEquals("PTT end callback must be invoked on auto-release", 1, endPttCount)
     }
+
+    @Test
+    fun testContinuousSpeechMaintainsActiveTransmission() {
+        VoxManager.setVoxEnabled(true)
+        VoxManager.setSensitivity(VoxSensitivity.MEDIUM)
+        VoxManager.setHangoverDelayMs(500L) // 500ms silence threshold
+
+        // 1. Trigger speech attack
+        val speechFrame = generateSinePcm(durationMs = 20, amplitude = 0.20)
+        VoxManager.processIdlePcmFrame(speechFrame, speechFrame.size)
+        VoxManager.processIdlePcmFrame(speechFrame, speechFrame.size)
+
+        assertEquals(VoxState.TRANSMITTING, VoxManager.voxState.value)
+        assertEquals(1, startPttCount)
+        assertEquals(0, endPttCount)
+
+        // 2. Speak continuously for 800ms (feed speech chunks periodically, exceeding the 500ms silence limit)
+        val continuousChunk = generateSinePcm(durationMs = 20, amplitude = 0.15)
+        for (i in 0 until 8) {
+            Thread.sleep(100L)
+            VoxManager.feedTransmittingFrame(continuousChunk, channels = 1)
+            assertEquals("Transmission must remain active while speaking continuously", VoxState.TRANSMITTING, VoxManager.voxState.value)
+            assertEquals("PTT must not release prematurely while speech continues", 0, endPttCount)
+        }
+
+        // 3. Now stop speaking and wait for silence hangover (500ms) to expire
+        Thread.sleep(700L)
+        assertEquals("VOX must auto-release after speech ceases and silence expires", VoxState.ARMED, VoxManager.voxState.value)
+        assertEquals("PTT end callback must be invoked once silence duration is reached", 1, endPttCount)
+    }
 }

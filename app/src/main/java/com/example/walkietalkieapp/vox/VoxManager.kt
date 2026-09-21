@@ -189,10 +189,21 @@ object VoxManager {
     private var lastVoiceDetectedTimestamp: Long = 0L
 
     @Volatile
+    private var transmittingNoiseFloor: Float = 0.010f
+
+    @Volatile
     private var lastRxCeasedTimestamp: Long = 0L
 
     private var hangoverWatchdogJob: Job? = null
     private var consecutiveVoicedCount = 0
+
+    /**
+     * Resets voice timestamp and initializes adaptive noise floor right as transmission opens.
+     */
+    fun notifyTransmissionStarted() {
+        lastVoiceDetectedTimestamp = System.currentTimeMillis()
+        transmittingNoiseFloor = (_sensitivity.value.threshold * 0.40f).coerceAtLeast(0.005f)
+    }
 
     /**
      * Registers PTT trigger callbacks for auto-keying the transmitter.
@@ -406,7 +417,7 @@ object VoxManager {
         if (_voxState.value == VoxState.TRANSMITTING || isManualPttActive || isChannelBusy) return
 
         _voxState.value = VoxState.TRANSMITTING
-        lastVoiceDetectedTimestamp = System.currentTimeMillis()
+        notifyTransmissionStarted()
 
         // 1. Release the idle mic hardware FIRST so active transport has 100% exclusive access
         stopListening()
@@ -454,12 +465,35 @@ object VoxManager {
         val rms = sqrt(sumSquares / max(1, sampleCount)).toFloat()
         _liveInputLevel.value = (_liveInputLevel.value * 0.4f + rms * 0.6f).coerceIn(0f, 1f)
 
-        // Robust voice continuation detection:
-        // Distinguishes ongoing speech phonemes from steady ambient noise / fan hum.
-        // Requires both RMS energy and speech crest-factor peak, OR VAD speech confirmation.
-        val continuationThreshold = _sensitivity.value.threshold * 0.90f
-        val isSpeechFrame = (rms >= continuationThreshold && peak >= max(0.038f, continuationThreshold * 1.35f)) ||
-                com.example.walkietalkieapp.audio.VoiceActivityDetector.isLiveSpeechActive.value
+        val sensThreshold = _sensitivity.value.threshold
+
+        // 1. Dynamic adaptive noise floor tracking during transmission
+        if (rms < transmittingNoiseFloor) {
+            transmittingNoiseFloor = transmittingNoiseFloor * 0.85f + rms * 0.15f
+        } else {
+            transmittingNoiseFloor = transmittingNoiseFloor * 0.998f + rms * 0.002f
+        }
+
+        // 2. Multi-tier speech continuation detection (Hysteresis):
+        // Continuation threshold is 50% of the attack sensitivity threshold,
+        // allowing natural speech cadence, softer words, and unvoiced consonants
+        // to sustain transmission without premature dropout.
+        val continuationRms = sensThreshold * 0.50f
+        val continuationPeak = max(sensThreshold * 0.65f, continuationRms * 1.25f)
+
+        // A. Energy exceeds continuation thresholds and exhibits speech crest factor (Peak / RMS >= 1.20)
+        val meetsContinuation = rms >= continuationRms && peak >= continuationPeak && (peak >= rms * 1.20f)
+
+        // B. Energy rises noticeably above the active ambient background floor with speech dynamics
+        val isAboveNoise = rms >= transmittingNoiseFloor * 1.30f && peak >= rms * 1.25f && rms >= continuationRms * 0.80f
+
+        // C. Strong vocal formant (clears 75% of initial sensitivity attack)
+        val isStrongVoiced = rms >= sensThreshold * 0.75f
+
+        // D. VAD speech confirmation (with 250ms hold)
+        val isVadActive = com.example.walkietalkieapp.audio.VoiceActivityDetector.isLiveSpeechActive.value
+
+        val isSpeechFrame = meetsContinuation || isAboveNoise || isStrongVoiced || isVadActive
 
         if (isSpeechFrame) {
             lastVoiceDetectedTimestamp = System.currentTimeMillis()

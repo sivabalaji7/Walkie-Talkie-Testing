@@ -308,6 +308,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runOnUiThread {
                 playTone(ToneGenerator.TONE_CDMA_PIP)
                 vibrate()
+                VoxManager.notifyTransmissionStarted()
                 if (webRtcService?.webRTCManager != null) {
                     webRtcService?.webRTCManager?.startTalking()
                 } else {
@@ -321,6 +322,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         FloorManager.onFloorDenied = { _, speakerName ->
             runOnUiThread {
                 pendingTalkStart = false
+                VoxManager.forceRelease()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
                 notificationQueue.add("🔒 Channel Busy: $speakerName is speaking")
@@ -330,6 +332,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         FloorManager.onFloorRevoked = {
             runOnUiThread {
                 pendingTalkStart = false
+                VoxManager.forceRelease()
                 webRtcService?.webRTCManager?.stopTalking()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
                 vibrateError()
@@ -343,6 +346,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         FloorManager.onFloorReleased = {
             runOnUiThread {
                 pendingTalkStart = false
+                VoxManager.forceRelease()
                 webRtcService?.webRTCManager?.stopTalking()
                 SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_PROP_BEEP2)
@@ -359,6 +363,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         FloorManager.onFloorTimeout = {
             runOnUiThread {
+                VoxManager.forceRelease()
                 webRtcService?.webRTCManager?.stopTalking()
                 SupabaseRealtimeManager.sendStopVoice()
                 playTone(ToneGenerator.TONE_SUP_ERROR)
@@ -1019,12 +1024,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             TransportMode.BLUETOOTH -> {
                 vibrate()
                 playTone(ToneGenerator.TONE_CDMA_PIP)
+                VoxManager.notifyTransmissionStarted()
                 offlineService?.bluetoothManager?.startTalking()
                 offlineService?.updateNotification("Transmitting...")
             }
             TransportMode.WIFI_DIRECT -> {
                 vibrate()
                 playTone(ToneGenerator.TONE_CDMA_PIP)
+                VoxManager.notifyTransmissionStarted()
                 offlineService?.wifiDirectManager?.startTalking()
                 offlineService?.updateNotification("Transmitting...")
             }
