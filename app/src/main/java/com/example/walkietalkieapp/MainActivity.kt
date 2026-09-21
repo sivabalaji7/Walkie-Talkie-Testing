@@ -56,12 +56,8 @@ import com.example.walkietalkieapp.ui.walkie.WalkieTalkieApp
 import com.example.walkietalkieapp.webrtc.WalkieTalkieService
 import com.example.walkietalkieapp.audio.engine.VoiceQualityEngine
 import com.example.walkietalkieapp.wifidirect.WifiSquadUiState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private const val TAG = "MainActivity"
 
@@ -531,6 +527,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     LaunchedEffect(isLoggedIn, currentUserId) {
                         refreshRoomsAndMembers()
+                        if (isLoggedIn && currentUserId.isNotEmpty()) {
+                            while (isActive) {
+                                delay(4000L)
+                                fetchPendingRequests()
+                            }
+                        }
                     }
 
                     // Auto-load members for active internet room if code is entered directly or via deep link
@@ -738,14 +740,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                                 val clip = android.content.ClipData.newPlainText("Squad Code", code)
                                 clipboard.setPrimaryClip(clip)
-                                notificationQueue.add("📋 Squad Code copied: $code")
                             } catch (e: Exception) {
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, "Join my squad on SquadTalk with code: $code")
-                                }
-                                startActivity(Intent.createChooser(shareIntent, "Share Squad Code"))
+                                Log.w(TAG, "Clipboard copy error: ${e.message}")
                             }
+                            shareRoom(code)
                         },
                         pendingRequests = pendingRequests,
                         onApproveRequest = { req ->
@@ -755,6 +753,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     withContext(Dispatchers.Main) {
                                         notificationQueue.add("✅ Approved ${req.username}")
                                     }
+                                    SupabaseRealtimeManager.broadcastRequestApproved(req.roomCode ?: req.roomId, req.userId)
                                     refreshRoomsAndMembers()
                                 }
                             }
@@ -953,7 +952,45 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         }
                     }
 
-                    // Event Collectors for Online & Offline Transports
+                    // Event Collectors & Signaling Callbacks for Online & Offline Transports
+                    DisposableEffect(Unit) {
+                        SupabaseRealtimeManager.onJoinRequestReceived = { username, roomCode ->
+                            runOnUiThread {
+                                try {
+                                    val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
+                                    toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 250)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Audio chime error: ${e.message}")
+                                }
+                                try {
+                                    val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        vibrator?.vibrate(VibrationEffect.createOneShot(180, VibrationEffect.DEFAULT_AMPLITUDE))
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        vibrator?.vibrate(180)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Vibrate error: ${e.message}")
+                                }
+                                notificationQueue.add("🔔 Join Request from $username for $roomCode")
+                                fetchPendingRequests()
+                            }
+                        }
+
+                        SupabaseRealtimeManager.onRequestApproved = { roomCode ->
+                            runOnUiThread {
+                                notificationQueue.add("🎉 Your join request for $roomCode was approved!")
+                                refreshRoomsAndMembers()
+                            }
+                        }
+
+                        onDispose {
+                            SupabaseRealtimeManager.onJoinRequestReceived = null
+                            SupabaseRealtimeManager.onRequestApproved = null
+                        }
+                    }
+
                     LaunchedEffect(Unit) {
                         SupabaseRealtimeManager.events.collect { event ->
                             notificationQueue.add(event)

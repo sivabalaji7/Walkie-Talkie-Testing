@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.BatteryFull
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.SignalCellularAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +38,7 @@ fun TopBar(
     userAvatar: String = "G",
     username: String = "Guest",
     isLoggedIn: Boolean = false,
+    onShareClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val menuInteractionSource = remember { MutableInteractionSource() }
@@ -125,6 +127,42 @@ fun TopBar(
                     tint = WalkieTextSecondary.copy(alpha = 0.6f),
                     modifier = Modifier.size(14.dp)
                 )
+            }
+
+            // Tactical Share Button (Shown when in squad or callback provided)
+            if (onShareClick != null) {
+                val shareInteractionSource = remember { MutableInteractionSource() }
+                val sharePressed by shareInteractionSource.collectIsPressedAsState()
+                val shareScale by animateFloatAsState(
+                    targetValue = if (sharePressed) 0.90f else 1f,
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 400f),
+                    label = "shareScale"
+                )
+
+                Box(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = shareScale
+                            scaleY = shareScale
+                        }
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(WalkieAmber.copy(alpha = 0.15f))
+                        .border(1.dp, WalkieAmber.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                        .clickable(
+                            interactionSource = shareInteractionSource,
+                            indication = null,
+                            onClick = onShareClick
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Share,
+                        contentDescription = "Share Squad Invite",
+                        tint = WalkieAmber,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
 
             // Avatar Chip

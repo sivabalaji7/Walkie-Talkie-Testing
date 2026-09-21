@@ -468,6 +468,17 @@ object SupabaseRoomManager {
                 }
             }
 
+            // Immediately broadcast join request over realtime so active room owner receives it instantly
+            try {
+                com.example.walkietalkieapp.socket.SupabaseRealtimeManager.broadcastJoinRequest(
+                    roomCode = cleanCode,
+                    userId = userId,
+                    username = username
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to broadcast join request: ${e.message}")
+            }
+
             return@withContext RoomResult.Success(roomName)
         } catch (e: Exception) {
             Log.e(TAG, "requestJoin exception", e)

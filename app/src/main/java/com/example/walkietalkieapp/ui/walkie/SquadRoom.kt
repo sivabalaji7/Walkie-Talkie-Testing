@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -281,6 +282,68 @@ fun SquadRoom(
                             )
                         }
                     }
+                }
+            }
+
+            // 4.5 Tactical Share Squad Invite Pill
+            if (squad.id.isNotBlank() && !squad.id.startsWith("bt-") && !squad.id.startsWith("wifi-")) {
+                val shareInteractionSource = remember { MutableInteractionSource() }
+                val sharePressed by shareInteractionSource.collectIsPressedAsState()
+                val shareScale by animateFloatAsState(
+                    targetValue = if (sharePressed) 0.96f else 1f,
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 400f),
+                    label = "inviteShareScale"
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                        .graphicsLayer {
+                            scaleX = shareScale
+                            scaleY = shareScale
+                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(WalkieAmber.copy(alpha = 0.10f))
+                        .border(1.dp, WalkieAmber.copy(alpha = 0.30f), RoundedCornerShape(10.dp))
+                        .clickable(
+                            interactionSource = shareInteractionSource,
+                            indication = null,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onShareSquadCode(squad.id)
+                            }
+                        )
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Share,
+                            contentDescription = "Share",
+                            tint = WalkieAmber,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "INVITE SQUAD • CODE: ${squad.id.uppercase()}",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = WalkieAmber,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                    Text(
+                        text = "TAP TO SHARE ↗",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WalkieTextSecondary
+                    )
                 }
             }
 

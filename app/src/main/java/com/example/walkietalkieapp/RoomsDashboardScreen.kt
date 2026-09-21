@@ -20,10 +20,12 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Person
+import android.content.Intent
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -56,6 +59,7 @@ fun RoomsDashboardScreen(
     onJoinRoom: (String, String) -> Unit, // Passes roomCode, roomName
     showTopBar: Boolean = true
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var myRooms by remember { mutableStateOf<List<Room>>(emptyList()) }
     var pendingRequests by remember { mutableStateOf<List<RoomMemberRequest>>(emptyList()) }
@@ -401,6 +405,15 @@ fun RoomsDashboardScreen(
                                     } else {
                                         showMemberLeaveDialog = true
                                     }
+                                },
+                                onShareClick = {
+                                    val inviteLink = "https://walkie-talkie-app-server.onrender.com/join?roomId=${room.code}"
+                                    val intent = Intent().apply {
+                                        action = Intent.ACTION_SEND
+                                        putExtra(Intent.EXTRA_TEXT, "Join my Squad on Squad Talk!\n\nLink: $inviteLink\n\nCode: ${room.code}")
+                                        type = "text/plain"
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Share Squad Code"))
                                 }
                             )
                         }
@@ -1010,7 +1023,8 @@ fun RoomItem(
     isOwner: Boolean = false,
     pendingCount: Int = 0,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    onShareClick: (() -> Unit)? = null
 ) {
     Surface(
         color = TactileColors.surfaceContainerLow,
@@ -1103,6 +1117,21 @@ fun RoomItem(
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            if (onShareClick != null) {
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(
+                    onClick = onShareClick,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Share,
+                        contentDescription = "Share Squad Invite",
+                        tint = TactileColors.primary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

@@ -360,7 +360,10 @@ fun WalkieTalkieApp(
                         isPowered = true,
                         userAvatar = displayAvatar,
                         username = displayCallsign,
-                        isLoggedIn = isLoggedIn
+                        isLoggedIn = isLoggedIn,
+                        onShareClick = if (isInsideRoom && joinedSquad != null && !joinedSquad.id.startsWith("bt-") && !joinedSquad.id.startsWith("wifi-")) {
+                            { onShareSquadCode(joinedSquad.id) }
+                        } else null
                     )
 
                     AntennaModeDial(

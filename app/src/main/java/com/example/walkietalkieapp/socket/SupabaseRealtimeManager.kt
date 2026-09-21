@@ -51,7 +51,9 @@ data class SignalMessage(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val locationLabel: String? = null,
-    val isBeacon: Boolean? = null
+    val isBeacon: Boolean? = null,
+    val targetRoomCode: String? = null,
+    val targetUserId: String? = null
 )
 
 @Serializable
@@ -75,6 +77,9 @@ object SupabaseRealtimeManager {
             checkAndTriggerWebRtcOffers()
         }
     }
+
+    var onJoinRequestReceived: ((username: String, roomCode: String) -> Unit)? = null
+    var onRequestApproved: ((roomCode: String) -> Unit)? = null
 
     // Active squad peers map: username (lowercase) -> originalUsername
     private val activePeers = ConcurrentHashMap<String, String>()
@@ -352,6 +357,23 @@ object SupabaseRealtimeManager {
         val myName = _socketUiState.value.username.trim()
         if (msg.sender.isBlank() || msg.sender.equals(myName, ignoreCase = true)) return // ignore self
         if (msg.to != null && !msg.to.equals(myName, ignoreCase = true)) return // not addressed to me
+
+        // Handle squad join request without registering sender as an active audio peer
+        if (msg.type == "squad_join_request") {
+            val roomCode = msg.targetRoomCode ?: _socketUiState.value.roomId
+            Log.d(TAG, "Received squad_join_request from ${msg.sender} for room $roomCode")
+            addLog("Join request from ${msg.sender}")
+            onJoinRequestReceived?.invoke(msg.sender, roomCode)
+            return
+        }
+
+        // Handle squad request approval notification
+        if (msg.type == "squad_request_approved") {
+            val roomCode = msg.targetRoomCode ?: _socketUiState.value.roomId
+            Log.d(TAG, "Received squad_request_approved for targetUserId=${msg.targetUserId}, room=$roomCode")
+            onRequestApproved?.invoke(roomCode)
+            return
+        }
 
         // Any message from a sender acts as an implicit presence heartbeat
         handlePeerSeen(msg.sender)
@@ -682,6 +704,73 @@ object SupabaseRealtimeManager {
                         timestamp = System.currentTimeMillis()
                     )
                 )
+            }
+        }
+    }
+
+    fun broadcastJoinRequest(roomCode: String, userId: String, username: String) {
+        scope.launch {
+            try {
+                val cleanCode = roomCode.trim().uppercase()
+                if (cleanCode.isBlank()) return@launch
+
+                if (SupabaseClientManager.client.realtime.status.value != Realtime.Status.CONNECTED) {
+                    try { SupabaseClientManager.client.realtime.connect() } catch (e: Exception) {}
+                }
+
+                val targetChannel = if (channel != null && _socketUiState.value.roomId.equals(cleanCode, ignoreCase = true)) {
+                    channel
+                } else {
+                    SupabaseClientManager.client.channel("squad:$cleanCode") {
+                        broadcast {
+                            receiveOwnBroadcasts = false
+                            acknowledgeBroadcasts = true
+                        }
+                    }
+                }
+
+                if (targetChannel != channel) {
+                    targetChannel?.subscribe(blockUntilSubscribed = false)
+                }
+
+                val msg = SignalMessage(
+                    type = "squad_join_request",
+                    sender = username.trim(),
+                    targetRoomCode = cleanCode,
+                    targetUserId = userId.trim(),
+                    timestamp = System.currentTimeMillis()
+                )
+                targetChannel?.broadcast("webrtc", msg)
+                Log.d(TAG, "Broadcasted squad_join_request for $username to squad:$cleanCode")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to broadcast squad_join_request", e)
+            }
+        }
+    }
+
+    fun broadcastRequestApproved(roomCode: String?, userId: String) {
+        scope.launch {
+            try {
+                val cleanCode = roomCode?.trim()?.uppercase() ?: return@launch
+                if (cleanCode.isBlank()) return@launch
+
+                val targetChannel = if (channel != null && _socketUiState.value.roomId.equals(cleanCode, ignoreCase = true)) {
+                    channel
+                } else {
+                    SupabaseClientManager.client.channel("squad:$cleanCode")
+                }
+
+                val msg = SignalMessage(
+                    type = "squad_request_approved",
+                    sender = _socketUiState.value.username.trim(),
+                    targetRoomCode = cleanCode,
+                    targetUserId = userId.trim(),
+                    timestamp = System.currentTimeMillis()
+                )
+                targetChannel?.broadcast("webrtc", msg)
+                Log.d(TAG, "Broadcasted squad_request_approved for targetUserId $userId to squad:$cleanCode")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to broadcast squad_request_approved", e)
             }
         }
     }
