@@ -98,7 +98,7 @@ fun WalkieTalkieApp(
 
     modifier: Modifier = Modifier
 ) {
-    var isDarkMode by remember { mutableStateOf(false) }
+    var isDarkMode by remember { mutableStateOf(true) }
     var drawerOpen by remember { mutableStateOf(false) }
     var activeIndex by remember { mutableIntStateOf(0) }
     var authModalMode by remember(isLoggedIn) { mutableStateOf<AuthMode?>(if (!isLoggedIn) AuthMode.LOGIN else null) }

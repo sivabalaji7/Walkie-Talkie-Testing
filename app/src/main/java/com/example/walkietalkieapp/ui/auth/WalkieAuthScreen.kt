@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.walkietalkieapp.auth.AuthResult
 import com.example.walkietalkieapp.auth.SupabaseAuthManager
-import com.example.walkietalkieapp.ui.theme.WalkieBackground
+import androidx.compose.material3.MaterialTheme
 import kotlinx.coroutines.launch
 
 enum class AuthMode {
@@ -35,7 +35,7 @@ fun WalkieAuthScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(WalkieBackground)
+            .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState()),
         contentAlignment = Alignment.Center
     ) {

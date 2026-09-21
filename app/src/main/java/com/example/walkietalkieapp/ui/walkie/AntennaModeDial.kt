@@ -385,13 +385,14 @@ fun AntennaModeDial(
                     },
                     label = "modeDetails"
                 ) { theme ->
+                    val isDark = LocalWalkieDarkTheme.current
                     Column {
                         Text(
                             text = theme.tag,
                             fontFamily = SpaceGrotesk,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Black,
-                            color = Color(0xFF1E1E22),
+                            color = if (isDark) WalkieTextPrimary else Color(0xFF1E1E22),
                             letterSpacing = 0.8.sp,
                             maxLines = 1
                         )
@@ -400,7 +401,7 @@ fun AntennaModeDial(
                             fontFamily = PlusJakartaSans,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF4B4A50),
+                            color = if (isDark) WalkieTextSecondary else Color(0xFF4B4A50),
                             maxLines = 1
                         )
                     }

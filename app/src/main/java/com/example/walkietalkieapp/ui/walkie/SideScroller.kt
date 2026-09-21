@@ -309,12 +309,13 @@ fun SideScroller(
 
         Spacer(modifier = Modifier.height(4.dp))
 
+        val isDark = LocalWalkieDarkTheme.current
         Text(
             text = label,
             fontFamily = SpaceGrotesk,
             fontSize = 7.sp,
             fontWeight = FontWeight.Bold,
-            color = WalkieTextMuted.copy(alpha = 0.7f),
+            color = if (isDark) WalkieTextSecondary else WalkieTextMuted,
             letterSpacing = 1.sp
         )
     }
