@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.walkietalkieapp.ui.theme.*
@@ -210,7 +211,12 @@ fun SquadHub(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(
+                        start = 14.dp,
+                        end = if (isOnline && squads.isNotEmpty()) 40.dp else 14.dp,
+                        top = 8.dp,
+                        bottom = 8.dp
+                    )
             ) {
                 if (isOnline) {
                     if (squads.isEmpty()) {
@@ -291,7 +297,9 @@ fun SquadHub(
                                         fontFamily = SpaceGrotesk,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isSelected) WalkieTextPrimary else WalkieTextSecondary.copy(alpha = itemAlpha)
+                                        color = if (isSelected) WalkieTextPrimary else WalkieTextSecondary.copy(alpha = itemAlpha),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     val subText = if (squad.members.isNotEmpty()) {
                                         "${squad.members.size} members · ${squad.members.count { it.online }} online"
@@ -302,7 +310,9 @@ fun SquadHub(
                                         text = subText,
                                         fontFamily = PlusJakartaSans,
                                         fontSize = 11.sp,
-                                        color = WalkieTextMuted.copy(alpha = itemAlpha)
+                                        color = WalkieTextMuted.copy(alpha = itemAlpha),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
 
