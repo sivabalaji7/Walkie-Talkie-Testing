@@ -18,6 +18,7 @@ data class VoiceTransmission(
     val durationMs: Long,
     val pcmData: ByteArray,
     val sampleRate: Int = 48000,
+    val channels: Int = 1,
     val isSelf: Boolean = false
 ) {
     override fun equals(other: Any?): Boolean {
@@ -65,12 +66,35 @@ object VoiceHistoryManager {
     }
 
     /**
+     * Converts interleaved 16-bit stereo PCM [L0, R0, L1, R1, ...] into mono 16-bit PCM [M0, M1, ...].
+     * Eliminates the 0.5x slow-motion pitch drop and halves RAM footprint.
+     */
+    fun stereoToMono(stereoPcm: ByteArray): ByteArray {
+        if (stereoPcm.size < 4) return stereoPcm
+        val monoLength = (stereoPcm.size / 4) * 2
+        val mono = ByteArray(monoLength)
+        var src = 0
+        var dst = 0
+        while (src + 3 < stereoPcm.size) {
+            val left = ((stereoPcm[src].toInt() and 0xFF) or ((stereoPcm[src + 1].toInt() and 0xFF) shl 8)).toShort()
+            val right = ((stereoPcm[src + 2].toInt() and 0xFF) or ((stereoPcm[src + 3].toInt() and 0xFF) shl 8)).toShort()
+            val avg = ((left.toInt() + right.toInt()) / 2).toShort()
+            mono[dst] = (avg.toInt() and 0xFF).toByte()
+            mono[dst + 1] = ((avg.toInt() shr 8) and 0xFF).toByte()
+            src += 4
+            dst += 2
+        }
+        return mono
+    }
+
+    /**
      * Adds a newly completed transmission to the rolling reel.
      */
     fun addTransmission(
         speakerName: String,
         pcmData: ByteArray,
         sampleRate: Int = 48000,
+        channels: Int = 1,
         durationMs: Long,
         isSelf: Boolean = false
     ) {
@@ -79,12 +103,20 @@ object VoiceHistoryManager {
             return
         }
 
+        // If audio arrived in 2-channel stereo, downmix to mono to ensure 1.0x natural playback speed
+        val (finalData, finalChannels) = if (channels == 2) {
+            stereoToMono(pcmData) to 1
+        } else {
+            pcmData to channels
+        }
+
         val record = VoiceTransmission(
             speakerName = speakerName.trim().ifBlank { "Unknown" },
             timestamp = System.currentTimeMillis(),
             durationMs = durationMs,
-            pcmData = pcmData,
+            pcmData = finalData,
             sampleRate = sampleRate,
+            channels = finalChannels,
             isSelf = isSelf
         )
 
@@ -93,7 +125,7 @@ object VoiceHistoryManager {
             listOf(record) + current.take(MAX_TRANSMISSIONS - 1)
         }
 
-        logD("Added transmission from ${record.speakerName} (${record.durationMs}ms, ${pcmData.size} bytes). Total reel count: ${_transmissions.value.size}")
+        logD("Added transmission from ${record.speakerName} (${record.durationMs}ms, ${finalData.size} bytes, ${record.sampleRate}Hz, ${record.channels}ch). Total reel count: ${_transmissions.value.size}")
     }
 
     /**
@@ -114,10 +146,11 @@ object VoiceHistoryManager {
         Thread({
             var track: AudioTrack? = null
             try {
-                val sampleRate = target.sampleRate
+                val sampleRate = target.sampleRate.coerceAtLeast(8000)
+                val channelConfig = if (target.channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
                 val minBufferSize = AudioTrack.getMinBufferSize(
                     sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
+                    channelConfig,
                     AudioFormat.ENCODING_PCM_16BIT
                 )
 
@@ -129,7 +162,7 @@ object VoiceHistoryManager {
                 val audioFormat = AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setChannelMask(channelConfig)
                     .build()
 
                 track = AudioTrack.Builder()
@@ -152,8 +185,16 @@ object VoiceHistoryManager {
                     offset += bytesToWrite
                 }
 
+                // Drain remaining audio in buffer before stopping so tail isn't clipped
                 if (!isStopping.get()) {
-                    track.stop()
+                    val bytesPerFrame = (if (target.channels == 2) 2 else 1) * 2 // 16-bit PCM
+                    val totalFrames = data.size / bytesPerFrame
+                    val maxWaitMs = 1500L
+                    val startWait = System.currentTimeMillis()
+                    while (!isStopping.get() && track.playbackHeadPosition < totalFrames && (System.currentTimeMillis() - startWait < maxWaitMs)) {
+                        Thread.sleep(20)
+                    }
+                    try { track.stop() } catch (_: Exception) {}
                 }
             } catch (e: Exception) {
                 logE("Error during voice playback: ${e.message}", e)

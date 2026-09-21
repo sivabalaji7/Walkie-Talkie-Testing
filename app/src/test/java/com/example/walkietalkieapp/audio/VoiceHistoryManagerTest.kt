@@ -81,4 +81,55 @@ class VoiceHistoryManagerTest {
         assertEquals("Reel must be empty after clear", 0, VoiceHistoryManager.transmissions.value.size)
         assertNull("Currently playing ID must be null after clear", VoiceHistoryManager.currentlyPlayingId.value)
     }
+
+    @Test
+    fun testStereoToMonoDspDownmixing() {
+        // Construct 2 stereo frames (16-bit signed PCM, little-endian)
+        // Frame 1: Left = 1000 (0x03E8), Right = 3000 (0x0BB8) -> Avg = 2000 (0x07D0)
+        // Frame 2: Left = -4000 (0xF060), Right = -2000 (0xF830) -> Avg = -3000 (0xF448)
+        val stereoBytes = byteArrayOf(
+            // Frame 1 Left: 1000
+            0xE8.toByte(), 0x03.toByte(),
+            // Frame 1 Right: 3000
+            0xB8.toByte(), 0x0B.toByte(),
+            // Frame 2 Left: -4000
+            0x60.toByte(), 0xF0.toByte(),
+            // Frame 2 Right: -2000
+            0x30.toByte(), 0xF8.toByte()
+        )
+
+        val monoBytes = VoiceHistoryManager.stereoToMono(stereoBytes)
+        assertEquals("Mono bytes must be half of stereo bytes", 4, monoBytes.size)
+
+        // Decode Frame 1 Mono
+        val m1 = ((monoBytes[0].toInt() and 0xFF) or ((monoBytes[1].toInt() and 0xFF) shl 8)).toShort()
+        assertEquals("Frame 1 Mono should be average (2000)", 2000.toShort(), m1)
+
+        // Decode Frame 2 Mono
+        val m2 = ((monoBytes[2].toInt() and 0xFF) or ((monoBytes[3].toInt() and 0xFF) shl 8)).toShort()
+        assertEquals("Frame 2 Mono should be average (-3000)", (-3000).toShort(), m2)
+    }
+
+    @Test
+    fun testAddTransmissionStereoAutoDownmixesToMono() {
+        // 8000 bytes of stereo PCM = 2000 stereo frames
+        val stereoPcm = ByteArray(8000) { (it % 128).toByte() }
+        VoiceHistoryManager.addTransmission(
+            speakerName = "Bravo-2",
+            pcmData = stereoPcm,
+            sampleRate = 48000,
+            channels = 2,
+            durationMs = 1000L,
+            isSelf = false
+        )
+
+        val list = VoiceHistoryManager.transmissions.value
+        assertEquals(1, list.size)
+        val recorded = list.first()
+        assertEquals("Channels should be normalized to 1 (mono) for accurate 1.0x playback", 1, recorded.channels)
+        assertEquals("Downmixed PCM data size must be exactly half (4000 bytes)", 4000, recorded.pcmData.size)
+        assertEquals(48000, recorded.sampleRate)
+        assertEquals(1000L, recorded.durationMs)
+    }
 }
+

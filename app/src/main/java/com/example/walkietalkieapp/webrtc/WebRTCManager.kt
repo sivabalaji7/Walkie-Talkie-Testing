@@ -56,10 +56,12 @@ class WebRTCManager(private val context: Context) {
     @Volatile private var activeRemoteSpeaker: String? = null
     private var activeRemoteStartTime: Long = 0L
     private var activeRemoteSampleRate: Int = 48000
+    private var activeRemoteChannels: Int = 1
 
     private val localAudioRecording = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
     private var localAudioStartTime: Long = 0L
     private var localAudioSampleRate: Int = 48000
+    private var localAudioChannels: Int = 1
 
     private var isInitialized = false
     private var isSessionActive = false
@@ -118,6 +120,7 @@ class WebRTCManager(private val context: Context) {
                     speakerName = speaker,
                     pcmData = pcmData,
                     sampleRate = activeRemoteSampleRate,
+                    channels = activeRemoteChannels,
                     durationMs = duration,
                     isSelf = false
                 )
@@ -334,6 +337,7 @@ class WebRTCManager(private val context: Context) {
         track.addSink { buffer, bitsPerSample, sampleRate, numberOfChannels, numberOfFrames, timestamp ->
             if (isTalking) {
                 localAudioSampleRate = sampleRate
+                localAudioChannels = numberOfChannels
                 val dup = buffer.duplicate()
                 val data = ByteArray(dup.remaining())
                 dup.get(data)
@@ -605,6 +609,7 @@ class WebRTCManager(private val context: Context) {
                                 }
                                 if (authorizedSpeaker != null) {
                                     activeRemoteSampleRate = sampleRate
+                                    activeRemoteChannels = numberOfChannels
                                     remoteAudioRecording.add(data)
                                 }
                             }
@@ -946,6 +951,7 @@ class WebRTCManager(private val context: Context) {
                     speakerName = myName,
                     pcmData = pcmData,
                     sampleRate = localAudioSampleRate,
+                    channels = localAudioChannels,
                     durationMs = duration,
                     isSelf = true
                 )
