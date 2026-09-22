@@ -57,9 +57,16 @@ data class DiscoveredWifiSquad(
     val lastSeenTimestamp: Long = System.currentTimeMillis()
 )
 
+data class WifiJoinRequest(
+    val clientId: String,
+    val username: String,
+    val deviceName: String = "",
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 data class WifiSquadUiState(
     val isHost: Boolean = false,
-    val connectionState: String = "IDLE", // IDLE, HOSTING, SCANNING, CONNECTING, CONNECTED
+    val connectionState: String = "IDLE", // IDLE, HOSTING, SCANNING, CONNECTING, WAITING_APPROVAL, CONNECTED
     val squadName: String = "",
     val myUsername: String = "",
     val myId: String = UUID.randomUUID().toString().take(8),
@@ -75,7 +82,8 @@ data class WifiSquadUiState(
     val isScanning: Boolean = false,
     val isWifiP2pEnabled: Boolean = true,
     val groupOwnerAddress: String? = null,
-    val isGroupOwner: Boolean = false
+    val isGroupOwner: Boolean = false,
+    val pendingJoinRequests: List<WifiJoinRequest> = emptyList()
 )
 
 class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListListener, WifiP2pManager.ConnectionInfoListener {
@@ -98,6 +106,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         const val PKT_FLOOR_STATE: Byte = 0x0A
         const val PKT_FLOOR_DENY: Byte = 0x0B
         const val PKT_SYNC_REQUEST: Byte = 0x0C
+        const val PKT_JOIN_DENY: Byte = 0x0D
     }
 
     private val wifiP2pManager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
@@ -120,6 +129,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
     private val clientHandlers = ConcurrentHashMap<String, TcpPeerConnectionHandler>()
+    private val pendingClientHandlers = ConcurrentHashMap<String, TcpPeerConnectionHandler>()
     private var serviceInfo: WifiP2pDnsSdServiceInfo? = null
 
     // Client State
@@ -410,21 +420,50 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             return
         }
 
-        val ch = channel ?: return
-        stopDiscovery()
+        if (channel == null) {
+            channel = wifiP2pManager?.initialize(context, Looper.getMainLooper(), null)
+        }
+        val ch = channel ?: run {
+            Log.e(TAG, "Wi-Fi P2P channel is null, cannot start discovery")
+            _uiState.update { it.copy(isScanning = false) }
+            return
+        }
 
-        _uiState.update { it.copy(isScanning = true, discoveredSquads = emptyList()) }
+        // Cancel previous timer
+        scanStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        scanStopRunnable = null
+
+        isShuttingDown = false
+        _uiState.update { it.copy(isScanning = true) }
         addLog("Scanning for on-air Squad signals...")
 
         try {
-            // 1. Stop any previous discovery session first
-            wifiP2pManager?.stopPeerDiscovery(ch, null)
+            // Sequential registration: Clear old service requests FIRST
+            wifiP2pManager?.clearServiceRequests(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "clearServiceRequests succeeded, setting listeners & request")
+                    registerAndStartDnsSd(ch)
+                }
 
-            // 2. Set BOTH listeners BEFORE starting discovery
+                override fun onFailure(reason: Int) {
+                    Log.w(TAG, "clearServiceRequests failed: $reason, proceeding to register")
+                    registerAndStartDnsSd(ch)
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting Wi-Fi Direct discovery", e)
+            _uiState.update { it.copy(isScanning = false) }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun registerAndStartDnsSd(ch: WifiP2pManager.Channel) {
+        try {
+            // 2. Set BOTH listeners BEFORE adding service request
             wifiP2pManager?.setDnsSdResponseListeners(
                 ch,
                 { instanceName, registrationType, device ->
-                    Log.d(TAG, "DNS-SD Service Response: $instanceName ($registrationType) from ${device.deviceName}")
+                    Log.d(TAG, "DNS-SD Service Response: $instanceName ($registrationType) from ${device.deviceName} (${device.deviceAddress})")
                 },
                 { fullDomain, record, device ->
                     Log.d(TAG, "DNS-SD TXT Record: $record from ${device.deviceName} (${device.deviceAddress})")
@@ -453,22 +492,59 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             serviceRequest = req
             wifiP2pManager?.addServiceRequest(ch, req, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
-                    // 4. ONLY NOW start discovery
-                    discoverServicesWithRetry(ch)
+                    Log.d(TAG, "addServiceRequest succeeded — starting scan loop")
+                    triggerRealtimeScanCycle(ch)
                 }
 
                 override fun onFailure(reason: Int) {
                     Log.w(TAG, "addServiceRequest failed: $reason")
-                    _uiState.update { it.copy(isScanning = false) }
+                    if (reason == WifiP2pManager.BUSY && _uiState.value.isScanning && !isShuttingDown) {
+                        mainHandler.postDelayed({
+                            if (_uiState.value.isScanning && !isShuttingDown) {
+                                registerAndStartDnsSd(ch)
+                            }
+                        }, 1000L)
+                    } else {
+                        _uiState.update { it.copy(isScanning = false) }
+                    }
                 }
             })
-
-            scanStopRunnable = Runnable { stopDiscovery() }
-            mainHandler.postDelayed(scanStopRunnable!!, 20000)
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting Wi-Fi Direct discovery", e)
+            Log.e(TAG, "Error in registerAndStartDnsSd", e)
             _uiState.update { it.copy(isScanning = false) }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun triggerRealtimeScanCycle(ch: WifiP2pManager.Channel) {
+        if (!_uiState.value.isScanning || isShuttingDown) return
+
+        // 4. Trigger active channel scan via discoverPeers
+        wifiP2pManager?.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(TAG, "discoverPeers active for channel scan")
+            }
+            override fun onFailure(reason: Int) {
+                Log.w(TAG, "discoverPeers failed: $reason")
+            }
+        })
+
+        // 5. Trigger service discovery
+        discoverServicesWithRetry(ch)
+
+        // 6. Realtime periodic heartbeat: retrigger probe scan every 12s so scanning stays alive
+        scanStopRunnable?.let { mainHandler.removeCallbacks(it) }
+        scanStopRunnable = Runnable {
+            if (_uiState.value.isScanning && !_uiState.value.isHost && _uiState.value.connectionState == "IDLE" && !isShuttingDown) {
+                Log.d(TAG, "Heartbeat: retriggering realtime scan cycle")
+                val now = System.currentTimeMillis()
+                _uiState.update { state ->
+                    state.copy(discoveredSquads = state.discoveredSquads.filter { now - it.lastSeenTimestamp < 60_000L })
+                }
+                triggerRealtimeScanCycle(ch)
+            }
+        }
+        mainHandler.postDelayed(scanStopRunnable!!, 12_000L)
     }
 
     @SuppressLint("MissingPermission")
@@ -616,6 +692,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                     socket.soTimeout = 0 // No read timeout
                     socket.tcpNoDelay = true
                     socket.setPerformancePreferences(0, 1, 0) // Low latency priority
+                    socket.sendBufferSize = 64 * 1024
+                    socket.receiveBufferSize = 64 * 1024
 
                     Log.d(TAG, "Host accepted incoming client: ${socket.inetAddress?.hostAddress}")
                     val peerHandler = TcpPeerConnectionHandler(socket, isHostSide = true)
@@ -656,6 +734,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             override fun onSuccess() {
                 Log.d(TAG, "DNS-SD Local Service published: ${_uiState.value.squadName} (SSID=$ssid)")
                 addLog("Squad room on-air and discoverable!")
+                // Also trigger discoverPeers so the host responds to probe queries
+                wifiP2pManager?.discoverPeers(ch, null)
             }
             override fun onFailure(code: Int) {
                 Log.w(TAG, "Failed to publish DNS-SD service: $code")
@@ -819,6 +899,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                         s.soTimeout = 0 // No read timeout
                         s.tcpNoDelay = true // Disable Nagle's algorithm
                         s.setPerformancePreferences(0, 1, 0) // Low latency priority
+                        s.sendBufferSize = 64 * 1024
+                        s.receiveBufferSize = 64 * 1024
                         s.connect(InetSocketAddress(cleanIp, port), 3000)
                         socket = s
                     } catch (e: Exception) {
@@ -846,9 +928,12 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                 handler.start()
 
                 handler.sendJoinRequest(myId, myUsername)
-                addLog("Connected to squad, waiting for admission...")
-                _events.tryEmit("Connected to squad, waiting for admission...")
-                Log.d(TAG, "TCP connected successfully to $cleanIp:$port")
+                mainHandler.post {
+                    _uiState.update { it.copy(connectionState = "WAITING_APPROVAL") }
+                }
+                addLog("Join request sent, waiting for owner approval...")
+                _events.tryEmit("Join request sent, waiting for owner approval...")
+                Log.d(TAG, "TCP connected successfully to $cleanIp:$port, sent join request")
             } catch (e: Exception) {
                 Log.e(TAG, "TCP connection failed", e)
                 addLog("Connection failed: ${e.localizedMessage}")
@@ -1140,6 +1225,12 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
     private fun handleClientDisconnect(clientId: String, handler: TcpPeerConnectionHandler?) {
         clientHandlers.remove(clientId)
+        pendingClientHandlers.remove(clientId)
+        mainHandler.post {
+            _uiState.update { state ->
+                state.copy(pendingJoinRequests = state.pendingJoinRequests.filter { it.clientId != clientId })
+            }
+        }
         handler?.close()
 
         val memberName = handler?.peerUsername ?: "Member"
@@ -1230,6 +1321,83 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
     }
 
     // =========================================================================
+    // SQUAD OWNER ADMISSION CONTROLS (APPROVE / DECLINE INVITATION)
+    // =========================================================================
+    fun approveJoinRequest(clientId: String) {
+        if (!_uiState.value.isHost) return
+        val handler = pendingClientHandlers.remove(clientId) ?: clientHandlers[clientId]
+        if (handler == null) {
+            Log.w(TAG, "approveJoinRequest: no handler found for client $clientId")
+            return
+        }
+
+        clientHandlers[clientId] = handler
+        mainHandler.post {
+            _uiState.update { state ->
+                state.copy(pendingJoinRequests = state.pendingJoinRequests.filter { it.clientId != clientId })
+            }
+        }
+
+        ioExecutor.execute {
+            try {
+                // 1. Send JOIN_ACK to admitted client
+                val ackPayload = JSONObject().apply {
+                    put("squadName", _uiState.value.squadName)
+                    put("hostId", _uiState.value.myId)
+                    put("hostUsername", _uiState.value.myUsername)
+                }.toString().toByteArray(Charsets.UTF_8)
+                handler.sendBytes(buildFramedPacket(PKT_JOIN_ACK, ackPayload))
+
+                // 2. Send current floor state immediately to the new client
+                val isBusy = isChannelBusy && currentFloorHolderId != null
+                val floorPayload = if (isBusy) {
+                    byteArrayOf(0x01) + (currentFloorHolderId ?: "").toByteArray(Charsets.UTF_8)
+                } else {
+                    byteArrayOf(0x00)
+                }
+                handler.sendBytes(buildFramedPacket(PKT_FLOOR_STATE, floorPayload))
+
+                // 3. Broadcast authoritative full member list to ALL squad members
+                broadcastMembersList()
+
+                val admittedName = handler.peerUsername ?: clientId
+                val msg = "$admittedName joined the squad"
+                addLog(msg)
+                _events.tryEmit(msg)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error admitting client $clientId", e)
+            }
+        }
+    }
+
+    fun declineJoinRequest(clientId: String) {
+        if (!_uiState.value.isHost) return
+        val handler = pendingClientHandlers.remove(clientId)
+        mainHandler.post {
+            _uiState.update { state ->
+                state.copy(pendingJoinRequests = state.pendingJoinRequests.filter { it.clientId != clientId })
+            }
+        }
+
+        if (handler != null) {
+            ioExecutor.execute {
+                try {
+                    val denyPayload = "Declined by squad owner".toByteArray(Charsets.UTF_8)
+                    handler.sendBytes(buildFramedPacket(PKT_JOIN_DENY, denyPayload))
+                    Thread.sleep(300L)
+                    handler.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error sending PKT_JOIN_DENY to $clientId", e)
+                }
+            }
+            val name = handler.peerUsername ?: clientId
+            val msg = "Declined join request from $name"
+            addLog(msg)
+            _events.tryEmit(msg)
+        }
+    }
+
+    // =========================================================================
     // CLEANUP & LEAVE
     // =========================================================================
     private fun cleanupLocalSockets() {
@@ -1247,6 +1415,12 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
         clientHandlers.values.forEach { it.close() }
         clientHandlers.clear()
+
+        pendingClientHandlers.values.forEach { it.close() }
+        pendingClientHandlers.clear()
+        mainHandler.post {
+            _uiState.update { it.copy(pendingJoinRequests = emptyList()) }
+        }
 
         closeClientSocket()
         releaseWifiLock()
@@ -1281,9 +1455,20 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                 }
                 wifiP2pManager?.clearLocalServices(ch, null)
                 wifiP2pManager?.clearServiceRequests(ch, null)
-                wifiP2pManager?.removeGroup(ch, null)
+                wifiP2pManager?.removeGroup(ch, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(TAG, "removeGroup succeeded upon leaving squad")
+                        isShuttingDown = false
+                    }
+                    override fun onFailure(reason: Int) {
+                        Log.w(TAG, "removeGroup failed ($reason) upon leaving squad")
+                        isShuttingDown = false
+                    }
+                })
                 wifiP2pManager?.cancelConnect(ch, null)
                 wifiP2pManager?.stopPeerDiscovery(ch, null)
+            } else {
+                isShuttingDown = false
             }
         }
 
@@ -1420,44 +1605,24 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                     val json = JSONObject(String(payload, Charsets.UTF_8))
                     val id = json.getString("id")
                     val username = json.getString("username").trim().ifBlank { "Radio-${id.take(4)}" }
+                    val device = json.optString("device", "Unknown Device")
                     peerId = id
                     peerUsername = username
                     lastSeenTimestamp = System.currentTimeMillis()
 
-                    // ADMISSION GATE: Officially admit client to active roster NOW that name is validated
-                    clientHandlers[id] = this@TcpPeerConnectionHandler
-
-                    val msg = "$username joined the squad"
-                    addLog(msg)
-                    _events.tryEmit(msg)
-
-                    // 1. Send JOIN_ACK to the newly connected client
-                    val ackPayload = JSONObject().apply {
-                        put("squadName", _uiState.value.squadName)
-                        put("hostId", _uiState.value.myId)
-                        put("hostUsername", _uiState.value.myUsername)
-                    }.toString().toByteArray(Charsets.UTF_8)
-                    sendBytes(buildFramedPacket(PKT_JOIN_ACK, ackPayload))
-
-                    // 2. Send current floor state immediately to the new client
-                    val isBusy = isChannelBusy && currentFloorHolderId != null
-                    val floorPayload = if (isBusy) {
-                        byteArrayOf(0x01) + (currentFloorHolderId ?: "").toByteArray(Charsets.UTF_8)
-                    } else {
-                        byteArrayOf(0x00)
-                    }
-                    sendBytes(buildFramedPacket(PKT_FLOOR_STATE, floorPayload))
-
-                    // 3. Broadcast authoritative full member list to ALL squad members
-                    broadcastMembersList()
-
-                    // 4. Delayed 1-second safety re-sync to the new client
-                    val targetClientId = id
-                    mainHandler.postDelayed({
-                        if (_uiState.value.isHost && clientHandlers.containsKey(targetClientId)) {
-                            broadcastMembersList()
+                    if (isHostSide) {
+                        // Admission Gate: Buffer in pending requests, await host approve/decline in SquadRoom
+                        pendingClientHandlers[id] = this@TcpPeerConnectionHandler
+                        val req = WifiJoinRequest(clientId = id, username = username, deviceName = device)
+                        mainHandler.post {
+                            _uiState.update { state ->
+                                state.copy(pendingJoinRequests = state.pendingJoinRequests.filter { it.clientId != id } + req)
+                            }
                         }
-                    }, 1000L)
+                        val msg = "Join request from $username ($device)"
+                        addLog(msg)
+                        _events.tryEmit(msg)
+                    }
                 }
 
                 PKT_JOIN_ACK -> {
@@ -1480,6 +1645,16 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                             )
                         }
                     }
+                }
+
+                PKT_JOIN_DENY -> {
+                    val reason = if (payload.isNotEmpty()) String(payload, Charsets.UTF_8) else "Declined by squad owner"
+                    addLog("Join request declined: $reason")
+                    _events.tryEmit("Join request declined: $reason")
+                    mainHandler.post {
+                        _uiState.update { it.copy(connectionState = "IDLE") }
+                    }
+                    leaveSquad()
                 }
 
                 PKT_MEMBERS_SYNC -> {
@@ -1689,24 +1864,24 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         }
 
         fun sendJoinRequest(myId: String, myUsername: String) {
+            val deviceModel = "${android.os.Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${android.os.Build.MODEL}"
             val payload = JSONObject().apply {
                 put("id", myId)
                 put("username", myUsername)
+                put("device", deviceModel)
             }.toString().toByteArray(Charsets.UTF_8)
             sendBytes(buildFramedPacket(PKT_JOIN_REQ, payload))
         }
 
         fun sendBytes(data: ByteArray) {
-            ioExecutor.execute {
-                try {
-                    synchronized(writeLock) {
-                        outputStream.write(data)
-                        outputStream.flush()
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Socket write failed", e)
-                    close()
+            try {
+                synchronized(writeLock) {
+                    outputStream.write(data)
+                    outputStream.flush()
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Socket write failed", e)
+                close()
             }
         }
 
@@ -1726,14 +1901,13 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                     handleClientDisconnect(id, this@TcpPeerConnectionHandler)
                 }
             } else {
-                // Client side: gracefully disconnect and update UI
+                // Client side: gracefully disconnect, release P2P group and resume radar scanning
+                leaveSquad()
                 mainHandler.post {
-                    _uiState.update { it.copy(connectionState = "IDLE", members = emptyList(), isChannelBusy = false, currentSpeakerId = null, currentSpeakerName = null) }
-                    addLog("Disconnected from room. Host may have left.")
-                    _events.tryEmit("Disconnected from room. Host may have left.")
+                    addLog("Disconnected from room. Resuming radar scan...")
+                    _events.tryEmit("Disconnected from room. Resuming radar scan...")
+                    startDiscovery()
                 }
-                releaseWifiLock()
-                stopKeepAlive()
             }
             // Intelligence Engine: Disconnected
             CommunicationDnaEngine.wifiDirectAdapter?.reportConnectionState(false, 0)

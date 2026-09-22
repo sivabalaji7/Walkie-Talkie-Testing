@@ -89,6 +89,7 @@ fun WalkieTalkieApp(
     onStopTalkOffline: () -> Unit = {},
     onLeaveOfflineSquad: () -> Unit = {},
     isUserSpeakingOffline: Boolean = false,
+    onTriggerGoVisible: () -> Unit = {},
 
     // Controls
     isBatterySaverEnabled: Boolean = false,
@@ -117,8 +118,8 @@ fun WalkieTalkieApp(
 
     // Active Room States
     val isInternetRoomActive = activeInternetRoomId.isNotEmpty()
-    val isBtRoomActive = btUiState.connectionState == "HOSTING" || btUiState.connectionState == "CONNECTED" || btUiState.connectionState == "CONNECTING"
-    val isWifiRoomActive = wifiUiState.connectionState == "HOSTING" || wifiUiState.connectionState == "CONNECTED" || wifiUiState.connectionState == "CONNECTING"
+    val isBtRoomActive = btUiState.connectionState == "HOSTING" || btUiState.connectionState == "CONNECTED"
+    val isWifiRoomActive = wifiUiState.connectionState == "HOSTING" || wifiUiState.connectionState == "CONNECTED"
     val isInsideRoom = isInternetRoomActive || isBtRoomActive || isWifiRoomActive
 
     // Construct Active Squad for SquadRoom with ALL previous and live members
@@ -214,11 +215,12 @@ fun WalkieTalkieApp(
                         name = it.username,
                         avatar = it.username.take(1).uppercase(),
                         online = true,
-                        isSpeaking = it.isSpeaking
+                        isSpeaking = it.isSpeaking,
+                        isOwner = if (btUiState.isHost) it.username.equals(selfName, ignoreCase = true) else (it.address == "HOST")
                     )
                 }.toMutableList()
                 if (selfName.isNotBlank() && membersList.none { it.name.equals(selfName, ignoreCase = true) }) {
-                    membersList.add(0, SquadMember(selfName, selfName.take(1).uppercase(), true, isUserSpeakingOffline))
+                    membersList.add(0, SquadMember(selfName, selfName.take(1).uppercase(), true, isUserSpeakingOffline, isOwner = btUiState.isHost))
                 }
                 Squad(
                     id = "bt-room",
@@ -411,10 +413,21 @@ fun WalkieTalkieApp(
                                 status = currentConnectionStatus,
                                 otherUser = floorStatus.currentSpeakerName ?: btUiState.currentSpeakerName ?: wifiUiState.currentSpeakerName ?: "",
                                 onShareSquadCode = onShareSquadCode,
-                                pendingRequests = pendingRequests.filter {
-                                    it.roomId.equals(activeInternetRoomId, ignoreCase = true) ||
-                                    it.roomCode.equals(activeInternetRoomId, ignoreCase = true) ||
-                                    (myRooms.find { r -> r.code.equals(activeInternetRoomId, ignoreCase = true) }?.id == it.roomId)
+                                pendingRequests = if (currentConnectivityMode == ConnectivityMode.WIFI_DIRECT && wifiUiState.isHost) {
+                                    wifiUiState.pendingJoinRequests.map { req ->
+                                        com.example.walkietalkieapp.auth.RoomMemberRequest(
+                                            roomId = "wifi-room",
+                                            userId = req.clientId,
+                                            username = if (req.deviceName.isNotBlank()) "${req.username} (${req.deviceName})" else req.username,
+                                            status = "PENDING"
+                                        )
+                                    }
+                                } else {
+                                    pendingRequests.filter {
+                                        it.roomId.equals(activeInternetRoomId, ignoreCase = true) ||
+                                        it.roomCode.equals(activeInternetRoomId, ignoreCase = true) ||
+                                        (myRooms.find { r -> r.code.equals(activeInternetRoomId, ignoreCase = true) }?.id == it.roomId)
+                                    }
                                 },
                                 onApproveRequest = onApproveRequest,
                                 onDeclineRequest = onDeclineRequest,
@@ -437,7 +450,15 @@ fun WalkieTalkieApp(
                                 onQuickActions = onReplayAudio,
                                 isE2EActive = socketUiState.isE2EActive,
                                 e2eFingerprint = socketUiState.e2eFingerprint,
-                                onRekeySession = { SupabaseRealtimeManager.rekeySession() }
+                                onRekeySession = { SupabaseRealtimeManager.rekeySession() },
+                                isBeaconActive = btUiState.isBeaconActive,
+                                beaconCountdownSeconds = btUiState.beaconCountdownSeconds,
+                                onTriggerGoVisible = onTriggerGoVisible,
+                                isHost = when (currentConnectivityMode) {
+                                    ConnectivityMode.BLUETOOTH -> btUiState.isHost
+                                    ConnectivityMode.WIFI_DIRECT -> wifiUiState.isHost
+                                    else -> myRooms.any { it.code.equals(activeInternetRoomId, ignoreCase = true) && it.ownerId == currentUserId }
+                                }
                             )
                         } else {
                             val safeActiveIndex = if (displayedSquads.isNotEmpty()) {
@@ -497,14 +518,35 @@ fun WalkieTalkieApp(
                                     } else {
                                         onStartWifiScan()
                                     }
-                                }
+                                },
+                                onRefresh = {
+                                    if (selectedMode == TransportMode.WIFI_DIRECT) {
+                                        onStartWifiScan()
+                                    } else if (selectedMode == TransportMode.BLUETOOTH) {
+                                        onStartBtScan()
+                                    } else {
+                                        showJoinSquadDialog = true
+                                    }
+                                },
+                                discoveredWifiSquads = wifiUiState.discoveredSquads,
+                                onJoinWifiSquad = { squad ->
+                                    onJoinWifiSquad(squad, persistentCallSign.ifBlank { displayCallsign })
+                                },
+                                isWifiConnecting = wifiUiState.connectionState == "CONNECTING" || wifiUiState.connectionState == "WAITING_APPROVAL",
+                                isWifiScanning = wifiUiState.isScanning,
+                                discoveredBtSquads = btUiState.discoveredSquads,
+                                onJoinBtSquad = { squad ->
+                                    onJoinBtSquad(squad, persistentCallSign.ifBlank { displayCallsign })
+                                },
+                                isBtConnecting = btUiState.connectionState == "CONNECTING",
+                                isBtScanning = btUiState.isScanning
                             )
                         }
                     }
                 }
 
                 // Bottom Section: Floating Action Buttons (in hub view)
-                if (!isInsideRoom && currentConnectivityMode == ConnectivityMode.INTERNET) {
+                if (!isInsideRoom && selectedMode == TransportMode.INTERNET) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -515,26 +557,34 @@ fun WalkieTalkieApp(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Join Squad Button
+                            // Join / Rescan Button
                             Row(
                                 modifier = Modifier
                                     .shadow(elevation = 6.dp, shape = CircleShape)
                                     .clip(CircleShape)
                                     .background(WalkieCard)
                                     .border(1.dp, WalkieCardBorder, CircleShape)
-                                    .clickable { showJoinSquadDialog = true }
+                                    .clickable {
+                                        if (selectedMode == TransportMode.INTERNET) {
+                                            showJoinSquadDialog = true
+                                        } else if (selectedMode == TransportMode.BLUETOOTH) {
+                                            onStartBtScan()
+                                        } else {
+                                            onStartWifiScan()
+                                        }
+                                    }
                                     .padding(horizontal = 22.dp, vertical = 14.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Login,
+                                    imageVector = if (selectedMode == TransportMode.INTERNET) Icons.AutoMirrored.Filled.Login else Icons.Default.Refresh,
                                     contentDescription = null,
                                     tint = WalkieTextSecondary,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
-                                    text = "Join Squad",
+                                    text = if (selectedMode == TransportMode.INTERNET) "Join Squad" else "Rescan",
                                     fontFamily = SpaceGrotesk,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
@@ -548,7 +598,13 @@ fun WalkieTalkieApp(
                                     .shadow(elevation = 12.dp, shape = CircleShape, ambientColor = currentTheme.primaryColor, spotColor = currentTheme.primaryColor)
                                     .clip(CircleShape)
                                     .background(currentTheme.gradient)
-                                    .clickable { showCreateSquadDialog = true }
+                                    .clickable {
+                                        if (selectedMode == TransportMode.INTERNET) {
+                                            showCreateSquadDialog = true
+                                        } else {
+                                            showHostOfflineDialog = true
+                                        }
+                                    }
                                     .padding(horizontal = 24.dp, vertical = 14.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)

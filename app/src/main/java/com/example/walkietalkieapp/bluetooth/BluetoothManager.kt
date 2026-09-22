@@ -15,7 +15,11 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -80,8 +84,13 @@ class BluetoothManager(private val context: Context) {
     private val TAG = "BluetoothManager"
     private val SERVICE_NAME = "SquadTalkMesh"
 
-    // Dedicated 128-bit RFCOMM UUID for Squad Audio Transmission
-    private val SQUAD_UUID: UUID = UUID.fromString("fa87c0d0-afac-11de-8a39-0800200c9a66")
+    // Universal 128-bit Serial Port Profile (SPP) UUID recognized natively by Android RFCOMM
+    private val SQUAD_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+
+    // Classic Bluetooth device caches to bridge BLE advertising to Classic BR/EDR RFCOMM sockets
+    private val classicDevicesByName = ConcurrentHashMap<String, BluetoothDevice>()
+    private val classicDevicesByAddress = ConcurrentHashMap<String, BluetoothDevice>()
+    private var classicDiscoveryReceiver: BroadcastReceiver? = null
 
     // Manufacturer ID for Squad Talk BLE Beacon (0x0220)
     private val SQUAD_MANUFACTURER_ID = 0x0220
@@ -173,6 +182,61 @@ class BluetoothManager(private val context: Context) {
             return
         }
 
+        // 1. Populate Classic Bluetooth caches from bonded devices
+        adapter.bondedDevices.orEmpty().forEach { dev ->
+            val name = dev.name ?: ""
+            if (name.isNotBlank()) {
+                classicDevicesByName[name.lowercase()] = dev
+            }
+            classicDevicesByAddress[dev.address.uppercase()] = dev
+        }
+
+        // 2. Register Classic Bluetooth inquiry discovery receiver
+        if (classicDiscoveryReceiver == null) {
+            classicDiscoveryReceiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    if (intent?.action == BluetoothDevice.ACTION_FOUND) {
+                        val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                        }
+                        if (dev != null) {
+                            val name = dev.name ?: intent.getStringExtra(BluetoothDevice.EXTRA_NAME) ?: ""
+                            if (name.isNotBlank()) {
+                                classicDevicesByName[name.lowercase()] = dev
+                            }
+                            classicDevicesByAddress[dev.address.uppercase()] = dev
+
+                            _uiState.update { state ->
+                                val updated = state.discoveredSquads.map { sq ->
+                                    if (sq.device.address.equals(dev.address, ignoreCase = true) ||
+                                        (name.isNotBlank() && (sq.hostUsername.equals(name, ignoreCase = true) || sq.squadName.contains(name, ignoreCase = true)))) {
+                                        sq.copy(device = dev, hostAddress = dev.address)
+                                    } else sq
+                                }
+                                state.copy(discoveredSquads = updated)
+                            }
+                        }
+                    }
+                }
+            }
+            try {
+                val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+                context.registerReceiver(classicDiscoveryReceiver, filter)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to register classicDiscoveryReceiver", e)
+            }
+        }
+
+        try {
+            adapter.cancelDiscovery()
+            adapter.startDiscovery()
+        } catch (e: Exception) {
+            Log.w(TAG, "Classic discovery start skipped", e)
+        }
+
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
             addLog("BLE scanner not available")
@@ -180,6 +244,7 @@ class BluetoothManager(private val context: Context) {
         }
 
         bleScanner = scanner
+        isShuttingDown = false
         _uiState.update { it.copy(isScanning = true, discoveredSquads = emptyList()) }
         addLog("Scanning for on-air Squad signals...")
 
@@ -192,8 +257,10 @@ class BluetoothManager(private val context: Context) {
             .build()
 
         val filter2 = ScanFilter.Builder()
-            .setServiceUuid(SQUAD_BEACON_UUID)
+            .setServiceData(SQUAD_BEACON_UUID, byteArrayOf())
             .build()
+
+        val filterWildcard = ScanFilter.Builder().build()
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -215,12 +282,26 @@ class BluetoothManager(private val context: Context) {
                             String(mfgData, 3 + squadLen, userLen, Charsets.UTF_8).trim()
                         } else "Host"
 
+                        val hostBtName = scanRecord.deviceName ?: result.device.name ?: ""
+
+                        // Resolve real Classic Bluetooth device from bonded or discovered classic devices
+                        val classicDevice = (if (hostBtName.isNotBlank()) classicDevicesByName[hostBtName.lowercase()] else null)
+                            ?: classicDevicesByName[hostUser.lowercase()]
+                            ?: classicDevicesByAddress[result.device.address.uppercase()]
+                            ?: adapter.bondedDevices.orEmpty().find {
+                                (it.name != null && (it.name.equals(hostBtName, ignoreCase = true) || it.name.equals(hostUser, ignoreCase = true))) ||
+                                it.address.equals(result.device.address, ignoreCase = true)
+                            }
+
+                        val finalDevice = classicDevice ?: result.device
+                        val finalAddress = classicDevice?.address ?: result.device.address
+
                         val discovered = DiscoveredSquad(
                             squadName = squadName.ifBlank { "Squad" },
                             hostUsername = hostUser.ifBlank { "Host" },
-                            hostAddress = result.device.address,
+                            hostAddress = finalAddress,
                             rssi = result.rssi,
-                            device = result.device,
+                            device = finalDevice,
                             lastSeenTimestamp = System.currentTimeMillis()
                         )
 
@@ -237,12 +318,24 @@ class BluetoothManager(private val context: Context) {
                     val squadName = if (parts.isNotEmpty()) parts[0] else "Squad"
                     val hostUser = if (parts.size > 1) parts[1] else "Host"
 
+                    val hostBtName = scanRecord.deviceName ?: result.device.name ?: ""
+                    val classicDevice = (if (hostBtName.isNotBlank()) classicDevicesByName[hostBtName.lowercase()] else null)
+                        ?: classicDevicesByName[hostUser.lowercase()]
+                        ?: classicDevicesByAddress[result.device.address.uppercase()]
+                        ?: adapter.bondedDevices.orEmpty().find {
+                            (it.name != null && (it.name.equals(hostBtName, ignoreCase = true) || it.name.equals(hostUser, ignoreCase = true))) ||
+                            it.address.equals(result.device.address, ignoreCase = true)
+                        }
+
+                    val finalDevice = classicDevice ?: result.device
+                    val finalAddress = classicDevice?.address ?: result.device.address
+
                     val discovered = DiscoveredSquad(
                         squadName = squadName.ifBlank { "Squad" },
                         hostUsername = hostUser.ifBlank { "Host" },
-                        hostAddress = result.device.address,
+                        hostAddress = finalAddress,
                         rssi = result.rssi,
-                        device = result.device,
+                        device = finalDevice,
                         lastSeenTimestamp = System.currentTimeMillis()
                     )
 
@@ -261,11 +354,22 @@ class BluetoothManager(private val context: Context) {
         }
 
         try {
-            scanner.startScan(listOf(filter1, filter2), settings, scanCallback)
+            scanner.startScan(listOf(filter1, filter2, filterWildcard), settings, scanCallback)
 
-            // Auto stop scan after 15 seconds
-            scanStopRunnable = Runnable { stopSquadScan() }
-            mainHandler.postDelayed(scanStopRunnable!!, 15000)
+            // Realtime continuous scan heartbeat with stale squad pruning
+            scanStopRunnable?.let { mainHandler.removeCallbacks(it) }
+            scanStopRunnable = object : Runnable {
+                override fun run() {
+                    if (_uiState.value.isScanning && !_uiState.value.isHost && _uiState.value.connectionState == "IDLE" && !isShuttingDown) {
+                        val now = System.currentTimeMillis()
+                        _uiState.update { state ->
+                            state.copy(discoveredSquads = state.discoveredSquads.filter { now - it.lastSeenTimestamp < 45_000L })
+                        }
+                        mainHandler.postDelayed(this, 10_000L)
+                    }
+                }
+            }
+            mainHandler.postDelayed(scanStopRunnable!!, 10_000L)
         } catch (e: Exception) {
             Log.e(TAG, "Error starting BLE scan", e)
             _uiState.update { it.copy(isScanning = false) }
@@ -276,6 +380,16 @@ class BluetoothManager(private val context: Context) {
     fun stopSquadScan() {
         scanStopRunnable?.let { mainHandler.removeCallbacks(it) }
         scanStopRunnable = null
+
+        try {
+            bluetoothAdapter?.cancelDiscovery()
+            classicDiscoveryReceiver?.let {
+                context.unregisterReceiver(it)
+                classicDiscoveryReceiver = null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping classic discovery", e)
+        }
 
         scanCallback?.let {
             try {
@@ -324,7 +438,7 @@ class BluetoothManager(private val context: Context) {
                 squadName = finalSquadName,
                 myUsername = username,
                 members = listOf(hostMember),
-                isBeaconActive = false,
+                isBeaconActive = true,
                 beaconCountdownSeconds = 0,
                 isChannelBusy = false,
                 currentSpeakerId = null,
@@ -334,11 +448,20 @@ class BluetoothManager(private val context: Context) {
 
         stopSquadScan()
         audioPlayer.start()
+        VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+
+        // Automatically start continuous BLE beacon broadcast so client devices can discover this host squad
+        startBleBeacon(finalSquadName, username, timeoutSeconds = 0)
+        addLog("Squad '$finalSquadName' created — broadcasting BLE beacon on-air 📡")
 
         // RFCOMM Audio Server Listener
         acceptThread = Thread {
             try {
-                serverSocket = bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, SQUAD_UUID)
+                serverSocket = try {
+                    bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, SQUAD_UUID)
+                } catch (e1: Exception) {
+                    bluetoothAdapter?.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SQUAD_UUID)
+                }
                 addLog("Squad '$finalSquadName' created (Listening for members)")
 
                 while (!isShuttingDown) {
@@ -365,7 +488,7 @@ class BluetoothManager(private val context: Context) {
 
     // 5-Second "Go Visible" On-Demand Signal Transmission
     @SuppressLint("MissingPermission")
-    fun triggerGoVisible(durationSeconds: Int = 5) {
+    fun triggerGoVisible(durationSeconds: Int = 10) {
         if (!_uiState.value.isHost) return
         stopBleBeacon()
 
@@ -388,6 +511,16 @@ class BluetoothManager(private val context: Context) {
         _events.tryEmit("Shooting signal for ${durationSeconds}s 📡")
 
         startBleBeacon(squadName, username, durationSeconds)
+
+        try {
+            val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, durationSeconds)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(discoverableIntent)
+        } catch (e: Exception) {
+            Log.d(TAG, "Discoverable intent request skipped", e)
+        }
 
         var remaining = durationSeconds
         beaconTimerRunnable = object : Runnable {
@@ -442,8 +575,9 @@ class BluetoothManager(private val context: Context) {
             .setIncludeTxPowerLevel(false)
             .build()
 
-        // Scan Response Data: Secondary packet under 31-byte limit
+        // Scan Response Data: Include device name so scanner matches real Classic device
         val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
             .addServiceData(SQUAD_BEACON_UUID, "$squadName:$username".take(12).toByteArray(Charsets.UTF_8))
             .build()
 
@@ -454,6 +588,10 @@ class BluetoothManager(private val context: Context) {
 
             override fun onStartFailure(errorCode: Int) {
                 Log.e(TAG, "BLE Beacon start failed: $errorCode (1=DATA_TOO_LARGE, 2=TOO_MANY_ADVERTISERS, 3=ALREADY_STARTED, 4=INTERNAL_ERROR)")
+                if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED) {
+                    _uiState.update { it.copy(isBeaconActive = true) }
+                    return
+                }
                 mainHandler.post {
                     beaconTimerRunnable?.let { mainHandler.removeCallbacks(it) }
                     beaconTimerRunnable = null
@@ -521,23 +659,54 @@ class BluetoothManager(private val context: Context) {
 
         ioExecutor.execute {
             try {
+                VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+
                 // Cancel any active Bluetooth discovery to avoid RFCOMM connection failure / high latency
                 bluetoothAdapter?.cancelDiscovery()
 
-                val targetDevice = if (BluetoothAdapter.checkBluetoothAddress(squad.hostAddress)) {
-                    bluetoothAdapter?.getRemoteDevice(squad.hostAddress) ?: squad.device
-                } else {
-                    squad.device
+                // Resolve real Classic Bluetooth device:
+                var targetDevice: BluetoothDevice? = null
+                val hostName = squad.hostUsername
+                val hostDeviceName = squad.device.name ?: ""
+
+                // 1. Check bonded devices first (highest priority)
+                val bonded = bluetoothAdapter?.bondedDevices.orEmpty().find {
+                    it.address.equals(squad.hostAddress, ignoreCase = true) ||
+                    (it.name != null && (it.name.equals(hostDeviceName, ignoreCase = true) || it.name.equals(hostName, ignoreCase = true)))
+                }
+                if (bonded != null) {
+                    targetDevice = bonded
+                    Log.d(TAG, "Resolved target to bonded device: ${bonded.name} (${bonded.address})")
+                }
+
+                // 2. Check classic discovered devices
+                if (targetDevice == null) {
+                    val classic = (if (hostDeviceName.isNotBlank()) classicDevicesByName[hostDeviceName.lowercase()] else null)
+                        ?: classicDevicesByName[hostName.lowercase()]
+                        ?: classicDevicesByAddress[squad.hostAddress.uppercase()]
+                    if (classic != null) {
+                        targetDevice = classic
+                        Log.d(TAG, "Resolved target to classic discovered device: ${classic.name} (${classic.address})")
+                    }
+                }
+
+                // 3. Fallback
+                if (targetDevice == null) {
+                    targetDevice = if (BluetoothAdapter.checkBluetoothAddress(squad.hostAddress)) {
+                        bluetoothAdapter?.getRemoteDevice(squad.hostAddress) ?: squad.device
+                    } else {
+                        squad.device
+                    }
                 }
 
                 val socket = try {
                     targetDevice.createInsecureRfcommSocketToServiceRecord(SQUAD_UUID)
                 } catch (e1: Exception) {
                     try {
+                        targetDevice.createRfcommSocketToServiceRecord(SQUAD_UUID)
+                    } catch (e2: Exception) {
                         val m = targetDevice.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
                         m.invoke(targetDevice, 1) as BluetoothSocket
-                    } catch (e2: Exception) {
-                        targetDevice.createRfcommSocketToServiceRecord(SQUAD_UUID)
                     }
                 }
                 socket.connect()
@@ -962,6 +1131,7 @@ class BluetoothManager(private val context: Context) {
             sendPacketToAll(PKT_LEAVE, payload)
 
             cleanupExistingConnections()
+            isShuttingDown = false
         }
 
         mainHandler.post {

@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var pendingTalkStart = false
 
     // Bluetooth & Wi-Fi Direct Offline Background Service
-    private var offlineService: BluetoothWalkieTalkieService? = null
+    private var offlineService by mutableStateOf<BluetoothWalkieTalkieService?>(null)
     private var isOfflineBound by mutableStateOf(false)
 
     // Session & Auth
@@ -394,10 +394,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val btManager = offlineService?.bluetoothManager
                     val wifiDirectManager = offlineService?.wifiDirectManager
 
-                    val btUiState by (btManager?.uiState ?: remember { MutableStateFlow(BluetoothSquadUiState()) })
-                        .collectAsStateWithLifecycle(initialValue = BluetoothSquadUiState())
-                    val wifiUiState by (wifiDirectManager?.uiState ?: remember { MutableStateFlow(WifiSquadUiState()) })
-                        .collectAsStateWithLifecycle(initialValue = WifiSquadUiState())
+                    val btUiState by remember(btManager) {
+                        btManager?.uiState ?: MutableStateFlow(BluetoothSquadUiState())
+                    }.collectAsStateWithLifecycle(initialValue = BluetoothSquadUiState())
+                    val wifiUiState by remember(wifiDirectManager) {
+                        wifiDirectManager?.uiState ?: MutableStateFlow(WifiSquadUiState())
+                    }.collectAsStateWithLifecycle(initialValue = WifiSquadUiState())
 
                     // UI Ready state sync for offline mesh
                     LaunchedEffect(wifiUiState.connectionState) {
@@ -632,22 +634,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             VoiceQualityEngine.instance.activeTransport = activeType
 
                             if (mode == TransportMode.BLUETOOTH) {
-                                wifiDirectManager?.stopDiscovery()
+                                offlineService?.wifiDirectManager?.stopDiscovery()
                                 if (!isBluetoothEnabled()) {
                                     showBluetoothDialog = true
                                 } else {
-                                    btManager?.startSquadScan()
+                                    if (offlineService == null) {
+                                        startOfflineService()
+                                    }
+                                    offlineService?.bluetoothManager?.startSquadScan()
                                 }
                             } else if (mode == TransportMode.WIFI_DIRECT) {
-                                btManager?.stopSquadScan()
+                                offlineService?.bluetoothManager?.stopSquadScan()
                                 if (!isWifiEnabled()) {
                                     showWifiDialog = true
                                 } else {
-                                    wifiDirectManager?.startDiscovery()
+                                    if (offlineService == null) {
+                                        startOfflineService()
+                                    }
+                                    offlineService?.wifiDirectManager?.startDiscovery()
                                 }
                             } else {
-                                btManager?.stopSquadScan()
-                                wifiDirectManager?.stopDiscovery()
+                                offlineService?.bluetoothManager?.stopSquadScan()
+                                offlineService?.wifiDirectManager?.stopDiscovery()
                             }
                         },
                         onEditCallSign = { showCallSignDialog = true },
@@ -754,25 +762,35 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         },
                         pendingRequests = pendingRequests,
                         onApproveRequest = { req ->
-                            scope.launch(Dispatchers.IO) {
-                                val res = SupabaseRoomManager.approveRequest(req.roomId, req.userId)
-                                if (res is RoomResult.Success) {
-                                    withContext(Dispatchers.Main) {
-                                        notificationQueue.add("✅ Approved ${req.username}")
+                            if (selectedTransportMode == TransportMode.WIFI_DIRECT) {
+                                offlineService?.wifiDirectManager?.approveJoinRequest(req.userId)
+                                notificationQueue.add("✅ Approved ${req.username}")
+                            } else {
+                                scope.launch(Dispatchers.IO) {
+                                    val res = SupabaseRoomManager.approveRequest(req.roomId, req.userId)
+                                    if (res is RoomResult.Success) {
+                                        withContext(Dispatchers.Main) {
+                                            notificationQueue.add("✅ Approved ${req.username}")
+                                        }
+                                        SupabaseRealtimeManager.broadcastRequestApproved(req.roomCode ?: req.roomId, req.userId)
+                                        refreshRoomsAndMembers()
                                     }
-                                    SupabaseRealtimeManager.broadcastRequestApproved(req.roomCode ?: req.roomId, req.userId)
-                                    refreshRoomsAndMembers()
                                 }
                             }
                         },
                         onDeclineRequest = { req ->
-                            scope.launch(Dispatchers.IO) {
-                                val res = SupabaseRoomManager.declineRequest(req.roomId, req.userId)
-                                if (res is RoomResult.Success) {
-                                    withContext(Dispatchers.Main) {
-                                        notificationQueue.add("❌ Declined ${req.username}")
+                            if (selectedTransportMode == TransportMode.WIFI_DIRECT) {
+                                offlineService?.wifiDirectManager?.declineJoinRequest(req.userId)
+                                notificationQueue.add("❌ Declined ${req.username}")
+                            } else {
+                                scope.launch(Dispatchers.IO) {
+                                    val res = SupabaseRoomManager.declineRequest(req.roomId, req.userId)
+                                    if (res is RoomResult.Success) {
+                                        withContext(Dispatchers.Main) {
+                                            notificationQueue.add("❌ Declined ${req.username}")
+                                        }
+                                        refreshRoomsAndMembers()
                                     }
-                                    refreshRoomsAndMembers()
                                 }
                             }
                         },
@@ -813,28 +831,52 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         btUiState = btUiState,
                         wifiUiState = wifiUiState,
                         onStartBtScan = {
-                            if (!isBluetoothEnabled()) showBluetoothDialog = true
-                            else btManager?.startSquadScan()
+                            if (!isBluetoothEnabled()) {
+                                showBluetoothDialog = true
+                            } else {
+                                if (offlineService == null) {
+                                    startOfflineService()
+                                }
+                                offlineService?.bluetoothManager?.startSquadScan()
+                            }
                         },
                         onHostBtSquad = { user, squad ->
-                            if (!isBluetoothEnabled()) showBluetoothDialog = true
-                            else btManager?.hostSquad(user, squad)
+                            if (!isBluetoothEnabled()) {
+                                showBluetoothDialog = true
+                            } else {
+                                if (offlineService == null) {
+                                    startOfflineService()
+                                }
+                                offlineService?.bluetoothManager?.hostSquad(user, squad)
+                            }
                         },
                         onJoinBtSquad = { squad, user ->
-                            if (!isBluetoothEnabled()) showBluetoothDialog = true
-                            else btManager?.joinSquad(squad, user)
+                            if (!isBluetoothEnabled()) {
+                                showBluetoothDialog = true
+                            } else {
+                                if (offlineService == null) {
+                                    startOfflineService()
+                                }
+                                offlineService?.bluetoothManager?.joinSquad(squad, user)
+                            }
                         },
                         onStartWifiScan = {
-                            if (!isWifiEnabled()) showWifiDialog = true
-                            else wifiDirectManager?.startDiscovery()
+                            if (!isWifiEnabled()) {
+                                showWifiDialog = true
+                            } else {
+                                if (offlineService == null) {
+                                    startOfflineService()
+                                }
+                                offlineService?.wifiDirectManager?.startDiscovery()
+                            }
                         },
                         onHostWifiSquad = { user, squad ->
                             if (!isWifiEnabled()) showWifiDialog = true
-                            else wifiDirectManager?.hostSquad(user, squad)
+                            else offlineService?.wifiDirectManager?.hostSquad(user, squad)
                         },
                         onJoinWifiSquad = { squad, user ->
                             if (!isWifiEnabled()) showWifiDialog = true
-                            else wifiDirectManager?.joinSquad(squad, user)
+                            else offlineService?.wifiDirectManager?.joinSquad(squad, user)
                         },
                         onStartTalkOffline = {
                             isManualScreenPttHeld = true
@@ -842,9 +884,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             vibrate()
                             playTone(ToneGenerator.TONE_CDMA_PIP)
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
-                                btManager?.startTalking()
+                                offlineService?.bluetoothManager?.startTalking()
                             } else {
-                                wifiDirectManager?.startTalking()
+                                offlineService?.wifiDirectManager?.startTalking()
                             }
                             offlineService?.updateNotification("Transmitting...")
                         },
@@ -852,9 +894,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             isManualScreenPttHeld = false
                             isUserSpeakingLocalOffline = false
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
-                                btManager?.stopTalking()
+                                offlineService?.bluetoothManager?.stopTalking()
                             } else {
-                                wifiDirectManager?.stopTalking()
+                                offlineService?.wifiDirectManager?.stopTalking()
                             }
                             offlineService?.updateNotification("Ready to talk")
                         },
@@ -862,15 +904,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             isManualScreenPttHeld = false
                             com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             if (selectedTransportMode == TransportMode.BLUETOOTH) {
-                                btManager?.leaveSquad()
+                                offlineService?.bluetoothManager?.leaveSquad()
                             } else {
-                                wifiDirectManager?.leaveSquad()
+                                offlineService?.wifiDirectManager?.leaveSquad()
                             }
                             com.example.walkietalkieapp.audio.VoiceHistoryManager.clearHistory()
                             VoxManager.stop()
                             offlineService?.updateNotification("Squad Talk Ready")
                         },
                         isUserSpeakingOffline = isUserSpeakingLocalOffline,
+                        onTriggerGoVisible = {
+                            offlineService?.bluetoothManager?.triggerGoVisible(10)
+                        },
 
                         // Controls
                         isBatterySaverEnabled = isBatterySaverEnabled,

@@ -87,6 +87,10 @@ fun SquadRoom(
     isE2EActive: Boolean = false,
     e2eFingerprint: String = "",
     onRekeySession: () -> Unit = {},
+    isBeaconActive: Boolean = false,
+    beaconCountdownSeconds: Int = 0,
+    onTriggerGoVisible: () -> Unit = {},
+    isHost: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val currentTheme = ModeThemes.get(mode)
@@ -343,6 +347,53 @@ fun SquadRoom(
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = WalkieTextSecondary
+                    )
+                }
+            }
+
+            // Bluetooth Host: "GET VISIBLE" (Broadcast Beacon) Button
+            if (mode == ConnectivityMode.BLUETOOTH && isHost) {
+                val btColor = Color(0xFF0284C7)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isBeaconActive) btColor.copy(alpha = 0.25f) else btColor.copy(alpha = 0.12f))
+                        .border(1.dp, if (isBeaconActive) btColor else btColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onTriggerGoVisible()
+                        }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (isBeaconActive) btColor else btColor.copy(alpha = 0.4f))
+                        )
+                        Text(
+                            text = if (isBeaconActive) "BEACON ON-AIR • ${beaconCountdownSeconds}s REMAINING" else "GET VISIBLE (BEACON ON DEMAND)",
+                            fontFamily = SpaceGrotesk,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isBeaconActive) Color.White else btColor,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                    Text(
+                        text = if (isBeaconActive) "BROADCASTING ⚡" else "TRANSMIT ↗",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isBeaconActive) btColor else WalkieTextSecondary
                     )
                 }
             }
