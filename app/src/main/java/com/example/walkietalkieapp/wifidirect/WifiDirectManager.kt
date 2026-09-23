@@ -7,8 +7,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.NetworkInfo
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
+import android.os.PowerManager
+import android.provider.Settings
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pDeviceList
@@ -137,8 +143,11 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
     private var clientHandler: TcpPeerConnectionHandler? = null
     private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
 
-    // High Performance WifiLock
+    // High Performance WifiLock & Pixel Auto-Disable Prevention
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Floor Control & Ownership Tracking
     @Volatile var currentFloorHolderId: String? = null
@@ -173,6 +182,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
         addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
         addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+        addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
     }
 
     // =========================================================================
@@ -183,6 +193,20 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
+                WifiManager.WIFI_STATE_CHANGED_ACTION -> {
+                    val wifiState = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
+                    Log.d(TAG, "WIFI_STATE_CHANGED_ACTION: wifiState=$wifiState")
+                    if (wifiState == WifiManager.WIFI_STATE_DISABLED || wifiState == WifiManager.WIFI_STATE_DISABLING) {
+                        Log.w(TAG, "Wi-Fi turned off by system/user! Prompting to re-enable...")
+                        mainHandler.post {
+                            addLog("Wi-Fi turned off. Please keep Wi-Fi on for Walkie Talkie.")
+                            promptEnableWifiIfDisabled()
+                        }
+                    } else if (wifiState == WifiManager.WIFI_STATE_ENABLED) {
+                        Log.d(TAG, "Wi-Fi enabled, acquiring low-latency lock")
+                        acquireWifiLock()
+                    }
+                }
                 WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
                     val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
                     val isEnabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
@@ -270,32 +294,95 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             channel = wifiP2pManager?.initialize(context, Looper.getMainLooper(), null)
         }
         try {
-            context.registerReceiver(receiver, intentFilter)
+            ContextCompat.registerReceiver(context, receiver, intentFilter, ContextCompat.RECEIVER_EXPORTED)
             isReceiverRegistered = true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register receiver", e)
         }
+        acquireWifiLock()
     }
 
     // =========================================================================
-    // HIGH-PERFORMANCE WIFI LOCK (FIX 1B)
+    // HIGH-PERFORMANCE WIFI LOCK & PIXEL KEEP-ALIVE
     // =========================================================================
+    fun promptEnableWifiIfDisabled() {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiManager?.isWifiEnabled == false) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val panelIntent = Intent(Settings.Panel.ACTION_WIFI).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    context.startActivity(panelIntent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifiManager.isWifiEnabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to prompt Wi-Fi enable", e)
+        }
+    }
+
     private fun acquireWifiLock() {
         try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             if (wifiLock == null) {
-                @Suppress("DEPRECATION")
-                wifiLock = wifiManager?.createWifiLock(
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                    "SquadTalk:WifiDirectLock"
-                )
+                val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager?.createWifiLock(lockMode, "SquadTalk:WifiDirectLock")?.apply {
+                    setReferenceCounted(false)
+                }
             }
             if (wifiLock?.isHeld != true) {
                 wifiLock?.acquire()
-                Log.d(TAG, "WifiLock acquired (FULL_HIGH_PERF)")
+                Log.d(TAG, "WifiLock acquired (LOW_LATENCY/HIGH_PERF)")
+            }
+
+            // PowerManager Partial WakeLock to keep Wi-Fi Direct active if screen sleeps
+            val powerManager = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (wakeLock == null) {
+                wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SquadTalk:DirectWakeLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld != true) {
+                wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes timeout, auto-renewed
+                Log.d(TAG, "Partial WakeLock acquired")
+            }
+
+            // NetworkRequest for TRANSPORT_WIFI on Pixel / Android 10+
+            // Tells ConnectivityManager that foreground app actively needs the Wi-Fi interface,
+            // which halts the Pixel OS idle timer that turns off Wi-Fi when not connected to an AP.
+            if (connectivityManager == null) {
+                connectivityManager = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            }
+            if (wifiNetworkCallback == null && connectivityManager != null) {
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .build()
+                val callback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        Log.d(TAG, "ConnectivityManager: Wi-Fi network pinned for P2P/Mesh")
+                    }
+                    override fun onLost(network: Network) {
+                        Log.d(TAG, "ConnectivityManager: Wi-Fi network unpinned")
+                    }
+                }
+                try {
+                    connectivityManager?.requestNetwork(request, callback)
+                    wifiNetworkCallback = callback
+                    Log.d(TAG, "ConnectivityManager: NetworkRequest for TRANSPORT_WIFI registered")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to register NetworkRequest for TRANSPORT_WIFI", e)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to acquire WifiLock", e)
+            Log.w(TAG, "Failed to acquire WifiLock or WakeLock", e)
         }
     }
 
@@ -308,6 +395,26 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             wifiLock = null
         } catch (e: Exception) {
             Log.w(TAG, "Failed to release WifiLock", e)
+        }
+
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d(TAG, "WakeLock released")
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release WakeLock", e)
+        }
+
+        try {
+            wifiNetworkCallback?.let { cb ->
+                connectivityManager?.unregisterNetworkCallback(cb)
+                Log.d(TAG, "NetworkRequest unregistered")
+            }
+            wifiNetworkCallback = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister NetworkCallback", e)
         }
     }
 
@@ -434,6 +541,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         scanStopRunnable = null
 
         isShuttingDown = false
+        acquireWifiLock()
         _uiState.update { it.copy(isScanning = true) }
         addLog("Scanning for on-air Squad signals...")
 
@@ -609,10 +717,14 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
         cleanupLocalSockets()
         isShuttingDown = false
+        acquireWifiLock()
 
         val ch = channel ?: return
         val myId = _uiState.value.myId
         val finalSquadName = squadName.ifBlank { "WIFI-${myId.take(4).uppercase()}" }
+
+        VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+        VoiceQualityEngine.instance.initialize(context, userId = myId)
 
         val hostMember = SquadMember(
             id = myId,
@@ -757,11 +869,15 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         cleanupLocalSockets()
         isShuttingDown = false
         stopDiscovery()
+        acquireWifiLock()
 
         lastJoinedSquad = squad
         lastJoinUsername = username
 
         val myId = _uiState.value.myId
+        VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.WifiDirect
+        VoiceQualityEngine.instance.initialize(context, userId = myId)
+
         val myMember = SquadMember(myId, username, "CLIENT", isSpeaking = false)
 
         _uiState.update {
@@ -1436,6 +1552,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         currentFloorHolderId = null
         isChannelBusy = false
         isLocallyHoldingFloor = false
+        VoiceQualityEngine.instance.stopTransmitting()
         audioRecorder.stop()
         stopDiscovery()
         tcpConnecting.set(false)
@@ -1535,6 +1652,30 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
         @Volatile
         private var isRunning = true
+
+        private val sendQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>(256)
+        private val writerThread = Thread({
+            while (isRunning) {
+                try {
+                    val data = sendQueue.take()
+                    synchronized(writeLock) {
+                        outputStream.write(data)
+                        outputStream.flush()
+                    }
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    if (isRunning) {
+                        Log.e(TAG, "Socket write failed: ${e.message}")
+                        close()
+                    }
+                    break
+                }
+            }
+        }, "TcpWriter-${socket.inetAddress?.hostAddress ?: "peer"}").apply {
+            priority = Thread.NORM_PRIORITY + 1
+            start()
+        }
 
         override fun run() {
             try {
@@ -1874,14 +2015,11 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         }
 
         fun sendBytes(data: ByteArray) {
-            try {
-                synchronized(writeLock) {
-                    outputStream.write(data)
-                    outputStream.flush()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Socket write failed", e)
-                close()
+            if (!isRunning) return
+            // Non-blocking queue insertion: if queue is full, drop oldest voice frame
+            if (!sendQueue.offer(data)) {
+                sendQueue.poll() // drop oldest
+                sendQueue.offer(data)
             }
         }
 
@@ -1914,7 +2052,9 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         }
 
         fun close() {
+            if (!isRunning) return
             isRunning = false
+            writerThread.interrupt()
             outputStream.runCatching { close() }
             inputStream.runCatching { close() }
             socket.runCatching { close() }

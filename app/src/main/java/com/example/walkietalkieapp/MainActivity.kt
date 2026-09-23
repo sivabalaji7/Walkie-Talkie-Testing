@@ -114,7 +114,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 startOfflineService()
-                offlineService?.bluetoothManager?.startSquadScan()
+                if (offlineService?.bluetoothManager?.uiState?.value?.connectionState == "IDLE") {
+                    offlineService?.bluetoothManager?.startSquadScan()
+                }
             }
         }
 
@@ -138,7 +140,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     if (state == BluetoothAdapter.STATE_ON) {
                         showBluetoothDialog = false
                         startOfflineService()
-                        if (selectedTransportMode == TransportMode.BLUETOOTH) {
+                        if (selectedTransportMode == TransportMode.BLUETOOTH &&
+                            offlineService?.bluetoothManager?.uiState?.value?.connectionState == "IDLE") {
                             offlineService?.bluetoothManager?.startSquadScan()
                         }
                     }
@@ -215,7 +218,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             isOfflineBound = true
 
             if (selectedTransportMode == TransportMode.BLUETOOTH) {
-                if (isBluetoothEnabled()) offlineService?.bluetoothManager?.startSquadScan()
+                if (isBluetoothEnabled() && offlineService?.bluetoothManager?.uiState?.value?.connectionState == "IDLE") {
+                    offlineService?.bluetoothManager?.startSquadScan()
+                }
             } else if (selectedTransportMode == TransportMode.WIFI_DIRECT) {
                 if (isWifiEnabled()) offlineService?.wifiDirectManager?.startDiscovery()
             }
@@ -273,7 +278,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
         if (!isSystemReceiverRegistered) {
             try {
-                registerReceiver(systemStateReceiver, filter)
+                ContextCompat.registerReceiver(this, systemStateReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
                 isSystemReceiverRegistered = true
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to register systemStateReceiver", e)

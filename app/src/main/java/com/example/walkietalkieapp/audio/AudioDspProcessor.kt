@@ -178,24 +178,24 @@ class AudioDspProcessor(
         when (profile) {
             EnhancementProfile.MINIMAL -> {
                 useWindCutFilter = false
-                noiseGateThresholdMultiplier = 0f      // no gating
-                spectralSubtractionStrength = 0.3f     // gentle
-                useEq = false
+                noiseGateThresholdMultiplier = 0f      // no harsh gating
+                spectralSubtractionStrength = 0.15f    // very gentle noise reduction
+                useEq = true
                 dynamicMaxGain = 2.0f
             }
             EnhancementProfile.BALANCED -> {
                 useWindCutFilter = false
-                noiseGateThresholdMultiplier = 1.5f    // moderate gate
-                spectralSubtractionStrength = 0.7f     // strong
+                noiseGateThresholdMultiplier = 0f      // no harsh gating (prevents syllable clipping)
+                spectralSubtractionStrength = 0.25f    // smooth background hiss reduction
                 useEq = true
-                dynamicMaxGain = 3.5f
+                dynamicMaxGain = 2.5f
             }
             EnhancementProfile.VOICE_FOCUS -> {
                 useWindCutFilter = true                 // activate 300 Hz wind cut
-                noiseGateThresholdMultiplier = 2.5f    // aggressive gate
-                spectralSubtractionStrength = 0.92f    // very strong
+                noiseGateThresholdMultiplier = 0f      // no harsh gating
+                spectralSubtractionStrength = 0.35f    // clean voice focus
                 useEq = true
-                dynamicMaxGain = 3.0f                  // lower to avoid amplifying residual noise
+                dynamicMaxGain = 2.5f
             }
         }
 
@@ -256,21 +256,10 @@ class AudioDspProcessor(
                 noiseFloorEnergy = 0.9998f * noiseFloorEnergy + 0.0002f * smoothedEnergy
             }
 
-            // Stage 6: Envelope-Based Noise Gate + Spectral Subtraction
-            // Evaluating gate on smoothedEnergy prevents zero-crossing distortion / raspy vocal artifacts
-            val noiseFloorSqrt = sqrt(noiseFloorEnergy)
-            val cleanedSample: Float
-            
-            if (noiseGateThresholdMultiplier > 0f && smoothedEnergy < noiseFloorSqrt * noiseGateThresholdMultiplier) {
-                // Envelope below gate threshold — smooth attenuation without zero-crossing distortion
-                val gateRatio = (smoothedEnergy / (noiseFloorSqrt * noiseGateThresholdMultiplier + 0.0001f)).coerceIn(0.05f, 1f)
-                cleanedSample = lpOut * gateRatio
-            } else {
-                // Above gate — smooth spectral subtraction based on signal-to-noise ratio
-                val noiseRatio = (noiseFloorEnergy / (smoothedEnergy + 0.0001f)).coerceIn(0f, 1f)
-                val attenuation = 1f - (spectralSubtractionStrength * noiseRatio)
-                cleanedSample = lpOut * attenuation.coerceAtLeast(0.1f)
-            }
+            // Stage 6: Smooth Spectral Subtraction (Never hard-gates voice)
+            val noiseRatio = (noiseFloorEnergy / (smoothedEnergy + 0.0001f)).coerceIn(0f, 1f)
+            val attenuation = (1f - (spectralSubtractionStrength * noiseRatio)).coerceIn(0.4f, 1f)
+            val cleanedSample = lpOut * attenuation
 
             // Stage 7: Vocal Amplification (AGC)
             val amplifiedSample = cleanedSample * currentGain

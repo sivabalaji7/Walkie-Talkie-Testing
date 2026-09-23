@@ -1,6 +1,8 @@
 package com.example.walkietalkieapp.audio.engine
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.example.walkietalkieapp.audio.AudioPlayer
 import com.example.walkietalkieapp.audio.AudioRecorder
@@ -242,12 +244,14 @@ class VoiceQualityEngine private constructor() {
     }
 
     // =========================================================================
-    // RECEIVER PIPELINE (Receive -> Jitter Buffer -> Decode -> Playback)
+    // RECEIVER PIPELINE (Instant Direct Decode & Low-Latency Hardware Playback)
     // =========================================================================
     
-    // An independent thread that drains the jitter buffer and plays audio at a steady rate
-    private val playbackExecutor = Executors.newSingleThreadExecutor()
-    private var isPlaying = false
+    private val rxBuffer = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+    private var rxStartTime = 0L
+    private var rxSenderId = "Remote"
+    private var rxTimeoutRunnable: Runnable? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Called by Bluetooth/WifiDirect transports when a VoicePacket arrives.
@@ -255,69 +259,59 @@ class VoiceQualityEngine private constructor() {
      */
     fun onPacketReceived(packet: VoicePacket) {
         if (activeTransport == TransportType.Internet) return // Ignore local packets if internet is active
-        
-        jitterBuffer.push(packet)
-        currentState = VoiceQualityState.RECEIVING
-        startJitterDrainerIfNeeded()
-    }
 
-    private fun startJitterDrainerIfNeeded() {
-        if (isPlaying) return
-        isPlaying = true
+        if (currentState != VoiceQualityState.RECEIVING) {
+            currentState = VoiceQualityState.RECEIVING
+            rxStartTime = System.currentTimeMillis()
+            rxBuffer.clear()
+        }
 
-        playbackExecutor.execute {
-            Log.d(TAG, "Jitter buffer drainer started.")
-            var consecutiveEmptyFrames = 0
-            val rxBuffer = mutableListOf<ByteArray>()
-            val rxStartTime = System.currentTimeMillis()
-            var currentSenderId = "Remote"
-            while (isPlaying && currentState == VoiceQualityState.RECEIVING) {
-                val packet = jitterBuffer.poll()
-                
-                if (packet != null) {
-                    consecutiveEmptyFrames = 0
-                    if (packet.senderId.isNotBlank()) currentSenderId = packet.senderId
-                    if (packet.payload.isNotEmpty()) {
-                        // 1. Decode G.711 to PCM
-                        val pcm = G711Codec.decode(packet.payload)
-                        rxBuffer.add(pcm)
-                        // 2. Play
-                        audioPlayer?.play(pcm)
-                    }
-                    if (packet.isFinalFrame) {
-                        Log.d(TAG, "Final frame drained from jitter buffer. Transmission cleanly completed.")
-                        currentState = VoiceQualityState.IDLE
-                        commitRemoteOfflineTransmission(currentSenderId, rxBuffer, rxStartTime)
-                        break
-                    }
-                } else {
-                    consecutiveEmptyFrames++
-                    if (consecutiveEmptyFrames > 15) { // 600ms of sustained silence / empty buffer
-                        Log.d(TAG, "Drainer timeout (600ms silence). Returning to IDLE.")
-                        currentState = VoiceQualityState.IDLE
-                        commitRemoteOfflineTransmission(currentSenderId, rxBuffer, rxStartTime)
-                        break
-                    }
-                    val silence = ByteArray(1280) // 40ms of 16kHz silence
-                    audioPlayer?.play(silence)
-                }
+        if (packet.senderId.isNotBlank()) rxSenderId = packet.senderId
 
-                // Sleep for the exact duration of one frame (40ms) to maintain smooth temporal continuity
-                try {
-                    Thread.sleep(40)
-                } catch (e: InterruptedException) {
-                    break
-                }
+        if (packet.payload.isNotEmpty()) {
+            // 1. Instantly decode G.711 to PCM with zero jitter buffer delay
+            val pcm = G711Codec.decode(packet.payload)
+            // 2. Play immediately into low-latency AudioTrack
+            audioPlayer?.play(pcm)
+            // 3. Collect for offline blackbox history reel
+            rxBuffer.add(pcm)
+        }
+
+        // Reset inactivity watchdog timer (500ms without packet concludes transmission)
+        rxTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        rxTimeoutRunnable = Runnable {
+            if (currentState == VoiceQualityState.RECEIVING) {
+                currentState = VoiceQualityState.IDLE
+                finalizeRemoteTransmission()
             }
-            isPlaying = false
-            Log.d(TAG, "Jitter buffer drainer stopped.")
+        }
+        mainHandler.postDelayed(rxTimeoutRunnable!!, 500L)
+
+        if (packet.isFinalFrame) {
+            rxTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            rxTimeoutRunnable = null
+            currentState = VoiceQualityState.IDLE
+            finalizeRemoteTransmission()
         }
     }
 
+    private fun finalizeRemoteTransmission() {
+        val chunks = synchronized(rxBuffer) {
+            val list = rxBuffer.toList()
+            rxBuffer.clear()
+            list
+        }
+        if (chunks.isNotEmpty()) {
+            commitRemoteOfflineTransmission(rxSenderId, chunks, rxStartTime)
+        }
+        audioPlayer?.resetPrebuffering()
+    }
+
     fun release() {
+        rxTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        rxTimeoutRunnable = null
         audioRecorder?.release()
         audioPlayer?.release()
-        playbackExecutor.shutdownNow()
         jitterBuffer.reset()
     }
 }

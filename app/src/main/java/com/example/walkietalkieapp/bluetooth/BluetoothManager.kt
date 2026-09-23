@@ -2,6 +2,7 @@ package com.example.walkietalkieapp.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
@@ -19,6 +20,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -50,7 +52,8 @@ data class DiscoveredSquad(
     val hostAddress: String,
     val rssi: Int,
     val device: BluetoothDevice,
-    val lastSeenTimestamp: Long = System.currentTimeMillis()
+    val lastSeenTimestamp: Long = System.currentTimeMillis(),
+    val hostDeviceName: String = ""
 )
 
 data class SquadMember(
@@ -84,8 +87,9 @@ class BluetoothManager(private val context: Context) {
     private val TAG = "BluetoothManager"
     private val SERVICE_NAME = "SquadTalkMesh"
 
-    // Universal 128-bit Serial Port Profile (SPP) UUID recognized natively by Android RFCOMM
-    private val SQUAD_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    // Dedicated WalkieX 128-bit insecure RFCOMM UUID (prevents Android system SPP collisions)
+    private val SQUAD_UUID: UUID = UUID.fromString("fa87c0d0-afac-11de-8a39-0800200c9a66")
+    private val SPP_FALLBACK_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
     // Classic Bluetooth device caches to bridge BLE advertising to Classic BR/EDR RFCOMM sockets
     private val classicDevicesByName = ConcurrentHashMap<String, BluetoothDevice>()
@@ -117,11 +121,91 @@ class BluetoothManager(private val context: Context) {
 
     private var bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
 
+    @Volatile private var pendingBondLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var pendingBondAddress: String? = null
+    private var isPairingReceiverRegistered = false
+
+    private val pairingReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BluetoothDevice.ACTION_PAIRING_REQUEST -> {
+                    val dev = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    val variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, -1)
+                    val key = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_KEY, -1)
+                    Log.d(TAG, "ACTION_PAIRING_REQUEST received for ${dev?.address}, variant=$variant, key=$key")
+                    try {
+                        if (key != -1 && dev != null) {
+                            try {
+                                dev.setPin(key.toString().toByteArray(Charsets.UTF_8))
+                            } catch (_: Exception) {}
+                        }
+                        dev?.setPairingConfirmation(true)
+                        try {
+                            val m = dev?.javaClass?.getMethod("setPairingConfirmation", Boolean::class.javaPrimitiveType)
+                            m?.invoke(dev, true)
+                        } catch (_: Exception) {}
+                        abortBroadcast()
+                        Log.d(TAG, "Auto-confirmed Bluetooth pairing request for ${dev?.address}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not auto-confirm pairing request", e)
+                    }
+                }
+                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+                    val dev = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    Log.d(TAG, "Bond state changed for ${dev?.address}: state=$state")
+                    if (state == BluetoothDevice.BOND_BONDED && dev != null) {
+                        addLog("Paired automatically with ${dev.name ?: dev.address}")
+                        pendingBondLatch?.countDown()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun registerPairingReceiver() {
+        if (!isPairingReceiverRegistered) {
+            try {
+                val filter = IntentFilter().apply {
+                    addAction(BluetoothDevice.ACTION_PAIRING_REQUEST)
+                    addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+                    priority = IntentFilter.SYSTEM_HIGH_PRIORITY
+                }
+                ContextCompat.registerReceiver(context, pairingReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+                isPairingReceiverRegistered = true
+                Log.d(TAG, "Pairing receiver registered successfully with RECEIVER_EXPORTED")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not register pairing receiver", e)
+            }
+        }
+    }
+
+    private fun unregisterPairingReceiver() {
+        if (isPairingReceiverRegistered) {
+            try {
+                context.unregisterReceiver(pairingReceiver)
+            } catch (_: Exception) {}
+            isPairingReceiverRegistered = false
+        }
+    }
+
     init {
         // Wire the engine to transmit packets over Bluetooth when on the local mesh
         VoiceQualityEngine.instance.onTransmitBluetoothPacket = { packet ->
             broadcastVoicePacket(packet)
         }
+        registerPairingReceiver()
     }
 
     private val _uiState = MutableStateFlow(BluetoothSquadUiState())
@@ -132,6 +216,7 @@ class BluetoothManager(private val context: Context) {
 
     // Host Server & BLE Advertiser State
     private var serverSocket: BluetoothServerSocket? = null
+    private val serverSockets = java.util.concurrent.CopyOnWriteArrayList<BluetoothServerSocket>()
     private var acceptThread: Thread? = null
     private val clientHandlers = ConcurrentHashMap<String, PeerConnectionHandler>()
     private var bleAdvertiser: BluetoothLeAdvertiser? = null
@@ -168,6 +253,11 @@ class BluetoothManager(private val context: Context) {
     // =========================================================================
     @SuppressLint("MissingPermission")
     fun startSquadScan() {
+        if (_uiState.value.connectionState != "IDLE") {
+            Log.d(TAG, "Ignoring startSquadScan() while squad connectionState=${_uiState.value.connectionState}")
+            return
+        }
+
         val now = System.currentTimeMillis()
         if (now - lastScanStartTime < 1500 && _uiState.value.isScanning) {
             return
@@ -224,7 +314,7 @@ class BluetoothManager(private val context: Context) {
             }
             try {
                 val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
-                context.registerReceiver(classicDiscoveryReceiver, filter)
+                ContextCompat.registerReceiver(context, classicDiscoveryReceiver!!, filter, ContextCompat.RECEIVER_EXPORTED)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to register classicDiscoveryReceiver", e)
             }
@@ -284,7 +374,6 @@ class BluetoothManager(private val context: Context) {
 
                         val hostBtName = scanRecord.deviceName ?: result.device.name ?: ""
 
-                        // Resolve real Classic Bluetooth device from bonded or discovered classic devices
                         val classicDevice = (if (hostBtName.isNotBlank()) classicDevicesByName[hostBtName.lowercase()] else null)
                             ?: classicDevicesByName[hostUser.lowercase()]
                             ?: classicDevicesByAddress[result.device.address.uppercase()]
@@ -302,7 +391,8 @@ class BluetoothManager(private val context: Context) {
                             hostAddress = finalAddress,
                             rssi = result.rssi,
                             device = finalDevice,
-                            lastSeenTimestamp = System.currentTimeMillis()
+                            lastSeenTimestamp = System.currentTimeMillis(),
+                            hostDeviceName = hostBtName
                         )
 
                         addDiscoveredSquad(discovered)
@@ -310,35 +400,18 @@ class BluetoothManager(private val context: Context) {
                     }
                 }
 
-                // Check 2: Service Data fallback (0xFA87)
-                val serviceData = scanRecord.getServiceData(SQUAD_BEACON_UUID)
-                if (serviceData != null && serviceData.isNotEmpty()) {
-                    val info = String(serviceData, Charsets.UTF_8)
-                    val parts = info.split(":")
-                    val squadName = if (parts.isNotEmpty()) parts[0] else "Squad"
-                    val hostUser = if (parts.size > 1) parts[1] else "Host"
-
-                    val hostBtName = scanRecord.deviceName ?: result.device.name ?: ""
-                    val classicDevice = (if (hostBtName.isNotBlank()) classicDevicesByName[hostBtName.lowercase()] else null)
-                        ?: classicDevicesByName[hostUser.lowercase()]
-                        ?: classicDevicesByAddress[result.device.address.uppercase()]
-                        ?: adapter.bondedDevices.orEmpty().find {
-                            (it.name != null && (it.name.equals(hostBtName, ignoreCase = true) || it.name.equals(hostUser, ignoreCase = true))) ||
-                            it.address.equals(result.device.address, ignoreCase = true)
-                        }
-
-                    val finalDevice = classicDevice ?: result.device
-                    val finalAddress = classicDevice?.address ?: result.device.address
-
+                // Check 2: Device name matching if broadcasted
+                val devName = scanRecord.deviceName ?: result.device.name ?: ""
+                if (devName.startsWith("SQUAD-") || devName.contains("Squad", ignoreCase = true)) {
                     val discovered = DiscoveredSquad(
-                        squadName = squadName.ifBlank { "Squad" },
-                        hostUsername = hostUser.ifBlank { "Host" },
-                        hostAddress = finalAddress,
+                        squadName = devName,
+                        hostUsername = "Host",
+                        hostAddress = result.device.address,
                         rssi = result.rssi,
-                        device = finalDevice,
-                        lastSeenTimestamp = System.currentTimeMillis()
+                        device = result.device,
+                        lastSeenTimestamp = System.currentTimeMillis(),
+                        hostDeviceName = devName
                     )
-
                     addDiscoveredSquad(discovered)
                 }
             }
@@ -404,7 +477,10 @@ class BluetoothManager(private val context: Context) {
 
     private fun addDiscoveredSquad(squad: DiscoveredSquad) {
         _uiState.update { state ->
-            val existingIndex = state.discoveredSquads.indexOfFirst { it.hostAddress == squad.hostAddress }
+            val existingIndex = state.discoveredSquads.indexOfFirst {
+                it.hostAddress.equals(squad.hostAddress, ignoreCase = true) ||
+                (it.squadName.equals(squad.squadName, ignoreCase = true) && it.hostUsername.equals(squad.hostUsername, ignoreCase = true))
+            }
             val updated = if (existingIndex >= 0) {
                 state.discoveredSquads.toMutableList().apply { set(existingIndex, squad) }
             } else {
@@ -454,43 +530,62 @@ class BluetoothManager(private val context: Context) {
         startBleBeacon(finalSquadName, username, timeoutSeconds = 0)
         addLog("Squad '$finalSquadName' created — broadcasting BLE beacon on-air 📡")
 
-        // RFCOMM Audio Server Listener
-        acceptThread = Thread {
-            try {
-                serverSocket = try {
-                    bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, SQUAD_UUID)
-                } catch (e1: Exception) {
-                    bluetoothAdapter?.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SQUAD_UUID)
-                }
-                addLog("Squad '$finalSquadName' created (Listening for members)")
-
-                while (!isShuttingDown) {
-                    val socket = serverSocket?.accept() ?: break
-                    if (isShuttingDown) {
-                        socket.close()
-                        break
+        // RFCOMM Audio Server Listener - Listen on both SQUAD_UUID and SPP_FALLBACK_UUID concurrently
+        val uuidsToListen = listOf(SQUAD_UUID, SPP_FALLBACK_UUID)
+        for (uuid in uuidsToListen) {
+            Thread {
+                var sSocket: BluetoothServerSocket? = null
+                try {
+                    sSocket = try {
+                        bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, uuid)
+                    } catch (e1: Exception) {
+                        bluetoothAdapter?.listenUsingRfcommWithServiceRecord(SERVICE_NAME, uuid)
                     }
-                    Log.d(TAG, "Host accepted incoming connection from: ${socket.remoteDevice?.address}")
-                    val peerHandler = PeerConnectionHandler(socket, isHostSide = true)
-                    peerHandler.start()
+                    if (sSocket != null) {
+                        serverSockets.add(sSocket)
+                        Log.d(TAG, "Host listening on RFCOMM service: $uuid")
+
+                        while (!isShuttingDown) {
+                            val socket = try {
+                                sSocket.accept() ?: break
+                            } catch (acceptEx: Exception) {
+                                if (isShuttingDown) break
+                                Log.w(TAG, "Host accept glitch on $uuid: ${acceptEx.message}")
+                                Thread.sleep(300L)
+                                continue
+                            }
+                            if (isShuttingDown) {
+                                socket.close()
+                                break
+                            }
+                            Log.d(TAG, "Host accepted incoming connection on $uuid from: ${socket.remoteDevice?.address}")
+                            val peerHandler = PeerConnectionHandler(socket, isHostSide = true)
+                            peerHandler.start()
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (!isShuttingDown) {
+                        Log.w(TAG, "Host listener for $uuid ended", e)
+                    }
+                } finally {
+                    sSocket?.runCatching { close() }
+                    if (sSocket != null) serverSockets.remove(sSocket)
                 }
-            } catch (e: Exception) {
-                if (!isShuttingDown) {
-                    Log.e(TAG, "Host accept thread terminated", e)
-                    addLog("Host listener stopped")
-                }
+            }.apply {
+                name = "SquadHostListener-$uuid"
+                start()
             }
-        }.apply {
-            name = "SquadHostAcceptThread"
-            start()
         }
+        addLog("Squad '$finalSquadName' created (Listening on air)")
     }
 
-    // 5-Second "Go Visible" On-Demand Signal Transmission
+    // On-Demand "Go Visible" Signal Transmission (boosts beacon visibility without leaving app)
     @SuppressLint("MissingPermission")
     fun triggerGoVisible(durationSeconds: Int = 10) {
         if (!_uiState.value.isHost) return
-        stopBleBeacon()
+
+        beaconTimerRunnable?.let { mainHandler.removeCallbacks(it) }
+        beaconTimerRunnable = null
 
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
@@ -510,17 +605,8 @@ class BluetoothManager(private val context: Context) {
         addLog("Transmitting 'Hello Hello' signal on air for ${durationSeconds}s 📡")
         _events.tryEmit("Shooting signal for ${durationSeconds}s 📡")
 
+        // Boost advertising to high frequency
         startBleBeacon(squadName, username, durationSeconds)
-
-        try {
-            val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
-                putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, durationSeconds)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            context.startActivity(discoverableIntent)
-        } catch (e: Exception) {
-            Log.d(TAG, "Discoverable intent request skipped", e)
-        }
 
         var remaining = durationSeconds
         beaconTimerRunnable = object : Runnable {
@@ -531,8 +617,13 @@ class BluetoothManager(private val context: Context) {
                     mainHandler.postDelayed(this, 1000)
                 } else {
                     _uiState.update { it.copy(isBeaconActive = false, beaconCountdownSeconds = 0) }
-                    stopBleBeacon()
-                    addLog("Signal broadcast ended (Still listening for join)")
+                    if (_uiState.value.isHost) {
+                        // Keep continuous beacon running in background for incoming joins
+                        startBleBeacon(squadName, username, timeoutSeconds = 0)
+                    } else {
+                        stopBleBeacon()
+                    }
+                    addLog("High-power broadcast ended (Still listening for join)")
                 }
             }
         }
@@ -548,6 +639,15 @@ class BluetoothManager(private val context: Context) {
             return
         }
 
+        // Safely stop previous advertisement callback before starting a new one
+        val oldCallback = advertiseCallback
+        if (oldCallback != null) {
+            try {
+                advertiser.stopAdvertising(oldCallback)
+            } catch (ignored: Exception) {}
+            advertiseCallback = null
+        }
+
         bleAdvertiser = advertiser
 
         val settings = AdvertiseSettings.Builder()
@@ -557,7 +657,7 @@ class BluetoothManager(private val context: Context) {
             .setTimeout(0) // Let mainHandler manage timer
             .build()
 
-        val squadBytes = squadName.take(10).toByteArray(Charsets.UTF_8)
+        val squadBytes = squadName.take(8).toByteArray(Charsets.UTF_8)
         val userBytes = username.take(6).toByteArray(Charsets.UTF_8)
 
         val payload = ByteArray(3 + squadBytes.size + userBytes.size).apply {
@@ -568,20 +668,19 @@ class BluetoothManager(private val context: Context) {
             System.arraycopy(userBytes, 0, this, 3 + squadBytes.size, userBytes.size)
         }
 
-        // Primary Advertisement Data: Keep strictly under 31-byte limit
+        // Primary Advertisement Data: Strict limit 31 bytes (here 2+2+3+8+6 = 21 bytes, guaranteed safe)
         val data = AdvertiseData.Builder()
             .addManufacturerData(SQUAD_MANUFACTURER_ID, payload)
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
 
-        // Scan Response Data: Include device name so scanner matches real Classic device
+        // Scan response: only include device name (never exceeds 31 bytes)
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
-            .addServiceData(SQUAD_BEACON_UUID, "$squadName:$username".take(12).toByteArray(Charsets.UTF_8))
             .build()
 
-        advertiseCallback = object : AdvertiseCallback() {
+        val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
                 Log.d(TAG, "BLE Beacon shooting on air for ${timeoutSeconds}s: $squadName")
             }
@@ -592,23 +691,37 @@ class BluetoothManager(private val context: Context) {
                     _uiState.update { it.copy(isBeaconActive = true) }
                     return
                 }
+                if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                    // Fallback to data-only without scanResponse
+                    try {
+                        advertiser.startAdvertising(settings, data, null, this)
+                        Log.d(TAG, "BLE Beacon active with data-only fallback")
+                        return
+                    } catch (ignored: Exception) {}
+                }
                 mainHandler.post {
                     beaconTimerRunnable?.let { mainHandler.removeCallbacks(it) }
                     beaconTimerRunnable = null
                     _uiState.update { it.copy(isBeaconActive = false, beaconCountdownSeconds = 0) }
-                    addLog("Beacon failed to broadcast (code $errorCode)")
+                    addLog("Beacon error (code $errorCode)")
                 }
             }
         }
+        advertiseCallback = callback
 
         try {
-            advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
+            advertiser.startAdvertising(settings, data, scanResponse, callback)
         } catch (e: Exception) {
-            Log.e(TAG, "Exception starting BLE advertisement", e)
-            mainHandler.post {
-                beaconTimerRunnable?.let { mainHandler.removeCallbacks(it) }
-                beaconTimerRunnable = null
-                _uiState.update { it.copy(isBeaconActive = false, beaconCountdownSeconds = 0) }
+            Log.w(TAG, "Exception starting with scanResponse, falling back to data-only", e)
+            try {
+                advertiser.startAdvertising(settings, data, null, callback)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fatal error starting BLE advertisement", e2)
+                mainHandler.post {
+                    beaconTimerRunnable?.let { mainHandler.removeCallbacks(it) }
+                    beaconTimerRunnable = null
+                    _uiState.update { it.copy(isBeaconActive = false, beaconCountdownSeconds = 0) }
+                }
             }
         }
     }
@@ -636,6 +749,11 @@ class BluetoothManager(private val context: Context) {
     // =========================================================================
     @SuppressLint("MissingPermission")
     fun joinSquad(squad: DiscoveredSquad, username: String) {
+        if (_uiState.value.connectionState == "CONNECTING") {
+            Log.d(TAG, "Already connecting, ignoring duplicate join request")
+            return
+        }
+
         cleanupExistingConnections()
         isShuttingDown = false
         stopSquadScan()
@@ -663,53 +781,154 @@ class BluetoothManager(private val context: Context) {
 
                 // Cancel any active Bluetooth discovery to avoid RFCOMM connection failure / high latency
                 bluetoothAdapter?.cancelDiscovery()
+                try { Thread.sleep(150L) } catch (_: Exception) {}
 
                 // Resolve real Classic Bluetooth device:
                 var targetDevice: BluetoothDevice? = null
+                val hostAddress = squad.hostAddress
                 val hostName = squad.hostUsername
-                val hostDeviceName = squad.device.name ?: ""
+                val hostDeviceName = squad.hostDeviceName.ifBlank { squad.device.name ?: "" }
 
-                // 1. Check bonded devices first (highest priority)
-                val bonded = bluetoothAdapter?.bondedDevices.orEmpty().find {
-                    it.address.equals(squad.hostAddress, ignoreCase = true) ||
-                    (it.name != null && (it.name.equals(hostDeviceName, ignoreCase = true) || it.name.equals(hostName, ignoreCase = true)))
+                // 1. Bonded devices (exact address or name match only)
+                val bonded = bluetoothAdapter?.bondedDevices.orEmpty().find { b ->
+                    b.address.equals(hostAddress, ignoreCase = true) ||
+                    (hostDeviceName.isNotBlank() && (b.name?.equals(hostDeviceName, ignoreCase = true) == true || hostDeviceName.contains(b.name ?: "###", ignoreCase = true) || (b.name != null && b.name.contains(hostDeviceName, ignoreCase = true)))) ||
+                    (b.name != null && (b.name.contains(hostName, ignoreCase = true) || hostName.contains(b.name, ignoreCase = true)))
                 }
+
                 if (bonded != null) {
                     targetDevice = bonded
                     Log.d(TAG, "Resolved target to bonded device: ${bonded.name} (${bonded.address})")
                 }
 
-                // 2. Check classic discovered devices
+                // 2. Classic scan cache
                 if (targetDevice == null) {
                     val classic = (if (hostDeviceName.isNotBlank()) classicDevicesByName[hostDeviceName.lowercase()] else null)
                         ?: classicDevicesByName[hostName.lowercase()]
-                        ?: classicDevicesByAddress[squad.hostAddress.uppercase()]
+                        ?: classicDevicesByAddress[hostAddress.uppercase()]
                     if (classic != null) {
                         targetDevice = classic
                         Log.d(TAG, "Resolved target to classic discovered device: ${classic.name} (${classic.address})")
                     }
                 }
 
-                // 3. Fallback
+                // 3. Fallback: remote device by address or BLE device
                 if (targetDevice == null) {
-                    targetDevice = if (BluetoothAdapter.checkBluetoothAddress(squad.hostAddress)) {
-                        bluetoothAdapter?.getRemoteDevice(squad.hostAddress) ?: squad.device
+                    targetDevice = if (BluetoothAdapter.checkBluetoothAddress(hostAddress)) {
+                        bluetoothAdapter?.getRemoteDevice(hostAddress) ?: squad.device
                     } else {
                         squad.device
                     }
                 }
 
-                val socket = try {
-                    targetDevice.createInsecureRfcommSocketToServiceRecord(SQUAD_UUID)
-                } catch (e1: Exception) {
+                var dev = targetDevice!!
+                Log.d(TAG, "Connecting to target device: ${dev.name} (${dev.address}), bondState=${dev.bondState}")
+
+                // Auto-Pairing Phase: If not already bonded, trigger background auto-pairing
+                if (dev.bondState != BluetoothDevice.BOND_BONDED) {
+                    addLog("Auto-pairing with host ${squad.hostUsername}...")
+                    _events.tryEmit("Auto-pairing with host...")
+
+                    registerPairingReceiver()
+
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    pendingBondLatch = latch
+                    pendingBondAddress = dev.address
+
                     try {
-                        targetDevice.createRfcommSocketToServiceRecord(SQUAD_UUID)
-                    } catch (e2: Exception) {
-                        val m = targetDevice.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
-                        m.invoke(targetDevice, 1) as BluetoothSocket
+                        val bondInitiated = dev.createBond()
+                        Log.d(TAG, "createBond called on ${dev.address}, initiated=$bondInitiated")
+                        // Wait up to 5 seconds for automatic pairing handshake to complete
+                        latch.await(5000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Auto-pairing wait interrupted", e)
+                    } finally {
+                        pendingBondLatch = null
+                        pendingBondAddress = null
+                    }
+
+                    // Re-resolve target device from bonded devices now that bond completed
+                    val freshlyBonded = bluetoothAdapter?.bondedDevices.orEmpty().find { b ->
+                        b.address.equals(dev.address, ignoreCase = true) ||
+                        (hostDeviceName.isNotBlank() && b.name?.equals(hostDeviceName, ignoreCase = true) == true) ||
+                        (b.name != null && b.name.contains(hostName, ignoreCase = true))
+                    }
+                    if (freshlyBonded != null) {
+                        dev = freshlyBonded
+                        Log.d(TAG, "Using newly bonded device: ${dev.name} (${dev.address})")
                     }
                 }
-                socket.connect()
+
+                // Ensure pairing receiver stays active for any subsequent handshakes
+                registerPairingReceiver()
+
+                // Cancel discovery before RFCOMM socket connects to allocate full radio bandwidth
+                bluetoothAdapter?.cancelDiscovery()
+
+                var socket: BluetoothSocket? = null
+                var lastEx: Exception? = null
+
+                // Strategy 1: Insecure RFCOMM with SQUAD_UUID (fast timeout 2.5s)
+                try {
+                    val s = dev.createInsecureRfcommSocketToServiceRecord(SQUAD_UUID)
+                    if (connectWithTimeout(s, 2500L)) {
+                        socket = s
+                        Log.d(TAG, "Connected via SQUAD_UUID insecure")
+                    }
+                } catch (e: Exception) {
+                    lastEx = e
+                }
+
+                // Strategy 2: Insecure RFCOMM with SPP_FALLBACK_UUID (fast timeout 2.5s)
+                if (socket == null) {
+                    try {
+                        val s = dev.createInsecureRfcommSocketToServiceRecord(SPP_FALLBACK_UUID)
+                        if (connectWithTimeout(s, 2500L)) {
+                            socket = s
+                            Log.d(TAG, "Connected via SPP_FALLBACK_UUID insecure")
+                        }
+                    } catch (e: Exception) {
+                        lastEx = e
+                    }
+                }
+
+                // Strategy 3: Raw RFCOMM reflection channel 1 (fast timeout 2.5s)
+                if (socket == null) {
+                    try {
+                        val m = dev.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+                        val s = m.invoke(dev, 1) as BluetoothSocket
+                        if (connectWithTimeout(s, 2500L)) {
+                            socket = s
+                            Log.d(TAG, "Connected via reflection channel 1")
+                        }
+                    } catch (e: Exception) {
+                        lastEx = e
+                    }
+                }
+
+                // Strategy 4: Secure RFCOMM with SQUAD_UUID (fast timeout 2.5s)
+                if (socket == null) {
+                    try {
+                        val s = dev.createRfcommSocketToServiceRecord(SQUAD_UUID)
+                        if (connectWithTimeout(s, 2500L)) {
+                            socket = s
+                            Log.d(TAG, "Connected via SQUAD_UUID secure")
+                        }
+                    } catch (e: Exception) {
+                        lastEx = e
+                    }
+                }
+
+                if (socket == null) {
+                    if (dev.bondState != BluetoothDevice.BOND_BONDED) {
+                        addLog("Pairing required. If prompted on screen, tap 'Pair' and join again.")
+                        _events.tryEmit("Tap 'Pair' if prompted, then tap Join")
+                    } else {
+                        addLog("Host busy or RFCOMM not responding. Tap 'Get Visible' on Host phone, then try again.")
+                        _events.tryEmit("Tap 'Get Visible' on Host phone, then try again")
+                    }
+                    throw lastEx ?: Exception("Connection timeout — Host RFCOMM not ready")
+                }
 
                 audioPlayer.start()
                 clientSocket = socket
@@ -719,15 +938,35 @@ class BluetoothManager(private val context: Context) {
                 handler.start()
 
                 handler.sendJoinRequest(myId, username)
-                addLog("Connected to ${squad.hostUsername}, waiting for admission...")
+                addLog("Connected to ${squad.hostUsername}, synchronizing...")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to connect to squad", e)
-                addLog("Connection failed: ${e.localizedMessage}")
+                addLog("Join failed: ${e.localizedMessage}")
                 mainHandler.post {
                     _uiState.update { it.copy(connectionState = "IDLE") }
                 }
                 closeClientSocket()
             }
+        }
+    }
+
+    private fun connectWithTimeout(socket: BluetoothSocket, timeoutMs: Long = 2500L): Boolean {
+        val exec = Executors.newSingleThreadExecutor()
+        val future = exec.submit(java.util.concurrent.Callable {
+            try {
+                socket.connect()
+                true
+            } catch (_: Exception) {
+                false
+            }
+        })
+        return try {
+            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+            socket.runCatching { close() }
+            false
+        } finally {
+            exec.shutdownNow()
         }
     }
 
@@ -1104,6 +1343,8 @@ class BluetoothManager(private val context: Context) {
         isChannelBusy = false
         isLocallyHoldingFloor = false
 
+        serverSockets.forEach { it.runCatching { close() } }
+        serverSockets.clear()
         serverSocket?.runCatching { close() }
         serverSocket = null
         acceptThread = null
@@ -1161,6 +1402,7 @@ class BluetoothManager(private val context: Context) {
     }
 
     fun release() {
+        unregisterPairingReceiver()
         leaveSquad()
         audioPlayer.release()
         audioRecorder.release()

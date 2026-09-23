@@ -16,4 +16,8 @@
 Frontend/
 .cxx
 local.properties
+*.apk
+*.zip
+scripts/
+showcase/
 

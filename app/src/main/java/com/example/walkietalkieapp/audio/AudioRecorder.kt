@@ -21,8 +21,10 @@ class AudioRecorder {
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT
     )
-    // 1280 bytes = 640 samples = 40ms of 16kHz 16-bit audio
-    private val bufferSize = if (minBufferSize > 0) minBufferSize.coerceAtLeast(1280) else 1280
+    // Hardware AudioRecord ring buffer size
+    private val bufferSize = if (minBufferSize > 0) minBufferSize.coerceAtLeast(2560) else 2560
+    // Real-time frame size: 1280 bytes = 640 samples = 40ms of 16kHz 16-bit audio
+    private val frameSizeBytes = 1280
 
     @Volatile
     private var isRecording = false
@@ -65,7 +67,7 @@ class AudioRecorder {
 
         recordingThread = Thread {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            val buffer = ByteArray(bufferSize)
+            val buffer = ByteArray(frameSizeBytes)
             while (isRecording) {
                 val read = activeRecorder.read(buffer, 0, buffer.size)
                 if (read > 0 && isRecording) {
