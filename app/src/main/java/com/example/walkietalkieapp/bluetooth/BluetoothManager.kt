@@ -245,7 +245,8 @@ class BluetoothManager(private val context: Context) {
     @Volatile
     private var isShuttingDown = false
 
-    val audioPlayer = AudioPlayer(context)
+    val audioPlayer: AudioPlayer
+        get() = VoiceQualityEngine.instance.getOrCreateAudioPlayer(context)
     private val audioRecorder = AudioRecorder()
 
     // =========================================================================
@@ -523,8 +524,9 @@ class BluetoothManager(private val context: Context) {
         }
 
         stopSquadScan()
-        audioPlayer.start()
         VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+        VoiceQualityEngine.instance.initialize(context, userId = myId)
+        audioPlayer.start()
 
         // Automatically start continuous BLE beacon broadcast so client devices can discover this host squad
         startBleBeacon(finalSquadName, username, timeoutSeconds = 0)
@@ -778,6 +780,7 @@ class BluetoothManager(private val context: Context) {
         ioExecutor.execute {
             try {
                 VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+                VoiceQualityEngine.instance.initialize(context, userId = myMember.id)
 
                 // Cancel any active Bluetooth discovery to avoid RFCOMM connection failure / high latency
                 bluetoothAdapter?.cancelDiscovery()
@@ -930,6 +933,8 @@ class BluetoothManager(private val context: Context) {
                     throw lastEx ?: Exception("Connection timeout — Host RFCOMM not ready")
                 }
 
+                VoiceQualityEngine.instance.activeTransport = com.example.walkietalkieapp.dna.model.TransportType.Bluetooth
+                VoiceQualityEngine.instance.initialize(context, userId = myId)
                 audioPlayer.start()
                 clientSocket = socket
 

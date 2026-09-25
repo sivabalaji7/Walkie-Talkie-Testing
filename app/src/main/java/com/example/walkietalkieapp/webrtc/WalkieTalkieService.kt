@@ -37,25 +37,35 @@ class WalkieTalkieService : Service(), SignalingListener {
         fun getService(): WalkieTalkieService = this@WalkieTalkieService
     }
 
+    fun getOrCreateWebRtcManager(): WebRTCManager {
+        var manager = webRTCManager
+        if (manager == null) {
+            manager = WebRTCManager(this).apply {
+                init()
+                initialize()
+                onCallConnected = {
+                    val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
+                    val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Voice Link Ready"
+                    updateNotification(text)
+                }
+                onCallDisconnected = {
+                    val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
+                    val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
+                    updateNotification(text)
+                    onOthersSpeakingStateChange?.invoke(false)
+                }
+            }
+            webRTCManager = manager
+        }
+        return manager
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         SupabaseRealtimeManager.setSignalingListener(this)
-        webRTCManager = WebRTCManager(this).apply {
-            init()
-            initialize()
-            onCallConnected = {
-                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
-                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Voice Link Ready"
-                updateNotification(text)
-            }
-            onCallDisconnected = {
-                val roomId = SupabaseRealtimeManager.socketUiState.value.roomId
-                val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
-                updateNotification(text)
-                onOthersSpeakingStateChange?.invoke(false)
-            }
-        }
+        val manager = getOrCreateWebRtcManager()
+        manager.prepareConnection()
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WalkieTalkieApp::VoiceServiceWakeLock")
@@ -88,7 +98,9 @@ class WalkieTalkieService : Service(), SignalingListener {
     override fun onOfferReceived(fromPeerId: String, sdp: String) {
         if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onOfferReceived from $fromPeerId")
-        webRTCManager?.handleOffer(fromPeerId, sdp)
+        val manager = getOrCreateWebRtcManager()
+        manager.prepareConnection()
+        manager.handleOffer(fromPeerId, sdp)
         val speaker = SupabaseRealtimeManager.socketUiState.value.lastSpeakerName
         val text = if (!speaker.isNullOrBlank() && speaker != SupabaseRealtimeManager.socketUiState.value.username) {
             "$speaker is transmitting..."
@@ -101,18 +113,20 @@ class WalkieTalkieService : Service(), SignalingListener {
     override fun onAnswerReceived(fromPeerId: String, sdp: String) {
         if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onAnswerReceived from $fromPeerId")
-        webRTCManager?.handleAnswer(fromPeerId, sdp)
+        getOrCreateWebRtcManager().handleAnswer(fromPeerId, sdp)
     }
 
     override fun onIceCandidateReceived(fromPeerId: String, candidate: String) {
         if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
-        webRTCManager?.handleIceCandidate(fromPeerId, candidate)
+        getOrCreateWebRtcManager().handleIceCandidate(fromPeerId, candidate)
     }
 
     override fun onPeersReceived(peers: List<String>) {
         if (SupabaseRealtimeManager.socketUiState.value.roomId.isEmpty()) return
         Log.d(TAG, "onPeersReceived: connecting to ${peers.size} peer(s)")
-        webRTCManager?.connectToPeers(peers)
+        val manager = getOrCreateWebRtcManager()
+        manager.prepareConnection()
+        manager.connectToPeers(peers)
     }
 
     override fun onPeerLeft(peerId: String) {
@@ -198,24 +212,8 @@ class WalkieTalkieService : Service(), SignalingListener {
 
     fun startVoiceSession(roomId: String = "") {
         acquireWakeLock(60 * 60 * 1000L)
-        if (webRTCManager == null) {
-            webRTCManager = WebRTCManager(this).apply {
-                init()
-                initialize()
-                onCallConnected = {
-                    val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
-                    val text = if (currentRoom.isNotEmpty()) "In Squad: $currentRoom" else "Voice Link Ready"
-                    updateNotification(text)
-                }
-                onCallDisconnected = {
-                    val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
-                    val text = if (currentRoom.isNotEmpty()) "In Squad: $currentRoom" else "Ready to talk"
-                    updateNotification(text)
-                    onOthersSpeakingStateChange?.invoke(false)
-                }
-            }
-        }
-        webRTCManager?.prepareConnection()
+        val manager = getOrCreateWebRtcManager()
+        manager.prepareConnection()
         val text = if (roomId.isNotEmpty()) "In Squad: $roomId" else "Ready to talk"
         updateNotification(text)
     }

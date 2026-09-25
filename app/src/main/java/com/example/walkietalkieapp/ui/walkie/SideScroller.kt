@@ -3,6 +3,7 @@ package com.example.walkietalkieapp.ui.walkie
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,7 +65,7 @@ fun SideScroller(
     var isEngaged by remember { mutableStateOf(false) }
     var accX by remember { mutableFloatStateOf(0f) }
     var accY by remember { mutableFloatStateOf(0f) }
-    var isPullingRight by remember { mutableStateOf(false) }
+    var isPullingHorizontal by remember { mutableStateOf(false) }
     var hasPulledTrigger by remember { mutableStateOf(false) }
 
     // Synchronize angle when external index changes (e.g. tapped item or remote event)
@@ -117,20 +118,26 @@ fun SideScroller(
                 .graphicsLayer {
                     translationX = dragXOffset.dp.toPx()
                     this.scaleX = scaleX
-                    this.scaleY = 1f + (dragXOffset / 70f) * 0.15f
+                    this.scaleY = 1f + (abs(dragXOffset) / 70f) * 0.15f
                 }
                 .width(32.dp)
                 .height(128.dp)
                 .shadow(elevation = 6.dp, shape = RoundedCornerShape(16.dp))
                 .clip(RoundedCornerShape(16.dp))
-                .background(WalkieDeviceBodyLight)
-                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                .background(if (hasPulledTrigger) WalkieAmber.copy(alpha = 0.25f) else WalkieDeviceBodyLight)
+                .border(1.dp, if (hasPulledTrigger) WalkieAmber else Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                .clickable {
+                    if (!currentDisabled) {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        currentOnPull()
+                    }
+                }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = {
                             if (currentDisabled) return@detectDragGestures
                             isEngaged = true
-                            isPullingRight = false
+                            isPullingHorizontal = false
                             hasPulledTrigger = false
                             accX = 0f
                             accY = 0f
@@ -142,7 +149,7 @@ fun SideScroller(
                                 currentOnPull()
                             }
                             hasPulledTrigger = false
-                            isPullingRight = false
+                            isPullingHorizontal = false
                             isEngaged = false
                             accX = 0f
                             accY = 0f
@@ -164,7 +171,7 @@ fun SideScroller(
                         onDragCancel = {
                             if (currentDisabled) return@detectDragGestures
                             hasPulledTrigger = false
-                            isPullingRight = false
+                            isPullingHorizontal = false
                             isEngaged = false
                             accX = 0f
                             accY = 0f
@@ -188,11 +195,15 @@ fun SideScroller(
                             accX += dragAmount.x
                             accY += dragAmount.y
 
-                            // Intentional right pull requires strong horizontal intent
-                            if ((accX > 22f && accX > abs(accY) * 1.3f) || isPullingRight) {
-                                isPullingRight = true
-                                dragXOffset = (dragXOffset + dragAmount.x).coerceIn(0f, 65f)
-                                hasPulledTrigger = dragXOffset > 44f
+                            // Horizontal pull: support both inward (negative X, towards screen center) and outward (positive X)
+                            if ((abs(accX) > 16f && abs(accX) > abs(accY) * 1.1f) || isPullingHorizontal) {
+                                isPullingHorizontal = true
+                                dragXOffset = (dragXOffset + dragAmount.x).coerceIn(-48f, 48f)
+                                val wasTrigger = hasPulledTrigger
+                                hasPulledTrigger = abs(dragXOffset) >= 20f
+                                if (!wasTrigger && hasPulledTrigger) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
                                 return@detectDragGestures
                             }
 
@@ -289,10 +300,13 @@ fun SideScroller(
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
-                tint = WalkieAmber.copy(alpha = 0.7f),
+                tint = if (hasPulledTrigger) WalkieAmber else WalkieAmber.copy(alpha = 0.7f),
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .offset(x = (-2).dp)
+                    .align(if (dragXOffset < -5f) Alignment.CenterEnd else Alignment.CenterStart)
+                    .graphicsLayer {
+                        rotationZ = if (dragXOffset < -5f) 180f else 0f
+                    }
+                    .offset(x = if (dragXOffset < -5f) 2.dp else (-2).dp)
                     .size(12.dp)
             )
         }
@@ -301,12 +315,18 @@ fun SideScroller(
 
         val isDark = LocalWalkieDarkTheme.current
         Text(
-            text = label,
+            text = if (hasPulledTrigger) "RELEASE TO JOIN" else label,
             fontFamily = SpaceGrotesk,
             fontSize = 7.sp,
             fontWeight = FontWeight.Bold,
-            color = if (isDark) WalkieTextSecondary else WalkieTextMuted,
-            letterSpacing = 1.sp
+            color = if (hasPulledTrigger) WalkieAmber else if (isDark) WalkieTextSecondary else WalkieTextMuted,
+            letterSpacing = 1.sp,
+            modifier = Modifier.clickable {
+                if (!currentDisabled) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    currentOnPull()
+                }
+            }
         )
     }
 }

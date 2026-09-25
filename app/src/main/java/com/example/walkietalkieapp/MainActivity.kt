@@ -17,6 +17,10 @@ import android.hardware.SensorManager
 import android.location.LocationManager
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -83,12 +87,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var selectedTransportMode by mutableStateOf(TransportMode.INTERNET)
     private var hasAllPermissions by mutableStateOf(false)
     private var hasAudioPermission by mutableStateOf(false)
+    private var pendingInternetRoomId: String? = null
 
     // Dialog States
     private var showCallSignDialog by mutableStateOf(false)
     private var showBluetoothDialog by mutableStateOf(false)
     private var showWifiDialog by mutableStateOf(false)
+    private var showWifiDisconnectDialog by mutableStateOf(false)
+    private var connectedWifiSsid by mutableStateOf<String?>(null)
+    private var isExternalWifiConnected by mutableStateOf(false)
     private var showLocationDialog by mutableStateOf(false)
+    private var connectivityManager: ConnectivityManager? = null
+    private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Tone & Vibrations
     private var toneGenerator: ToneGenerator? = null
@@ -125,6 +135,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             hasAllPermissions = results.values.all { it }
             hasAudioPermission = results[Manifest.permission.RECORD_AUDIO] == true
+            if (hasAudioPermission) {
+                val targetRoom = pendingInternetRoomId ?: SupabaseRealtimeManager.socketUiState.value.roomId
+                if (targetRoom.isNotEmpty()) {
+                    startWebRtcService()
+                    webRtcService?.startVoiceSession(targetRoom)
+                }
+            }
             if (hasAllPermissions) {
                 startOfflineService()
                 checkHardwareStateForCurrentMode()
@@ -193,9 +210,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 )
             }
 
-            val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
-            if (hasAudioPermission && currentRoom.isNotEmpty()) {
-                webRtcService?.startVoiceSession(currentRoom)
+            val targetRoom = pendingInternetRoomId ?: SupabaseRealtimeManager.socketUiState.value.roomId
+            if (hasAudioPermission && targetRoom.isNotEmpty()) {
+                webRtcService?.startVoiceSession(targetRoom)
             }
 
             if (pendingTalkStart) {
@@ -286,6 +303,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         checkAndRequestPermissions()
+        registerNetworkMonitoring()
+        val (initialExternalWifi, initialWifiSsid) = checkConnectedToExternalWifi()
+        isExternalWifiConnected = initialExternalWifi
+        connectedWifiSsid = initialWifiSsid
 
         // Initialize Communication DNA / Network Intelligence Engine
         com.example.walkietalkieapp.dna.engine.CommunicationDnaEngine.initialize(this)
@@ -653,6 +674,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 if (!isWifiEnabled()) {
                                     showWifiDialog = true
                                 } else {
+                                    val (isExternal, ssid) = checkConnectedToExternalWifi()
+                                    isExternalWifiConnected = isExternal
+                                    connectedWifiSsid = ssid
+                                    if (isExternal) {
+                                        showWifiDisconnectDialog = true
+                                    }
                                     if (offlineService == null) {
                                         startOfflineService()
                                     }
@@ -745,6 +772,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             enterInternetSquad(roomCode, currentUsername, roomName)
                         },
                         onLeaveInternetRoom = {
+                            pendingInternetRoomId = null
                             com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = false
                             isManualScreenPttHeld = false
                             webRtcService?.webRTCManager?.cleanup()
@@ -869,6 +897,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             if (!isWifiEnabled()) {
                                 showWifiDialog = true
                             } else {
+                                val (isExternal, ssid) = checkConnectedToExternalWifi()
+                                isExternalWifiConnected = isExternal
+                                connectedWifiSsid = ssid
+                                if (isExternal) {
+                                    showWifiDisconnectDialog = true
+                                }
                                 if (offlineService == null) {
                                     startOfflineService()
                                 }
@@ -876,12 +910,38 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             }
                         },
                         onHostWifiSquad = { user, squad ->
-                            if (!isWifiEnabled()) showWifiDialog = true
-                            else offlineService?.wifiDirectManager?.hostSquad(user, squad)
+                            if (!isWifiEnabled()) {
+                                showWifiDialog = true
+                            } else {
+                                val (isExternal, ssid) = checkConnectedToExternalWifi()
+                                isExternalWifiConnected = isExternal
+                                connectedWifiSsid = ssid
+                                if (isExternal) {
+                                    showWifiDisconnectDialog = true
+                                } else {
+                                    if (offlineService == null) {
+                                        startOfflineService()
+                                    }
+                                    offlineService?.wifiDirectManager?.hostSquad(user, squad)
+                                }
+                            }
                         },
                         onJoinWifiSquad = { squad, user ->
-                            if (!isWifiEnabled()) showWifiDialog = true
-                            else offlineService?.wifiDirectManager?.joinSquad(squad, user)
+                            if (!isWifiEnabled()) {
+                                showWifiDialog = true
+                            } else {
+                                val (isExternal, ssid) = checkConnectedToExternalWifi()
+                                isExternalWifiConnected = isExternal
+                                connectedWifiSsid = ssid
+                                if (isExternal) {
+                                    showWifiDisconnectDialog = true
+                                } else {
+                                    if (offlineService == null) {
+                                        startOfflineService()
+                                    }
+                                    offlineService?.wifiDirectManager?.joinSquad(squad, user)
+                                }
+                            }
                         },
                         onStartTalkOffline = {
                             isManualScreenPttHeld = true
@@ -920,6 +980,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         isUserSpeakingOffline = isUserSpeakingLocalOffline,
                         onTriggerGoVisible = {
                             offlineService?.bluetoothManager?.triggerGoVisible(10)
+                        },
+                        isExternalWifiConnected = isExternalWifiConnected,
+                        connectedWifiSsid = connectedWifiSsid,
+                        onRequestDisconnectWifi = {
+                            val (isExternal, ssid) = checkConnectedToExternalWifi()
+                            connectedWifiSsid = ssid
+                            isExternalWifiConnected = isExternal
+                            showWifiDisconnectDialog = true
                         },
 
                         // Controls
@@ -970,6 +1038,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             onDismiss = { showWifiDialog = false },
                             onLaunchEnable = {
                                 showWifiDialog = false
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    try {
+                                        startActivity(Intent(Settings.Panel.ACTION_WIFI))
+                                    } catch (e: Exception) {
+                                        startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                                    }
+                                } else {
+                                    startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                                }
+                            }
+                        )
+                    }
+
+                    // Wi-Fi Disconnect Warning Dialog (Prompt to disconnect from external AP)
+                    if (showWifiDisconnectDialog) {
+                        WifiDisconnectWarningDialog(
+                            connectedSsid = connectedWifiSsid,
+                            onDismiss = { showWifiDisconnectDialog = false },
+                            onLaunchWifiSettings = {
+                                showWifiDisconnectDialog = false
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                     try {
                                         startActivity(Intent(Settings.Panel.ACTION_WIFI))
@@ -1083,18 +1171,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun enterInternetSquad(roomId: String, username: String, roomName: String = "") {
+        val cleanRoomId = roomId.trim().uppercase()
+        pendingInternetRoomId = cleanRoomId
         FloorManager.myUsername = username.trim()
         com.example.walkietalkieapp.audio.intelligence.AcousticRadarManager.isVoiceSessionActive = true
-        if (hasAudioPermission) {
-            startWebRtcService()
-        }
+        startWebRtcService()
         val currentRoom = SupabaseRealtimeManager.socketUiState.value.roomId
-        if (currentRoom.isNotEmpty() && currentRoom != roomId) {
+        if (currentRoom.isNotEmpty() && currentRoom != cleanRoomId) {
             webRtcService?.webRTCManager?.cleanup()
             SupabaseRealtimeManager.leaveRoom()
         }
-        SupabaseRealtimeManager.joinRoom(roomId, username, roomName)
-        webRtcService?.startVoiceSession(roomId)
+        SupabaseRealtimeManager.joinRoom(cleanRoomId, username, roomName)
+        webRtcService?.startVoiceSession(cleanRoomId)
     }
 
     private fun startPushToTalkOnline(isPriority: Boolean = false) {
@@ -1235,7 +1323,85 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         } else if (selectedTransportMode == TransportMode.WIFI_DIRECT) {
             if (!isWifiEnabled()) {
                 showWifiDialog = true
+            } else {
+                val (isExternal, ssid) = checkConnectedToExternalWifi()
+                isExternalWifiConnected = isExternal
+                connectedWifiSsid = ssid
             }
+        }
+    }
+
+    private fun checkConnectedToExternalWifi(): Pair<Boolean, String?> {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return Pair(false, null)
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+
+        // If currently in a Wi-Fi Direct squad, don't treat P2P connection as external
+        val p2pState = offlineService?.wifiDirectManager?.uiState?.value?.connectionState
+        if (p2pState == "HOSTING" || p2pState == "CONNECTED") {
+            return Pair(false, null)
+        }
+
+        val networks = cm.allNetworks
+        for (network in networks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    (caps.transportInfo as? WifiInfo) ?: wm?.connectionInfo
+                } else {
+                    @Suppress("DEPRECATION")
+                    wm?.connectionInfo
+                }
+
+                val rawSsid = wifiInfo?.ssid?.trim('"')
+                if (rawSsid != null && rawSsid.startsWith("DIRECT-")) {
+                    continue // Skip Wi-Fi Direct group interface
+                }
+
+                val displaySsid = if (!rawSsid.isNullOrBlank() && rawSsid != "<unknown ssid>") {
+                    rawSsid
+                } else {
+                    "Wi-Fi Network"
+                }
+
+                return Pair(true, displaySsid)
+            }
+        }
+        return Pair(false, null)
+    }
+
+    private fun registerNetworkMonitoring() {
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                runOnUiThread {
+                    val (isExternal, ssid) = checkConnectedToExternalWifi()
+                    isExternalWifiConnected = isExternal
+                    connectedWifiSsid = ssid
+                }
+            }
+
+            override fun onLost(network: Network) {
+                runOnUiThread {
+                    val (isExternal, ssid) = checkConnectedToExternalWifi()
+                    isExternalWifiConnected = isExternal
+                    connectedWifiSsid = ssid
+                }
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                runOnUiThread {
+                    val (isExternal, ssid) = checkConnectedToExternalWifi()
+                    isExternalWifiConnected = isExternal
+                    connectedWifiSsid = ssid
+                }
+            }
+        }
+        try {
+            connectivityManager?.registerDefaultNetworkCallback(callback)
+            defaultNetworkCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register default network callback", e)
         }
     }
 
@@ -1253,6 +1419,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (hasAllPermissions) {
             checkHardwareStateForCurrentMode()
         }
+        val (isExternal, ssid) = checkConnectedToExternalWifi()
+        isExternalWifiConnected = isExternal
+        connectedWifiSsid = ssid
     }
 
     override fun onPause() {
@@ -1360,6 +1529,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             runCatching { unregisterReceiver(systemStateReceiver) }
             isSystemReceiverRegistered = false
         }
+        defaultNetworkCallback?.let { cb ->
+            try {
+                connectivityManager?.unregisterNetworkCallback(cb)
+            } catch (e: Exception) {}
+        }
+        defaultNetworkCallback = null
         toneGenerator?.release()
         toneGenerator = null
 

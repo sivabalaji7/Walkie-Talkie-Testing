@@ -78,6 +78,9 @@ fun SquadHub(
     onJoinBtSquad: (DiscoveredSquad) -> Unit = {},
     isBtConnecting: Boolean = false,
     isBtScanning: Boolean = false,
+    isExternalWifiConnected: Boolean = false,
+    connectedWifiSsid: String? = null,
+    onRequestDisconnectWifi: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isOnline = mode == ConnectivityMode.INTERNET
@@ -209,14 +212,19 @@ fun SquadHub(
                                 }
                                 Column {
                                     Text(
-                                        text = if (online) "No squads connected" else "No saved squads offline",
+                                        text = if (online) "No squads connected"
+                                        else if (mode == ConnectivityMode.WIFI_DIRECT && isExternalWifiConnected) "External Wi-Fi Active"
+                                        else "No saved squads offline",
                                         fontFamily = SpaceGrotesk,
                                         fontSize = 15.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White
+                                        color = if (mode == ConnectivityMode.WIFI_DIRECT && isExternalWifiConnected) Color(0xFFF59E0B) else Color.White
                                     )
                                     Text(
-                                        text = if (online) "Create or join a squad below" else if (mode == ConnectivityMode.WIFI_DIRECT) "Radar scanning on-air squads" else "Start one on the spot",
+                                        text = if (online) "Create or join a squad below"
+                                        else if (mode == ConnectivityMode.WIFI_DIRECT && isExternalWifiConnected) "Disconnect Wi-Fi to enable direct squad radio"
+                                        else if (mode == ConnectivityMode.WIFI_DIRECT) "Radar scanning on-air squads"
+                                        else "Start one on the spot",
                                         fontFamily = PlusJakartaSans,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold,
@@ -277,6 +285,9 @@ fun SquadHub(
                     onCreateSquad = onCreate,
                     onRefresh = onRefresh,
                     currentTheme = currentTheme,
+                    isExternalWifiConnected = isExternalWifiConnected,
+                    connectedWifiSsid = connectedWifiSsid,
+                    onRequestDisconnectWifi = onRequestDisconnectWifi,
                     modifier = Modifier.weight(1f)
                 )
             } else if (mode == ConnectivityMode.BLUETOOTH) {
@@ -392,8 +403,13 @@ fun SquadHub(
                                         RoundedCornerShape(14.dp)
                                     )
                                     .clickable {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        onStep(index - activeIndex.mod(squads.size))
+                                        if (isSelected) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onJoin()
+                                        } else {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            onStep(index - activeIndex.mod(squads.size))
+                                        }
                                     }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -507,7 +523,7 @@ fun SquadHub(
                             .background(currentTheme.primaryColor)
                     )
                     Text(
-                        text = if (squads.isNotEmpty()) "Pull the wheel to join" else if (isOnline) "No squads available" else "Offline mesh active",
+                        text = if (squads.isNotEmpty()) "Pull wheel or tap squad to join" else if (isOnline) "No squads available" else "Offline mesh active",
                         fontFamily = PlusJakartaSans,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -632,6 +648,9 @@ fun WifiDirectRadarSection(
     onCreateSquad: () -> Unit,
     onRefresh: () -> Unit = {},
     currentTheme: ModeThemeConfig,
+    isExternalWifiConnected: Boolean = false,
+    connectedWifiSsid: String? = null,
+    onRequestDisconnectWifi: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
@@ -868,24 +887,94 @@ fun WifiDirectRadarSection(
                                 )
                             }
 
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(WalkieGreen.copy(alpha = 0.2f))
-                                    .border(1.dp, WalkieGreen.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                                    .padding(horizontal = 9.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    text = if (isConnecting) "REQUESTING ⏳" else "REQUEST JOIN ↗",
-                                    fontFamily = SpaceGrotesk,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = WalkieGreen,
-                                    letterSpacing = 0.5.sp
-                                )
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(WalkieGreen.copy(alpha = 0.2f))
+                                            .border(1.dp, WalkieGreen.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                if (isExternalWifiConnected) {
+                                                    onRequestDisconnectWifi()
+                                                } else {
+                                                    onJoinSquad(squad)
+                                                }
+                                            }
+                                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isConnecting) "REQUESTING ⏳" else "REQUEST JOIN ↗",
+                                            fontFamily = SpaceGrotesk,
+                                            fontSize = 9.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = WalkieGreen,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
+                }
+
+        // Warning banner when connected to external Wi-Fi
+        if (isExternalWifiConnected) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF2B180A))
+                    .border(1.dp, Color(0xFFF59E0B).copy(alpha = 0.6f), RoundedCornerShape(14.dp))
+                    .clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onRequestDisconnectWifi()
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = Color(0xFFF59E0B),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "External Wi-Fi Connected",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFF59E0B)
+                    )
+                    Text(
+                        text = if (!connectedWifiSsid.isNullOrBlank() && connectedWifiSsid != "Wi-Fi Network") {
+                            "Disconnect from '$connectedWifiSsid' to use Wi-Fi Direct"
+                        } else {
+                            "Please disconnect from current Wi-Fi network"
+                        },
+                        fontFamily = PlusJakartaSans,
+                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFF59E0B).copy(alpha = 0.25f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "FIX",
+                        fontFamily = SpaceGrotesk,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFF59E0B)
+                    )
                 }
             }
         }
@@ -901,7 +990,11 @@ fun WifiDirectRadarSection(
                 .border(1.dp, Color.White.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
                 .clickable {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onCreateSquad()
+                    if (isExternalWifiConnected) {
+                        onRequestDisconnectWifi()
+                    } else {
+                        onCreateSquad()
+                    }
                 }
                 .padding(vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,

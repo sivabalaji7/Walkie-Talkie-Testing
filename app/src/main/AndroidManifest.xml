@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Bluetooth Permissions for Android 12+ (API 31+) -->
     <!-- Do NOT use neverForLocation because BLE beacon discovery requires location access on Android -->
@@ -21,7 +22,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Audio and Service Permissions -->
@@ -33,7 +35,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Hardware Features (All optional except mic) -->
+    <!-- Hardware Features (All set to required="false" for maximum device compatibility across all clean Android hardware/Pixel devices) -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />
@@ -41,11 +46,20 @@
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
     <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+    <uses-feature
         android:name="android.hardware.wifi.direct"
         android:required="false" />
     <uses-feature
-        android:name="android.hardware.microphone"
-        android:required="true" />
+        android:name="android.hardware.location"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.location.network"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -58,7 +72,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.WalkieTalkieApp"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:extractNativeLibs="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

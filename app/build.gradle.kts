@@ -17,6 +17,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        ndk {
+            abiFilters.addAll(setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64"))
+        }
+
         buildConfigField("String", "SUPABASE_URL", "\"https://crlfqcrhsjybrebbbaww.supabase.co\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNybGZxY3Joc2p5YnJlYmJiYXd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTA5OTIsImV4cCI6MjEwMjg4Njk5Mn0.cQkNISzEEfLp6WAC-HSYGsJ56_LycXNi6IoU3j0idVY\"")
 
@@ -25,6 +29,18 @@ android {
         buildConfigField("String", "TURN_SERVER_URL", "\"\"")
         buildConfigField("String", "TURN_USERNAME", "\"\"")
         buildConfigField("String", "TURN_PASSWORD", "\"\"")
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    splits {
+        abi {
+            isEnable = false
+        }
     }
 
     buildTypes {

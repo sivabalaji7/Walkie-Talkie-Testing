@@ -430,6 +430,28 @@ fun LocationEnableDialog(
 }
 
 @Composable
+fun WifiDisconnectWarningDialog(
+    connectedSsid: String?,
+    onDismiss: () -> Unit,
+    onLaunchWifiSettings: () -> Unit
+) {
+    val ssidNotice = if (!connectedSsid.isNullOrBlank() && connectedSsid != "Wi-Fi Network") {
+        " ('$connectedSsid')"
+    } else {
+        ""
+    }
+    TactileSystemDialog(
+        icon = Icons.Default.WifiOff,
+        iconTint = TactileColors.primaryContainer,
+        title = "Disconnect Active Wi-Fi",
+        message = "Your device is connected to an external Wi-Fi network$ssidNotice.\n\nWi-Fi Direct requires your Wi-Fi radio to be free from active network connections to create or join a squad.\n\nPlease disconnect from your current Wi-Fi network (keep Wi-Fi switched ON) before creating or joining a squad.",
+        confirmText = "SETTINGS",
+        onConfirm = onLaunchWifiSettings,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
 fun CallSignDialog(
     currentCallSign: String,
     onSave: (String) -> Unit,

@@ -62,9 +62,14 @@ class VoiceQualityEngine private constructor() {
     }
 
     fun initialize(context: Context, webRtcRef: WebRTCManager? = null, userId: String = "") {
+        val appContext = context.applicationContext
         if (audioRecorder == null) {
             audioRecorder = AudioRecorder()
-            audioPlayer = AudioPlayer(context)
+        }
+        if (audioPlayer == null) {
+            audioPlayer = AudioPlayer(appContext)
+        } else {
+            audioPlayer?.attachContext(appContext)
         }
         if (webRtcRef != null) {
             this.webRtcManager = webRtcRef
@@ -73,6 +78,16 @@ class VoiceQualityEngine private constructor() {
             this.myUserId = userId
         }
         Log.d(TAG, "Voice Quality Engine initialized (Recorder/Player ready).")
+    }
+
+    fun getOrCreateAudioPlayer(context: Context): AudioPlayer {
+        val appContext = context.applicationContext
+        if (audioPlayer == null) {
+            audioPlayer = AudioPlayer(appContext)
+        } else {
+            audioPlayer?.attachContext(appContext)
+        }
+        return audioPlayer!!
     }
 
     // =========================================================================
@@ -312,6 +327,7 @@ class VoiceQualityEngine private constructor() {
         rxTimeoutRunnable = null
         audioRecorder?.release()
         audioPlayer?.release()
+        audioPlayer = null
         jitterBuffer.reset()
     }
 }

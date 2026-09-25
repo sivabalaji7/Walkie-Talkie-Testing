@@ -97,6 +97,11 @@ fun WalkieTalkieApp(
     isKrispAiEnabled: Boolean = true,
     onKrispAiToggle: (Boolean) -> Unit = {},
 
+    // External Wi-Fi check for Wi-Fi Direct
+    isExternalWifiConnected: Boolean = false,
+    connectedWifiSsid: String? = null,
+    onRequestDisconnectWifi: () -> Unit = {},
+
     modifier: Modifier = Modifier
 ) {
     var isDarkMode by remember { mutableStateOf(true) }
@@ -494,18 +499,24 @@ fun WalkieTalkieApp(
                                             } ?: run { onStartBtScan() }
                                         }
                                         TransportMode.WIFI_DIRECT -> {
-                                            val wifiIdx = if (wifiUiState.discoveredSquads.isNotEmpty()) {
-                                                activeIndex.mod(wifiUiState.discoveredSquads.size)
-                                            } else 0
-                                            wifiUiState.discoveredSquads.getOrNull(wifiIdx)?.let {
-                                                onJoinWifiSquad(it, persistentCallSign.ifBlank { displayCallsign })
-                                            } ?: run { onStartWifiScan() }
+                                            if (isExternalWifiConnected) {
+                                                onRequestDisconnectWifi()
+                                            } else {
+                                                val wifiIdx = if (wifiUiState.discoveredSquads.isNotEmpty()) {
+                                                    activeIndex.mod(wifiUiState.discoveredSquads.size)
+                                                } else 0
+                                                wifiUiState.discoveredSquads.getOrNull(wifiIdx)?.let {
+                                                    onJoinWifiSquad(it, persistentCallSign.ifBlank { displayCallsign })
+                                                } ?: run { onStartWifiScan() }
+                                            }
                                         }
                                     }
                                 },
                                 onCreate = {
                                     if (selectedMode == TransportMode.INTERNET) {
                                         showCreateSquadDialog = true
+                                    } else if (selectedMode == TransportMode.WIFI_DIRECT && isExternalWifiConnected) {
+                                        onRequestDisconnectWifi()
                                     } else {
                                         showHostOfflineDialog = true
                                     }
@@ -539,7 +550,10 @@ fun WalkieTalkieApp(
                                     onJoinBtSquad(squad, persistentCallSign.ifBlank { displayCallsign })
                                 },
                                 isBtConnecting = btUiState.connectionState == "CONNECTING",
-                                isBtScanning = btUiState.isScanning
+                                isBtScanning = btUiState.isScanning,
+                                isExternalWifiConnected = isExternalWifiConnected,
+                                connectedWifiSsid = connectedWifiSsid,
+                                onRequestDisconnectWifi = onRequestDisconnectWifi
                             )
                         }
                     }

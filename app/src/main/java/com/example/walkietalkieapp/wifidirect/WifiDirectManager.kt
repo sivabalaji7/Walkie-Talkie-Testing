@@ -170,7 +170,8 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
     // Guards against multiple concurrent TCP connection attempts
     private val tcpConnecting = AtomicBoolean(false)
 
-    val audioPlayer = AudioPlayer(context)
+    val audioPlayer: AudioPlayer
+        get() = VoiceQualityEngine.instance.getOrCreateAudioPlayer(context)
     private val audioRecorder = AudioRecorder()
 
     // Stored join parameters for retry
@@ -241,22 +242,10 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
 
                     if (isConnected) {
                         val isHost = _uiState.value.isHost || p2pInfo?.isGroupOwner == true
-                        val ch = channel ?: return
+                        val ch = ensureChannel() ?: return
                         if (isHost) {
-                            // Host: Group is up! Request group info to get valid SSID + Passphrase, then bind ServerSocket & publish DNS-SD
-                            wifiP2pManager?.requestGroupInfo(ch) { group ->
-                                if (group != null && group.isGroupOwner) {
-                                    val ssid = group.networkName ?: ""
-                                    val passphrase = group.passphrase ?: ""
-                                    Log.d(TAG, "Host group ready: SSID=$ssid, passphrase length=${passphrase.length}")
-                                    if (ssid.isNotBlank()) {
-                                        bindServerSocket()
-                                        advertiseDnsSd(ssid, passphrase)
-                                        acquireWifiLock()
-                                        startKeepAlive()
-                                    }
-                                }
-                            }
+                            // Host: Group is up! Request group info with retry to get valid SSID + Passphrase, then bind ServerSocket & publish DNS-SD
+                            requestHostGroupInfoWithRetry(ch)
                         } else {
                             // Client: Mandatory call to requestConnectionInfo on Client side
                             wifiP2pManager?.requestConnectionInfo(ch, this@WifiDirectManager)
@@ -300,6 +289,38 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             Log.e(TAG, "Failed to register receiver", e)
         }
         acquireWifiLock()
+    }
+
+    fun ensureChannel(): WifiP2pManager.Channel? {
+        if (channel == null) {
+            channel = wifiP2pManager?.initialize(context, Looper.getMainLooper()) {
+                Log.w(TAG, "Wi-Fi P2P Channel lost, re-initializing")
+                channel = wifiP2pManager?.initialize(context, Looper.getMainLooper(), null)
+            }
+        }
+        return channel
+    }
+
+    private fun requestHostGroupInfoWithRetry(ch: WifiP2pManager.Channel, retryCount: Int = 0) {
+        wifiP2pManager?.requestGroupInfo(ch) { group ->
+            if (group != null && group.isGroupOwner && !group.networkName.isNullOrBlank()) {
+                val ssid = group.networkName ?: ""
+                val passphrase = group.passphrase ?: ""
+                Log.d(TAG, "Host group ready: SSID=$ssid, passphrase length=${passphrase.length}")
+                bindServerSocket()
+                advertiseDnsSd(ssid, passphrase)
+                acquireWifiLock()
+                startKeepAlive()
+            } else if (retryCount < 5 && !isShuttingDown && _uiState.value.isHost) {
+                Log.d(TAG, "Host group not ready yet, retrying requestGroupInfo (${retryCount + 1}/5)...")
+                mainHandler.postDelayed({
+                    val activeCh = ensureChannel()
+                    if (activeCh != null && !isShuttingDown && _uiState.value.isHost) {
+                        requestHostGroupInfoWithRetry(activeCh, retryCount + 1)
+                    }
+                }, 350)
+            }
+        }
     }
 
     // =========================================================================
@@ -719,7 +740,11 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         isShuttingDown = false
         acquireWifiLock()
 
-        val ch = channel ?: return
+        val ch = ensureChannel() ?: run {
+            addLog("Error: Unable to initialize Wi-Fi Direct channel")
+            _events.tryEmit("Unable to initialize Wi-Fi Direct")
+            return
+        }
         val myId = _uiState.value.myId
         val finalSquadName = squadName.ifBlank { "WIFI-${myId.take(4).uppercase()}" }
 
@@ -750,25 +775,39 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
         stopDiscovery()
         audioPlayer.start()
 
-        // Clean any existing group first, then create autonomous group
+        // Clean any existing group first, then create autonomous group with settling delay
         wifiP2pManager?.requestGroupInfo(ch) { group ->
             if (group != null) {
                 wifiP2pManager?.removeGroup(ch, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
-                        performCreateGroup(ch, finalSquadName)
+                        mainHandler.postDelayed({
+                            if (!isShuttingDown && _uiState.value.isHost) {
+                                performCreateGroup(ch, finalSquadName)
+                            }
+                        }, 300)
                     }
                     override fun onFailure(reason: Int) {
-                        performCreateGroup(ch, finalSquadName)
+                        mainHandler.postDelayed({
+                            if (!isShuttingDown && _uiState.value.isHost) {
+                                performCreateGroup(ch, finalSquadName)
+                            }
+                        }, 300)
                     }
                 })
             } else {
-                performCreateGroup(ch, finalSquadName)
+                mainHandler.postDelayed({
+                    if (!isShuttingDown && _uiState.value.isHost) {
+                        performCreateGroup(ch, finalSquadName)
+                    }
+                }, 150)
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun performCreateGroup(ch: WifiP2pManager.Channel, finalSquadName: String) {
+    private fun performCreateGroup(ch: WifiP2pManager.Channel, finalSquadName: String, retryCount: Int = 0) {
+        if (isShuttingDown || !_uiState.value.isHost) return
+
         wifiP2pManager?.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.d(TAG, "createGroup request accepted by framework, awaiting connection event...")
@@ -776,9 +815,36 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
             }
 
             override fun onFailure(reason: Int) {
-                Log.w(TAG, "createGroup failed ($reason)")
-                addLog("Failed to create squad room ($reason)")
-                _uiState.update { it.copy(connectionState = "IDLE") }
+                Log.w(TAG, "createGroup failed ($reason), attempt $retryCount")
+                if (isShuttingDown || !_uiState.value.isHost) return
+
+                if (reason == WifiP2pManager.BUSY && retryCount < 3) {
+                    addLog("Wi-Fi hardware busy, retrying squad creation (${retryCount + 1}/3)...")
+                    mainHandler.postDelayed({
+                        val activeCh = ensureChannel()
+                        if (activeCh != null && !isShuttingDown && _uiState.value.isHost) {
+                            performCreateGroup(activeCh, finalSquadName, retryCount + 1)
+                        }
+                    }, 500)
+                } else if (reason == WifiP2pManager.ERROR && retryCount < 2) {
+                    addLog("Re-initializing Wi-Fi channel and retrying...")
+                    channel = wifiP2pManager?.initialize(context, Looper.getMainLooper(), null)
+                    mainHandler.postDelayed({
+                        val activeCh = ensureChannel()
+                        if (activeCh != null && !isShuttingDown && _uiState.value.isHost) {
+                            performCreateGroup(activeCh, finalSquadName, retryCount + 1)
+                        }
+                    }, 500)
+                } else {
+                    val errorMsg = when (reason) {
+                        WifiP2pManager.BUSY -> "Wi-Fi is busy. Please disconnect from other Wi-Fi networks and try again."
+                        WifiP2pManager.P2P_UNSUPPORTED -> "Wi-Fi Direct is not supported on this device."
+                        else -> "Failed to create Wi-Fi Direct squad ($reason). Disconnect from any active Wi-Fi and try again."
+                    }
+                    addLog("Failed to create squad room ($reason): $errorMsg")
+                    _events.tryEmit(errorMsg)
+                    _uiState.update { it.copy(connectionState = "IDLE", isHost = false) }
+                }
             }
         })
     }
@@ -1777,6 +1843,7 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.PeerListL
                     val myUsername = _uiState.value.myUsername
                     val myMember = SquadMember(myId, myUsername, "CLIENT", isSpeaking = false)
 
+                    audioPlayer.start()
                     mainHandler.post {
                         _uiState.update { state ->
                             state.copy(
